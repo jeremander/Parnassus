@@ -10,7 +10,8 @@ import Control.DeepSeq (NFData)
 import Control.Monad (join)
 import Data.Counter (Counter, singleton, union)
 import Data.Either
-import qualified Data.List (nub, transpose)
+import Data.Functor.Identity
+import qualified Data.List (nub, null, transpose)
 import Data.Maybe (isJust, listToMaybe)
 import Data.Ratio
 import Data.Set (empty, insert, member)
@@ -120,13 +121,15 @@ getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
 -- MusicU --
 
 -- unassociative music data structure (isomorphic to Music)
-data MusicU a = PrimU (Primitive a) | Seq [MusicU a] | Par [MusicU a] | ModifyU Control (MusicU a)
+data MusicU a = Empty | PrimU (Primitive a) | Seq [MusicU a] | Par [MusicU a] | ModifyU Control (MusicU a)
     deriving (Show, Eq, Ord)
 
 infixr 5 /+/, /=/
 
 -- combines together MusicU objects in series
 (/+/) :: MusicU a -> MusicU a -> MusicU a
+(/+/) m1 Empty = m1
+(/+/) Empty m2 = m2
 (/+/) m1 m2 = Seq (extractSeq m1 ++ extractSeq m2)
     where
         extractSeq :: MusicU a -> [MusicU a]
@@ -136,6 +139,8 @@ infixr 5 /+/, /=/
 
 -- combines together MusicU objects in parallel
 (/=/) :: MusicU a -> MusicU a -> MusicU a
+(/=/) m1 Empty = m1
+(/=/) Empty m2 = m2
 (/=/) m1 m2 = Par (extractPar m1 ++ extractPar m2)
     where
         extractPar :: MusicU a -> [MusicU a]
@@ -143,19 +148,79 @@ infixr 5 /+/, /=/
             Par ms    -> ms
             otherwise -> [m]
 
+isEmpty :: MusicU a -> Bool
+isEmpty Empty = True
+isEmpty _     = False
+
+-- splits MusicU into separate chords in sequence
+unLineU :: Eq a => MusicU a -> [MusicU a]
+unLineU (Seq ms) = ms
+unLineU (ModifyU ctl m) = (ModifyU ctl) <$> (unLineU m)
+unLineU m = [m]
+
+-- splits MusicU into separate lines in parallel
+unChordU :: Eq a => MusicU a -> [MusicU a]
+unChordU (Par ms) = ms
+unChordU (ModifyU ctl m) = (ModifyU ctl) <$> (unChordU m)
+unChordU m = [m]
+
+-- strips away outer control, returning the control (if present) and the remaining MusicU
+stripControlU :: MusicU a -> (Maybe Control, MusicU a)
+stripControlU (ModifyU ctl m) = (Just ctl, m)
+stripControlU m = (Nothing, m)
+
+-- smart constructors
+
+-- smart musical combinator for both Seq and Par
+-- handles empty and singleton arguments appropriately
+-- removes empty elements of input lists
+-- un-distributes the same control applied to each element of an input list
+-- TODO: strip away controls in ordering-insensitive way
+mCombine :: Eq a => (MusicU a -> [MusicU a]) -> ([MusicU a] -> MusicU a) -> [MusicU a] -> MusicU a
+mCombine f con = combine
+    where
+        op :: Maybe Control -> Maybe Control -> Maybe Control
+        op (Just ctl1) (Just ctl2) = if (ctl1 == ctl2) then (Just ctl1) else Nothing
+        op _ _ = Nothing
+        combine [] = Empty
+        combine [x] = case outerCtl of
+            Just ctl -> ModifyU ctl m
+            Nothing  -> x
+            where (outerCtl, m) = stripControlU x
+        combine xs = case outerCtl of
+            Just ctl -> ModifyU ctl (combine xs')  -- recursively apply combine to the stripped elements
+            Nothing  -> con xs
+            where
+                (outerCtls, xs') = unzip (stripControlU <$> xs)
+                outerCtl = foldr1 op outerCtls
+
+mSeq :: Eq a => [MusicU a] -> MusicU a
+mSeq ms = combine $ filter (not . isEmpty) $ concatMap unLineU ms
+    where combine = mCombine unLineU Seq
+
+-- TODO: remove rests shorter than duration
+
+mPar :: Eq a => [MusicU a] -> MusicU a
+mPar ms = combine $ Data.List.nub $ filter (not . isEmpty) $ concatMap unChordU ms
+    where combine = mCombine unChordU Par
+
 -- general fold for MusicU
 mFoldU :: (Primitive a -> b) -> (b -> b -> b) -> (b -> b -> b) -> (Control -> b -> b) -> MusicU a -> b
-mFoldU f (+:) (=:) g m = case m of
+mFoldU f (+/) (=/) g m = case m of
     PrimU p      -> f p
-    Seq ms       -> foldr1 (+:) (map rec ms)
-    Par ms       -> foldr1 (=:) (map rec ms)
+    Seq ms       -> foldr1 (+/) (map rec ms)
+    Par ms       -> foldr1 (=/) (map rec ms)
     ModifyU c m' -> g c (rec m')
     where
-        rec = mFoldU f (+:) (=:) g
+        rec = mFoldU f (+/) (=/) g
 
 -- converts Music to MusicU
 mUnassoc :: Music a -> MusicU a
-mUnassoc = mFold PrimU (/+/) (/=/) ModifyU
+mUnassoc = mFold mkPrimU (/+/) (/=/) ModifyU
+    where
+        mkPrimU :: Primitive a -> MusicU a
+        mkPrimU (Rest 0) = Empty
+        mkPrimU p        = PrimU p
 
 -- converts MusicU to Music
 mAssoc :: MusicU a -> Music a
@@ -169,12 +234,26 @@ conj f = mUnassoc . f . mAssoc
 conjU :: (MusicU a -> MusicU a) -> (Music a -> Music a)
 conjU f = mAssoc . f . mUnassoc
 
+-- generalizes conj to functorial output types
+conj' :: Functor g => (Music a -> g (Music a)) -> (MusicU a -> g (MusicU a))
+conj' f = (fmap mUnassoc . f . mAssoc)
+
+conjU' :: Functor g => (MusicU a -> g (MusicU a)) -> (Music a -> g (Music a))
+conjU' f = (fmap mAssoc . f . mUnassoc)
+
+unLine :: Eq a => Music a -> [Music a]
+unLine = conjU' unLineU
+
+unChord :: Eq a => Music a -> [Music a]
+unChord = conjU' unChordU
+
 -- plays MusicU
 playU :: (NFData a, ToMusic1 a) => MusicU a -> IO ()
 playU = play . mAssoc
 
 -- duration function
 durU :: MusicU a -> Dur
+durU Empty = 0
 durU (PrimU (Note d _)) = d
 durU (PrimU (Rest d)) = d
 durU (Seq ms) = sum (map durU ms)
@@ -182,26 +261,9 @@ durU (Par ms) = maximum (map durU ms)
 durU (ModifyU (Tempo r) m) = durU m / r
 durU (ModifyU _ m) = durU m
 
--- splits MusicU into separate lines in parallel
-unChordU :: MusicU a -> [MusicU a]
-unChordU (Par ms) = ms
-unChordU (ModifyU ctl m) = (ModifyU ctl) <$> (unChordU m)
-unChordU m = [m]
-
--- splits MusicU into separate chords in sequence
-unLineU :: MusicU a -> [MusicU a]
-unLineU (Seq ms) = ms
-unLineU (ModifyU ctl m) = map (ModifyU ctl) (unLineU m)
-unLineU m = [m]
-
--- strips away all modifiers from MusicU
-unModifyU :: MusicU a -> MusicU a
-unModifyU (ModifyU _ m) = m
-unModifyU m = m
-
--- strips away all tempo modifiers from MusicU
-unTempoU :: MusicU a -> MusicU a
-unTempoU = mFoldU PrimU (/+/) (/=/) g
+-- strips away all tempo modifiers
+stripTemposU :: MusicU a -> MusicU a
+stripTemposU = mFoldU PrimU (/+/) (/=/) g
     where
         g :: Control -> MusicU a -> MusicU a
         g (Tempo d) m = m
@@ -220,30 +282,32 @@ distributeTempoU = mFoldU PrimU (/+/) (/=/) g
         g ctl m = ModifyU ctl m
 
 -- cuts MusicU to at most the given duration
-cutU :: Dur -> MusicU a -> MusicU a
-cutU d m | d <= 0            = PrimU $ Rest 0
+cutU :: Eq a => Dur -> MusicU a -> MusicU a
+cutU d m | d <= 0            = Empty
+cutU _ Empty                 = Empty
 cutU d (PrimU (Note oldD p)) = PrimU $ Note (min oldD d) p
 cutU d (PrimU (Rest oldD))   = PrimU $ Rest (min oldD d)
-cutU d (Seq ms)              = Seq [cutU maxDur m' | (m', maxDur) <- zip ms maxDurs, maxDur > 0]
+cutU d (Seq ms)              = mSeq [cutU maxDur m' | (m', maxDur) <- zip ms maxDurs, maxDur > 0]
     where
         cumDurs = scanl (+) 0 (map durU ms)
         maxDurs = [(d - cumDur) | cumDur <- cumDurs]
-cutU d (Par ms)              = Par (map (cutU d) ms)
+cutU d (Par ms)              = mPar ((cutU d) <$> ms)
 cutU d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (cutU (d * r) m)
 cutU d (ModifyU c m)         = ModifyU c (cutU d m)
 
 -- pads MusicU to at least the given duration
-padU :: Dur -> MusicU a -> MusicU a
+padU :: Eq a => Dur -> MusicU a -> MusicU a
+padU d Empty                 = PrimU $ Rest d
 padU d (PrimU (Note oldD p)) = PrimU $ Note (max oldD d) p
 padU d (PrimU (Rest oldD))   = PrimU $ Rest (max oldD d)
-padU d m@(Seq ms)              = Seq (ms ++ filter (\_ -> (diff > 0)) [PrimU $ Rest diff])
+padU d m@(Seq ms)            = mSeq (ms ++ filter (\_ -> (diff > 0)) [PrimU $ Rest diff])
     where diff = d - durU m
-padU d (Par ms)              = Par (map (padU d) ms)
+padU d (Par ms)              = mPar ((padU d) <$> ms)
 padU d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (padU (d * r) m)
 padU d (ModifyU c m)         = ModifyU c (padU d m)
 
 -- fits MusicU to equal the given duration, either by padding or by cutting
-fitU :: Dur -> MusicU a -> MusicU a
+fitU :: Eq a => Dur -> MusicU a -> MusicU a
 fitU d m
     | diff > 0  = padU d m
     | diff < 0  = cutU d m
@@ -269,10 +333,11 @@ countDurations m = (lcd, mFoldU f union union (curry snd) m)
         f (Note d _) = singleton $ denominator d
 
 -- quantizes MusicU so that all durations are multiples of (1 / d)
-mQuantizeU :: Integer -> MusicU a -> MusicU a
+mQuantizeU :: Eq a => Integer -> MusicU a -> MusicU a
 mQuantizeU d m = case m of
+    Empty        -> Empty
     PrimU p      -> PrimU p
-    Seq ms       -> Seq [fitU qd m' | qd <- qDurs | m' <- ms']
+    Seq ms       -> mSeq [fitU qd m' | qd <- qDurs | m' <- ms']
         where
             ms' = map rec ms
             -- qDurs = safeQuantizeSeq d (map durU ms')
@@ -280,7 +345,7 @@ mQuantizeU d m = case m of
             -- cumDurs = scanl (+) 0 (map durU ms')  -- cumulative durations
             -- qCumDurs = map safeQuantize cumDurs   -- quantized cumulative durations
             -- qDurs = map (uncurry (-)) (zip (tail qCumDurs) qCumDurs) -- quantized durations
-    Par ms       -> Par $ map rec ms
+    Par ms       -> mPar $ map rec ms
     ModifyU c m' -> ModifyU c (rec m')
     where
         quantize' = quantize d
@@ -288,77 +353,7 @@ mQuantizeU d m = case m of
         safeQuantize = \r -> if (r == 0) then 0 else max (quantize' r) minQuant
         rec = mQuantizeU d
 
-
-
--- strips off all tempo modifications
--- unTempo :: Music a -> Music a
--- unTempo = mFold Prim (:+:) (:=:) g
---     where
---         g :: Control -> Music a -> Music a
---         g (Tempo d) m = m
---         g ctl m = Modify ctl m
-
--- distributes tempo changes across primitive notes/rests to eliminate the modifier
--- distributeTempo :: Music a -> Music a
--- distributeTempo = mFold Prim (:+:) (:=:) g
---     where
---         g :: Control -> Music a -> Music a
---         g (Tempo t) m = scaleDurations t m
---         g ctl m = Modify ctl m
-
--- splits Music into separate lines in parallel
--- unChord :: Music a -> [Music a]
--- unChord (x :=: y) = unChord x ++ unChord y
--- unChord (Modify ctl x) = map (Modify ctl) (unChord x)
--- unChord x = [x]
-
--- splits Music into separate chords in sequence
--- unLine :: Music a -> [Music a]
--- unLine (x :+: y) = unLine x ++ unLine y
--- unLine (Modify ctl x) = map (Modify ctl) (unLine x)
--- unLine x = [x]
-
--- computes the least common denominator of the time intervals occurring in the music
--- ignores tempo changes
--- mLCD :: Music a -> Integer
--- mLCD = mFold f lcm lcm (curry snd)
---     where
---         f :: Primitive a -> Integer
---         f (Rest d) = denominator d
---         f (Note d _) = denominator d
-
--- returns the LCD of the music durations, along with a counter of the denominators occurring
--- countDurations :: Music a -> (Integer, Counter Integer Int)
--- countDurations m = (lcd, mFold f union union (curry snd) m)
---     where
---         lcd = mLCD m
---         f :: Primitive a -> Counter Integer Int
---         f (Rest d) = singleton $ denominator d
---         f (Note d _) = singleton $ denominator d
-
--- pads Music to at least the given duration
--- pad :: Dur -> Music a -> Music a
--- pad d m
---     | diff <= 0 = m
---     | otherwise = m :+: (Prim $ Rest diff)
---     where diff = d - dur m
-
--- given denominator d, quantizes music so that each segment's duration has this denominator
--- ignores tempo changes
--- mQuantize :: Integer -> Music a -> Music a
--- mQuantize d = padQuantize . mFold Prim qplus (:=:) Modify
---     where 
---         padQuantize :: Music a -> Music a
---         padQuantize m = pad (quantize d (dur m)) m
---         qplus :: Music a -> Music a -> Music a
---         qplus m1 m2 = m1' :+: m2
---             where
---                 d1 = dur m1
---                 d1' = quantize d d1
---                 m1' = if (d1 - d1' >= 0) then (cut d1' m1) else (pad d1' m1)
-
--- mQuantize' :: Integer -> Music a -> Music a
--- mQuantize' d = conjU (mQuantizeU d)
+-- Measure splitting --
 
 type Tied a = (a, Bool)
 type TiedMusic a = Music (Tied a)
@@ -381,20 +376,9 @@ splitDur measureDur firstDur totalDur
     | (firstDur >= totalDur) = [totalDur]
     | otherwise       = [firstDur] ++ splitDur measureDur 0 (totalDur - firstDur)
 
+-- tie flags for a continuous note held across multiple measures (first False for onset, then True thereafter)
 tieFlags :: [Bool]
 tieFlags = [False] ++ repeat True
-
--- zips two lists, padding the shorter of the two with a default value
--- zipWithDefault :: a -> b -> [a] -> [b] -> [(a, b)]
--- zipWithDefault da db la lb = take len $ zip la' lb'
---     where
---         len = max (length la) (length lb)
---         la' = la ++ (repeat da)
---         lb' = lb ++ (repeat db)
-
--- combines MusicU in parallel, but only if they are not equal
-foldParallelU :: Eq a => [MusicU a] -> MusicU a
-foldParallelU ms = foldr1 (/=/) (Data.List.nub ms)
 
 -- splits MusicU by measure
 splitMeasuresU :: Eq a => Dur -> Dur -> MusicU a -> [TiedMusicU a]
@@ -403,6 +387,7 @@ splitMeasuresU measureDur = split
         glue :: [MusicU a] -> [MusicU a] -> [MusicU a]
         glue ms1 ms2 = (init ms1) ++ [last ms1 /+/ head ms2] ++ (tail ms2)
         split :: Eq a => Dur -> MusicU a -> [TiedMusicU a]
+        split firstDur Empty = []
         split firstDur (PrimU (Note d p)) = [PrimU (Note r (p, flag)) | r <- splitDur measureDur firstDur d | flag <- tieFlags]
         split firstDur (PrimU (Rest d)) = [PrimU (Rest r) | r <- splitDur measureDur firstDur d]
         split firstDur (Seq []) = []
@@ -411,19 +396,26 @@ splitMeasuresU measureDur = split
             where
                 measHead = split firstDur m
                 remDur = if null measHead then firstDur else (measureDur - durU (last measHead))
-                measTail = split remDur (Seq ms)
+                measTail = split remDur (mSeq ms)
                 result
                     | null measTail = measHead
                     | otherwise = if (remDur == 0) then (measHead ++ measTail) else (glue measHead measTail)
-        split firstDur (Par ms) = (Par . Data.List.nub) <$> mat
+        split firstDur (Par ms) = mPar <$> mat
             where
                 meas = (split firstDur) <$> ms
                 mat = transposeWithDefault (PrimU $ Rest measureDur) meas
         split firstDur (ModifyU c m) = (ModifyU c) <$> (split firstDur m)
-        -- TODO: issue with tempo!
-        -- make MusicU a monoid with an empty element
-        -- add runtime constructors seq and par that will unassociate and eliminate empty elements
 
--- splits Music by measure
-splitMeasures :: Eq a => Dur -> Dur -> Music a -> [TiedMusic a]
-splitMeasures measureDur firstDur m = mAssoc <$> (splitMeasuresU measureDur firstDur (mUnassoc m))
+
+-- Changes the time signature of music, measure-wise
+-- Assumes music starts at the beginning of a measure
+-- NB: LCM of denominators of time signatures determine the overall subdivision
+-- TODO: resolve ties so they don't rearticulate at beginning of measures
+changeTimeSig :: Eq a => MusicU a -> TimeSig -> TimeSig -> TiedMusicU a
+changeTimeSig m (n1, d1) (n2, d2) = mSeq meas'
+    where
+        r1 = (toInteger n1) % (toInteger d1)
+        r2 = (toInteger n2) % (toInteger d2)
+        q = toInteger $ lcm d1 d2
+        meas = splitMeasuresU r1 0 m
+        meas' = map ((mQuantizeU q) . (scaleDurationsU (r1 / r2))) meas
