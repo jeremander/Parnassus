@@ -7,15 +7,15 @@ module Parnassus.Music where
 
 import Codec.Midi
 import Control.Monad (join)
-import qualified Data.List (transpose)
+import qualified Data.List (nub, transpose)
 import Data.Maybe (isJust, listToMaybe)
-import Data.Ratio
+import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
-import Euterpea hiding (dur, scaleDurations)
 
-import Parnassus.MusicBase
-import Parnassus.MusicD
-import Parnassus.MusicU
+import Euterpea hiding (play)
+import Parnassus.MusicBase (MusicT (..), (/+/), (/=/), (/*/))
+import Parnassus.MusicD (MusicD (..), MusicD1, primD, ToMusicD (..))
+import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
 
 -- song paths
@@ -28,14 +28,24 @@ mm3 :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "mm3_password.m
 gradius :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "gradius_stage4.mid"
 bells :: MusicU1 = unsafePerformIO $ fromMidiFile $ xmasPath ++ "ringxms.mid"
 
--- Utilities --
+twinkle :: MusicU Pitch = fromMusic $ foldr1 (/+/) $ map ($ (1 % 4)) [c 4, c 4, g 4, g 4, a 4, a 4, g 4, Prim . Rest, f 4, f 4, e 4, e 4, d 4, d 4, c 4]
 
--- transposes a list of lists of varying length, padding any short lists with a default value
-transposeWithDefault :: a -> [[a]] -> [[a]]
-transposeWithDefault def xss = Data.List.transpose mat
-    where
-        maxlen = maximum (length <$> xss)
-        mat = [xs ++ (replicate (maxlen - length xs) def) | xs <- xss] 
+-- MusicT type conversions
+
+instance ToMusicU MusicD where
+    toMusicU = fromMusic . toMusic  -- efficient enough to go through Music
+    fromMusicU m = mFoldU (primD q) (foldr1 (/+/)) (foldr1 (/=/)) (curry snd) m
+        where
+            qinv = lcd m
+            q = 1 / fromIntegral qinv
+
+
+-- specializations for Music1
+
+fromMusicU :: MusicU1 -> MusicD1
+fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+    where MusicD q ctl m' = Parnassus.MusicU.fromMusicU m
+
 
 -- Time Signature --
 
@@ -61,12 +71,12 @@ getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
 
 -- Measure splitting --
 
-type TiedMusic a = Music (Tied a)
-type TiedMusicU a = MusicU (Tied a)
+-- type TiedMusic a = Music (Tied a)
+-- type TiedMusicU a = MusicU (Tied a)
 
 -- TODO: ties will be eliminated
-instance ToMusic1 (Tied Note1) where
-    toMusic1 = mMap fst
+-- instance ToMusic1 (Tied Note1) where
+--     toMusic1 = mMap fst
 
 -- given r and d, returns (r // d, r % d)
 rationalQuotRem :: Rational -> Rational -> (Int, Rational)
@@ -82,44 +92,44 @@ splitDur measureDur firstDur totalDur
     | otherwise       = [firstDur] ++ splitDur measureDur 0 (totalDur - firstDur)
 
 -- tie flags for a continuous note held across multiple measures (first False for onset, then True thereafter)
-tieFlags :: [Bool]
-tieFlags = [False] ++ repeat True
+-- tieFlags :: [Bool]
+-- tieFlags = [False] ++ repeat True
 
 -- splits MusicU by measure
-splitMeasuresU :: Eq a => Dur -> Dur -> MusicU a -> [TiedMusicU a]
-splitMeasuresU measureDur = split
-    where
-        glue :: [MusicU a] -> [MusicU a] -> [MusicU a]
-        glue ms1 ms2 = (init ms1) ++ [last ms1 /+/ head ms2] ++ (tail ms2)
-        split :: Eq a => Dur -> MusicU a -> [TiedMusicU a]
-        split firstDur Empty = []
-        split firstDur (PrimU (Note d p)) = [PrimU (Note r (p, flag)) | r <- splitDur measureDur firstDur d | flag <- tieFlags]
-        split firstDur (PrimU (Rest d)) = [PrimU (Rest r) | r <- splitDur measureDur firstDur d]
-        split firstDur (Seq []) = []
-        split firstDur (Seq [m]) = split firstDur m
-        split firstDur (Seq (m:ms)) = result
-            where
-                measHead = split firstDur m
-                remDur = if null measHead then firstDur else (measureDur - dur (last measHead))
-                measTail = split remDur (mSeq ms)
-                result
-                    | null measTail = measHead
-                    | otherwise = if (remDur == 0) then (measHead ++ measTail) else (glue measHead measTail)
-        split firstDur (Par ms) = mPar <$> mat
-            where
-                meas = (split firstDur) <$> ms
-                mat = transposeWithDefault (PrimU $ Rest measureDur) meas
-        split firstDur (ModifyU c m) = (ModifyU c) <$> (split firstDur m)
+-- splitMeasuresU :: Eq a => Dur -> Dur -> MusicU a -> [TiedMusicU a]
+-- splitMeasuresU measureDur = split
+--     where
+--         glue :: [MusicU a] -> [MusicU a] -> [MusicU a]
+--         glue ms1 ms2 = (init ms1) ++ [last ms1 /+/ head ms2] ++ (tail ms2)
+--         split :: Eq a => Dur -> MusicU a -> [TiedMusicU a]
+--         split firstDur Empty = []
+--         split firstDur (PrimU (Note d p)) = [PrimU (Note r (p, flag)) | r <- splitDur measureDur firstDur d | flag <- tieFlags]
+--         split firstDur (PrimU (Rest d)) = [PrimU (Rest r) | r <- splitDur measureDur firstDur d]
+--         split firstDur (Seq []) = []
+--         split firstDur (Seq [m]) = split firstDur m
+--         split firstDur (Seq (m:ms)) = result
+--             where
+--                 measHead = split firstDur m
+--                 remDur = if null measHead then firstDur else (measureDur - dur (last measHead))
+--                 measTail = split remDur (mSeq ms)
+--                 result
+--                     | null measTail = measHead
+--                     | otherwise = if (remDur == 0) then (measHead ++ measTail) else (glue measHead measTail)
+--         split firstDur (Par ms) = mPar <$> mat
+--             where
+--                 meas = (split firstDur) <$> ms
+--                 mat = transposeWithDefault (PrimU $ Rest measureDur) meas
+--         split firstDur (ModifyU c m) = (ModifyU c) <$> (split firstDur m)
 
 -- Changes the time signature of music, measure-wise
 -- Assumes music starts at the beginning of a measure
--- NB: LCM of denominators of time signatures determine the overall subdivision
+-- NB: LCD of time signatures determine the overall subdivision
 -- TODO: resolve ties so they don't rearticulate at beginning of measures
-changeTimeSig :: Eq a => MusicU a -> TimeSig -> TimeSig -> TiedMusicU a
-changeTimeSig m (n1, d1) (n2, d2) = mSeq meas'
-    where
-        r1 = (toInteger n1) % (toInteger d1)
-        r2 = (toInteger n2) % (toInteger d2)
-        q = toInteger $ lcm d1 d2
-        meas = splitMeasuresU r1 0 m
-        meas' = map ((quantizeU q) . (scaleDurations (r1 / r2))) meas
+-- changeTimeSig :: Eq a => MusicU a -> TimeSig -> TimeSig -> TiedMusicU a
+-- changeTimeSig m (n1, d1) (n2, d2) = mSeq meas'
+--     where
+--         r1 = (toInteger n1) % (toInteger d1)
+--         r2 = (toInteger n2) % (toInteger d2)
+--         q = toInteger $ lcm d1 d2
+--         meas = splitMeasuresU r1 0 m
+--         meas' = map ((quantizeU q) . (scaleDurations (r1 / r2))) meas

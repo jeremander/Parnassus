@@ -1,19 +1,37 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE StandaloneDeriving #-}
 
 module Parnassus.MusicBase where
 
 import Codec.Midi
 import Control.DeepSeq (NFData)
 import Data.Either (partitionEithers)
+import qualified Data.List (transpose)
 import Data.Ratio
 
-import Euterpea hiding (cut, dur, play, scaleDurations)
+import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, transpose)
 import qualified Euterpea
 import qualified Euterpea.IO.MIDI.FromMidi
 
+-- Types
+
+type Controls = [Control]
+
+deriving instance Ord NoteAttribute
 
 -- Utilities --
+
+-- pads a list to a certain length with a default value
+padListWithDefault :: Int -> a -> [a] -> [a]
+padListWithDefault n def xs = take n (xs ++ repeat def)
+
+-- transposes a list of lists of varying length, padding any short lists with a default value
+transposeWithDefault :: a -> [[a]] -> [[a]]
+transposeWithDefault def xss = Data.List.transpose mat
+    where
+        maxlen = maximum (length <$> xss)
+        mat = padListWithDefault maxlen def <$> xss
 
 argmax :: Ord a => [a] -> Int
 argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
@@ -48,6 +66,17 @@ quantizeRationals d rs = rs'
         ((_, finalDiffs), (_, _)) = head $ dropWhile dropCondition pairSeq
         rs' = zipWith (-) rs finalDiffs
 
+-- given a list of lists of elements, strips off the largest common prefix
+unDistribute :: Eq a => [[a]] -> ([a], [[a]])
+unDistribute [] = ([], [])
+unDistribute xs = (prefix, (drop prefixLength) <$> xs)
+    where
+        longestPrefix _ [] = []
+        longestPrefix [] _ = []
+        longestPrefix (x:xtail) (y:ytail) = if (x == y) then [x] ++ longestPrefix xtail ytail else []
+        prefix = foldr1 longestPrefix xs
+        prefixLength = length prefix
+
 -- functions for Music type
 
 unChord' :: Music a -> [Music a]
@@ -66,15 +95,29 @@ pad' d m
     | otherwise = m :+: (Prim $ Rest diff)
     where diff = d - dur m
 
-durLCD' :: Music a -> Integer
-durLCD' = mFold f lcm lcm (curry snd)
+lcd' :: Music a -> Integer
+lcd' = mFold f lcm lcm (curry snd)
     where
         f :: Primitive a -> Integer
         f (Rest d) = denominator d
         f (Note d _) = denominator d
 
-stripTempos' :: Music a -> Music a
-stripTempos' = mFold Prim (:+:) (:=:) g
+stripControls' :: Music a -> (Controls, Music a)
+stripControls' = mFold f (combine (:+:)) (combine (:=:)) g
+    where
+        f :: Primitive a -> (Controls, Music a)
+        f p = ([], Prim p)
+        g :: Control -> (Controls, Music a) -> (Controls, Music a)
+        g ctl (ctls, m) = ([ctl] ++ ctls, m)
+        combine :: (Music a -> Music a -> Music a) -> (Controls, Music a) -> (Controls, Music a) -> (Controls, Music a)
+        combine op (xctl, x) (yctl, y) = (prefix, op x' y')
+            where
+                (prefix, [xctl', yctl']) = unDistribute [xctl, yctl]
+                x' = (foldr (.) id (Modify <$> xctl')) x
+                y' = (foldr (.) id (Modify <$> yctl')) y
+
+removeTempos' :: Music a -> Music a
+removeTempos' = mFold Prim (:+:) (:=:) g
     where
         g :: Control -> Music a -> Music a
         g (Tempo d) m = m
@@ -88,47 +131,76 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
         g ctl m = Modify ctl m
 
 
+infixr 5 /+/, /=/
+
 -- Type class for basic music interface
 class MusicT m where
     -- converts to Euterpea's Music type
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
     fromMusic :: Music a -> m a
+    -- smart constructor out of a Primitive element
+    prim :: Primitive a -> m a
+    prim = fromMusic . Prim
+    -- combines a pair of musical elements in sequence
+    (/+/) :: m a -> m a -> m a
+    (/+/) m1 m2 = fromMusic $ (:+:) (toMusic m1) (toMusic m2)
+    -- combines a pair of musical elements in parallel
+    (/=/) :: m a -> m a -> m a
+    (/=/) m1 m2 = fromMusic $ (:=:) (toMusic m1) (toMusic m2)
+    -- repeats a section of music multiple times
+    (/*/) :: m a -> Int -> m a
+    (/*/) x n = foldr1 (/+/) (replicate n x)
     -- constructs from Midi
     fromMidi :: Codec.Midi.Midi -> m Note1
     fromMidi = fromMusic . Euterpea.IO.MIDI.FromMidi.fromMidi
     -- constructs from Midi file
     fromMidiFile :: FilePath -> IO (m Note1)
-    fromMidiFile path = Parnassus.MusicBase.fromMidi . head . snd . partitionEithers . return <$> importFile path
-    -- TODO: toMidi
+    fromMidiFile path = Parnassus.MusicBase.fromMidi . head . snd . partitionEithers . pure <$> importFile path
+    -- TODO: toMidi, toMidiFile
     -- conjugates an endomorphism on this type to an endomorphism on Music
     conj :: (m a -> m a) -> (Music a -> Music a)
     conj f = toMusic . f . fromMusic
     -- conjugates an endomorphism on Music to an endomorphism on this type
     unConj :: (Music a -> Music a) -> (m a -> m a)
     unConj f = fromMusic . f . toMusic
+    -- generalizes conj to functorial input types
+    conjF1 :: Functor g => (g (m a) -> m a) -> (g (Music a) -> Music a)
+    conjF1 f = toMusic . f . fmap fromMusic
+    -- generalizes unConj to functorial input types
+    unConjF1 :: Functor g => (g (Music a) -> Music a) -> (g (m a) -> m a)
+    unConjF1 f = fromMusic . f . fmap toMusic
     -- generalizes conj to functorial output types
-    conjF :: Functor g => (m a -> g (m a)) -> (Music a -> g (Music a))
-    conjF f = fmap toMusic . f . fromMusic
+    conjF2 :: Functor g => (m a -> g (m a)) -> (Music a -> g (Music a))
+    conjF2 f = fmap toMusic . f . fromMusic
     -- generalizes unConj to functorial output types
-    unConjF :: Functor g => (Music a -> g (Music a)) -> (m a -> g (m a))
-    unConjF f = fmap fromMusic . f . toMusic
-    -- splits Music into time-sequential segments
+    unConjF2 :: Functor g => (Music a -> g (Music a)) -> (m a -> g (m a))
+    unConjF2 f = fmap fromMusic . f . toMusic
+    -- chains together musical segments in sequence
+    line :: Eq a => [m a] -> m a
+    line = unConjF1 Euterpea.line
+    -- combines musical lines in parallel
+    chord :: Eq a => [m a] -> m a
+    chord = unConjF1 Euterpea.chord
+    -- splits music into time-sequential segments
     unLine :: Eq a => m a -> [m a]
-    unLine = unConjF unLine'
+    unLine = unConjF2 unLine'
     -- splits music into separate lines in parallel
     unChord :: Eq a => m a -> [m a]
-    unChord = unConjF unChord'
+    unChord = unConjF2 unChord'
     -- play the music (NB: Midi synthesizer like SimpleSynth must be active)
     play :: (NFData a, ToMusic1 a) => m a -> IO ()
     play = Euterpea.play . toMusic
     -- computes the duration of the music
     dur :: m a -> Dur
     dur = Euterpea.dur . toMusic
+    -- returns True if the music is empty (has duration 0)
+    isEmpty :: m a -> Bool
+    isEmpty x = (dur x == 0)
     -- computes the least common denominator of the time intervals occurring in the music, ignoring tempo modifiers
-    durLCD :: m a -> Integer
-    durLCD = durLCD' . toMusic
-    -- scales durations by a constant
+    lcd :: m a -> Integer
+    lcd = lcd' . toMusic
+    -- scales durations down by a constant
     scaleDurations :: Rational -> m a -> m a
     scaleDurations c = unConj $ Euterpea.scaleDurations c
     -- cuts music to at most the given duration
@@ -144,13 +216,15 @@ class MusicT m where
         | diff < 0  = cut d m
         | otherwise = m
         where diff = d - dur m
-    -- strips away all tempo modifiers
-    stripTempos :: m a -> m a
-    stripTempos = unConj stripTempos'
+    -- strips off outer level controls, returning the controls as a list, and the stripped music
+    stripControls :: m a -> (Controls, m a)
+    stripControls = unConjF2 stripControls'
+    -- eliminates all tempo modifiers
+    removeTempos :: m a -> m a
+    removeTempos = unConj removeTempos'
     -- applies tempo modifiers to note/rest durations, eliminating the modifiers
     distributeTempos :: m a -> m a
     distributeTempos = unConj distributeTempos'
-
 
 
 -- make Music a trivial instance of MusicT
