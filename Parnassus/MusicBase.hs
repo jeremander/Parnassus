@@ -1,4 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
+{-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
@@ -13,6 +16,7 @@ import Data.Ratio
 import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, transpose)
 import qualified Euterpea
 import qualified Euterpea.IO.MIDI.FromMidi
+import qualified Euterpea.IO.MIDI.ToMidi
 
 -- Types
 
@@ -21,6 +25,9 @@ type Controls = [Control]
 deriving instance Ord NoteAttribute
 
 -- Utilities --
+
+composeFuncs :: [(a -> a)] -> a -> a
+composeFuncs = foldr (.) id
 
 -- pads a list to a certain length with a default value
 padListWithDefault :: Int -> a -> [a] -> [a]
@@ -33,10 +40,8 @@ transposeWithDefault def xss = Data.List.transpose mat
         maxlen = maximum (length <$> xss)
         mat = padListWithDefault maxlen def <$> xss
 
-argmax :: Ord a => [a] -> Int
+argmax, argmin :: Ord a => [a] -> Int
 argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
-
-argmin :: Ord a => [a] -> Int
 argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]
 
 -- quantizes a rational r to the nearest rational with denominator d
@@ -134,7 +139,7 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
 infixr 5 /+/, /=/
 
 -- Type class for basic music interface
-class MusicT m where
+class MusicT m a where
     -- converts to Euterpea's Music type
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
@@ -151,13 +156,6 @@ class MusicT m where
     -- repeats a section of music multiple times
     (/*/) :: m a -> Int -> m a
     (/*/) x n = foldr1 (/+/) (replicate n x)
-    -- constructs from Midi
-    fromMidi :: Codec.Midi.Midi -> m Note1
-    fromMidi = fromMusic . Euterpea.IO.MIDI.FromMidi.fromMidi
-    -- constructs from Midi file
-    fromMidiFile :: FilePath -> IO (m Note1)
-    fromMidiFile path = Parnassus.MusicBase.fromMidi . head . snd . partitionEithers . pure <$> importFile path
-    -- TODO: toMidi, toMidiFile
     -- conjugates an endomorphism on this type to an endomorphism on Music
     conj :: (m a -> m a) -> (Music a -> Music a)
     conj f = toMusic . f . fromMusic
@@ -225,9 +223,25 @@ class MusicT m where
     -- applies tempo modifiers to note/rest durations, eliminating the modifiers
     distributeTempos :: m a -> m a
     distributeTempos = unConj distributeTempos'
+    -- transposes the music by some interval
+    transpose :: AbsPitch -> m a -> m a
+    transpose i = unConj $ Euterpea.transpose i
 
+class (MusicT m Note1) => ToMidi m where
+    -- constructs from Midi
+    fromMidi :: Codec.Midi.Midi -> m Note1
+    fromMidi = fromMusic . Euterpea.IO.MIDI.FromMidi.fromMidi
+    -- constructs from Midi file
+    fromMidiFile :: FilePath -> IO (m Note1)
+    fromMidiFile path = Parnassus.MusicBase.fromMidi . head . snd . partitionEithers . pure <$> importFile path
+    -- creates a Midi
+    toMidi :: m Note1 -> Codec.Midi.Midi
+    toMidi = Euterpea.IO.MIDI.ToMidi.toMidi . perform . toMusic
+    -- writes Midi to a file
+    toMidiFile :: m Note1 -> FilePath -> IO ()
+    toMidiFile m path = exportMidiFile path $ Parnassus.MusicBase.toMidi m
 
 -- make Music a trivial instance of MusicT
-instance MusicT Music where
+instance () => MusicT Music a where
     toMusic = id
     fromMusic = id

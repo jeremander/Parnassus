@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeSynonymInstances #-}
@@ -12,9 +13,9 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
 
-import Euterpea hiding (play)
-import Parnassus.MusicBase (MusicT (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (MusicD (..), MusicD1, primD, ToMusicD (..))
+import Euterpea hiding (chord, cut, dur, line, play, transpose)
+import Parnassus.MusicBase (ToMidi (..), MusicT (..), (/+/), (/=/), (/*/))
+import Parnassus.MusicD (MusicD (..), MusicD1, primD, Tied (..), ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
 
@@ -32,20 +33,33 @@ twinkle :: MusicU Pitch = fromMusic $ foldr1 (/+/) $ map ($ (1 % 4)) [c 4, c 4, 
 
 -- MusicT type conversions
 
-instance ToMusicU MusicD where
-    toMusicU = fromMusic . toMusic  -- efficient enough to go through Music
-    fromMusicU m = mFoldU (primD q) (foldr1 (/+/)) (foldr1 (/=/)) (curry snd) m
-        where
-            qinv = lcd m
-            q = 1 / fromIntegral qinv
+convUtoD :: (MusicD a -> MusicD a -> MusicD a) -> (MusicD a -> MusicD a -> MusicD a) -> MusicU a -> MusicD a
+convUtoD mseq mpar m = mFoldU (primD q) (foldr1 mseq) (foldr1 mpar) g m
+    where
+        qinv = lcd m
+        q = 1 / fromIntegral qinv
+        -- g :: Control -> MusicD a -> MusicD a
+        g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
 
+instance ToMusicU MusicD a where
+    toMusicU = fromMusic . toMusic
+    fromMusicU = convUtoD (/+/) (/=/)
 
--- specializations for Music1
+instance {-# OVERLAPPING #-} ToMusicU MusicD Note1 where
+    toMusicU = toMusicU
+    fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
 
-fromMusicU :: MusicU1 -> MusicD1
-fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
-    where MusicD q ctl m' = Parnassus.MusicU.fromMusicU m
+instance ToMusicD MusicU a where
+    toMusicD = convUtoD (/+/) (/=/)
+    fromMusicD = fromMusic . toMusic
 
+instance {-# OVERLAPPING #-} ToMusicD MusicU Note1 where
+    toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
+    fromMusicD = fromMusicD
+
+-- TODO: greater efficiency/laziness with MusicD (first deduping?) 
 
 -- Time Signature --
 

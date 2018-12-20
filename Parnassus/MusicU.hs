@@ -1,4 +1,6 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp #-}
 
 module Parnassus.MusicU where
@@ -56,7 +58,8 @@ mFoldU f seqFold parFold g m = case m of
     where
         rec = mFoldU f seqFold parFold g
 
-instance MusicT MusicU where
+
+instance {-# OVERLAPPABLE #-} MusicT MusicU a where
     fromMusic :: Music a -> MusicU a
     fromMusic = mFold prim (/+/) (/=/) ModifyU
     toMusic :: MusicU a -> Music a
@@ -160,6 +163,12 @@ instance MusicT MusicU where
             g :: Control -> MusicU a -> MusicU a
             g (Tempo t) m = scaleDurations t m
             g ctl m = ModifyU ctl m
+    -- transposes the music by some interval
+    transpose :: AbsPitch -> MusicU a -> MusicU a
+    transpose i = ModifyU (Transpose i)
+
+
+instance ToMidi MusicU
 
 -- quantizes a sequences of rationals to have denominator d, but attempts to prevent nonzero durations from being truncated to zero
 safeQuantizeSeq :: Integer -> [Dur] -> [Dur]
@@ -205,16 +214,16 @@ quantizeU d m = case m of
         rec = quantizeU d
 
 -- Type class for converting to/from MusicU
-class ToMusicU m where
+class ToMusicU m a where
     -- converts to MusicU
     toMusicU :: m a -> MusicU a
     -- converts from MusicU
     fromMusicU :: MusicU a -> m a
 
-instance ToMusicU MusicU where
+instance ToMusicU MusicU a where
     toMusicU = id
     fromMusicU = id
 
-instance ToMusicU Music where
+instance ToMusicU Music a where
     toMusicU = fromMusic
     fromMusicU = toMusic
