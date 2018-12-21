@@ -14,8 +14,8 @@ import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, transpose)
-import Parnassus.MusicBase (ToMidi (..), MusicT (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (MusicD (..), MusicD1, primD, Tied (..), ToMusicD (..))
+import Parnassus.MusicBase (ToMidi (..), ToMusic (..), MusicT (..), Quantizable (..), (/+/), (/=/), (/*/))
+import Parnassus.MusicD (MusicD (..), MusicD1, primD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
 
@@ -30,6 +30,8 @@ gradius :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "gradius_st
 bells :: MusicU1 = unsafePerformIO $ fromMidiFile $ xmasPath ++ "ringxms.mid"
 
 twinkle :: MusicU Pitch = fromMusic $ foldr1 (/+/) $ map ($ (1 % 4)) [c 4, c 4, g 4, g 4, a 4, a 4, g 4, Prim . Rest, f 4, f 4, e 4, e 4, d 4, d 4, c 4]
+twinkleBass :: MusicU Pitch = fromMusic $ foldr1 (/+/) $ [c 3 (1 % 2), e 2 (1 % 2), f 2 (1 % 4), a 2 (1 % 4), c 3 (1 % 4), Prim $ Rest (1 % 4), f 3 (1 % 2), c 3 (1 % 2), g 3 (1 % 4), g 2 (1 % 4), c 3 (1 % 4)]
+twinkle2 = twinkle /=/ twinkleBass
 
 -- MusicT type conversions
 
@@ -59,7 +61,6 @@ instance {-# OVERLAPPING #-} ToMusicD MusicU Note1 where
         where MusicD q ctl m' = convUtoD (/+/) (/=/) m
     fromMusicD = fromMusicD
 
--- TODO: greater efficiency/laziness with MusicD (first deduping?) 
 
 -- Time Signature --
 
@@ -72,6 +73,7 @@ getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
         getSig = \msg -> case msg of
                             TimeSignature num pow _ _ -> Just (num, (2 :: Int) ^ pow)
                             otherwise                 -> Nothing
+
 
 -- returns the LCD of the music durations, along with a counter of the denominators occurring
 -- countDurations :: MusicU a -> (Integer, Counter Integer Int)
@@ -93,21 +95,18 @@ getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
 --     toMusic1 = mMap fst
 
 -- given r and d, returns (r // d, r % d)
-rationalQuotRem :: Rational -> Rational -> (Int, Rational)
-rationalQuotRem r d = (q, r - d * fromIntegral q) where q = floor (r / d)
+-- rationalQuotRem :: Rational -> Rational -> (Int, Rational)
+-- rationalQuotRem r d = (q, r - d * fromIntegral q) where q = floor (r / d)
 
 -- given measure duration, initial duration, and total duration, splits the total duration into a list where the head is at most the initial duration, and each subsequent duration is at most the measure duration
-splitDur :: Rational -> Rational -> Rational -> [Rational]
-splitDur measureDur _ 0 = []
-splitDur measureDur 0 totalDur = replicate q measureDur ++ filter (>0) [rem]
-    where (q, rem) = rationalQuotRem totalDur measureDur
-splitDur measureDur firstDur totalDur
-    | (firstDur >= totalDur) = [totalDur]
-    | otherwise       = [firstDur] ++ splitDur measureDur 0 (totalDur - firstDur)
+-- splitDur :: Rational -> Rational -> Rational -> [Rational]
+-- splitDur measureDur _ 0 = []
+-- splitDur measureDur 0 totalDur = replicate q measureDur ++ filter (>0) [rem]
+--     where (q, rem) = rationalQuotRem totalDur measureDur
+-- splitDur measureDur firstDur totalDur
+--     | (firstDur >= totalDur) = [totalDur]
+--     | otherwise       = [firstDur] ++ splitDur measureDur 0 (totalDur - firstDur)
 
--- tie flags for a continuous note held across multiple measures (first False for onset, then True thereafter)
--- tieFlags :: [Bool]
--- tieFlags = [False] ++ repeat True
 
 -- splits MusicU by measure
 -- splitMeasuresU :: Eq a => Dur -> Dur -> MusicU a -> [TiedMusicU a]

@@ -9,6 +9,7 @@ import qualified Data.List (nub)
 import Data.Ratio
 
 import Euterpea hiding (chord, cut, dur, line, scaleDurations)
+import Parnassus.Utils
 import Parnassus.MusicBase
 
 
@@ -17,6 +18,10 @@ data MusicU a = Empty | PrimU (Primitive a) | SeqU [MusicU a] | ParU [MusicU a] 
     deriving (Show, Eq, Ord)
 
 type MusicU1 = MusicU Note1
+
+primU :: Primitive a -> MusicU a
+primU (Rest d)   = if (d <= 0) then Empty else (PrimU $ Rest d)
+primU (Note d p) = if (d <= 0) then Empty else (PrimU $ Note d p)
 
 -- strips away outer control, returning the control (if present) and the remaining MusicU
 stripControlU :: MusicU a -> (Maybe Control, MusicU a)
@@ -30,8 +35,8 @@ stripControlU m = (Nothing, m)
 -- removes empty elements of input lists
 -- un-distributes the same control applied to each element of an input list
 -- TODO: strip away controls in ordering-insensitive way
-mCombine :: Eq a => (MusicU a -> [MusicU a]) -> ([MusicU a] -> MusicU a) -> [MusicU a] -> MusicU a
-mCombine f con = combine
+combineU :: Eq a => (MusicU a -> [MusicU a]) -> ([MusicU a] -> MusicU a) -> [MusicU a] -> MusicU a
+combineU f con = combine
     where
         op :: Maybe Control -> Maybe Control -> Maybe Control
         op (Just ctl1) (Just ctl2) = if (ctl1 == ctl2) then (Just ctl1) else Nothing
@@ -58,15 +63,15 @@ mFoldU f seqFold parFold g m = case m of
     where
         rec = mFoldU f seqFold parFold g
 
-
-instance {-# OVERLAPPABLE #-} MusicT MusicU a where
+instance {-# OVERLAPPABLE #-} ToMusic MusicU a where
     fromMusic :: Music a -> MusicU a
-    fromMusic = mFold prim (/+/) (/=/) ModifyU
+    fromMusic = mFold primU (/+/) (/=/) ModifyU
     toMusic :: MusicU a -> Music a
     toMusic = mFoldU Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
+
+instance MusicT MusicU a where
     prim :: Primitive a -> MusicU a
-    prim (Rest d)   = if (d <= 0) then Empty else (PrimU $ Rest d)
-    prim (Note d p) = if (d <= 0) then Empty else (PrimU $ Note d p)
+    prim = primU
     (/+/) :: MusicU a -> MusicU a -> MusicU a
     (/+/) m1 Empty = m1
     (/+/) Empty m2 = m2
@@ -87,11 +92,11 @@ instance {-# OVERLAPPABLE #-} MusicT MusicU a where
                 otherwise -> [m]
     line :: Eq a => [MusicU a] -> MusicU a
     line ms = combine $ filter (not . isEmpty) $ concatMap unLine ms
-        where combine = mCombine unLine SeqU
+        where combine = combineU unLine SeqU
     -- TODO: remove rests shorter than duration
     chord :: Eq a => [MusicU a] -> MusicU a
     chord ms = combine $ Data.List.nub $ filter (not . isEmpty) $ concatMap unChord ms
-        where combine = mCombine unChord ParU
+        where combine = combineU unChord ParU
     unLine :: Eq a => MusicU a -> [MusicU a]
     unLine (SeqU ms) = ms
     unLine (ModifyU ctl m) = (ModifyU ctl) <$> (unLine m)
@@ -167,57 +172,37 @@ instance {-# OVERLAPPABLE #-} MusicT MusicU a where
     transpose :: AbsPitch -> MusicU a -> MusicU a
     transpose i = ModifyU (Transpose i)
 
-
 instance ToMidi MusicU
 
--- quantizes a sequences of rationals to have denominator d, but attempts to prevent nonzero durations from being truncated to zero
-safeQuantizeSeq :: Integer -> [Dur] -> [Dur]
-safeQuantizeSeq d rs = newDurs
-    where
-        -- algorithm that, given a list of integers, attempts to add one to any zeros, with the caveat that they must be subtracted from the largest values
-        fixVals :: [Int] -> [Int]
-        fixVals xs = fixVals' deficit xs
-            where
-                deficit = sum $ map fromEnum [x <= 0 | x <- xs]
-                fixVals' 0 ys = ys
-                fixVals' d ys = if (maximum ys <= 1)
-                    then ys -- can't change anything
-                    else fixVals' (d - 1) [y + f j | (j, y) <- zip [0..] ys]
-                            where
-                                imin = argmin ys
-                                imax = argmax ys
-                                f = \j -> if (j == imin) then 1 else if (j == imax) then -1 else 0
-        q = 1 % d
-        cumDurs = scanl (+) 0 rs
-        qCumDurs = map (quantize d) cumDurs
-        qDurs = map (uncurry (-)) (zip (tail qCumDurs) qCumDurs)
-        qNumerators = map (floor . (* fromIntegral d)) qDurs
-        newDurs = map ((* q) . fromIntegral) (fixVals qNumerators)
-        -- TODO: distinguish ACTUAL zeros from rounded zeroes
+-- Quantizable Instance --
 
--- quantizes MusicU so that all durations are multiples of (1 / d)
-quantizeU :: Eq a => Integer -> MusicU a -> MusicU a
-quantizeU d m = case m of
+quantizeU :: Eq a => Rational -> MusicU a -> MusicU a
+quantizeU q m = case m of
     Empty        -> Empty
     PrimU p      -> prim p
     SeqU ms      -> line [fit qd m' | qd <- qDurs | m' <- ms']
         where
             ms' = map rec ms
-            -- qDurs = safeQuantizeSeq d (dur <$> ms')
-            qDurs = quantizeRationals d (dur <$> ms')
+            qDurs = quantizeRationals q (dur <$> ms')
     ParU ms      -> chord $ map rec ms
     ModifyU c m' -> ModifyU c (rec m')
     where
-        quantize' = quantize d
-        minQuant = 1 % d
-        safeQuantize = \r -> if (r == 0) then 0 else max (quantize' r) minQuant
-        rec = quantizeU d
+        quantize' = quantizeRational q
+        safeQuantize = \r -> if (r == 0) then 0 else max (quantize' r) q
+        rec = quantizeU q
 
--- Type class for converting to/from MusicU
+instance (Eq a) => Quantizable MusicU a where
+    quantize :: Rational -> MusicU a -> MusicU a
+    quantize = quantizeU
+
+instance (Eq a) => Quantizable Music a where
+    quantize :: Rational -> Music a -> Music a
+    quantize q = conj $ (quantizeU q)
+
+-- MusicU conversion --
+
 class ToMusicU m a where
-    -- converts to MusicU
     toMusicU :: m a -> MusicU a
-    -- converts from MusicU
     fromMusicU :: MusicU a -> m a
 
 instance ToMusicU MusicU a where

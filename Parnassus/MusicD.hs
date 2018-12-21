@@ -8,12 +8,12 @@ import Data.Foldable (foldl')
 import Data.Function (on)
 import qualified Data.List (nub, partition, sort, sortBy, transpose)
 import Data.Ratio
+import Data.Sort (sortOn)
 
 import Euterpea
-import Parnassus.MusicBase hiding (pad')
+import Parnassus.Utils
+import Parnassus.MusicBase 
 
-data Tied a = Untied (Controls, Primitive a) | TiedNote Dur a
-    deriving (Eq, Ord, Show)
 
 type ArrD a = [[Tied a]]
 
@@ -22,6 +22,22 @@ type ArrD a = [[Tied a]]
 -- can support a list of global controls to be applied to the whole music
 data MusicD a = MusicD Dur Controls (ArrD a)
     deriving (Eq, Ord, Show)
+
+-- gets the quantization level of MusicD
+quantumD :: MusicD a -> Dur
+quantumD (MusicD q _ _) = q
+
+-- gets the controls of MusicD
+controlD :: MusicD a -> Controls
+controlD (MusicD _ ctl _) = ctl
+
+-- gets the note array of MusicD
+arrD :: MusicD a -> ArrD a
+arrD (MusicD _ _ arr) = arr
+
+-- gets the shape of the (padded) chord array of MusicD
+shapeD :: MusicD a -> (Int, Int)
+shapeD (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
 
 type MusicD1 = MusicD Note1
 
@@ -86,16 +102,8 @@ parD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
         m1' = distributeControls ctl1' m1
         m2' = distributeControls ctl2' m2
 
--- gets the note array from MusicD
-arrD :: MusicD a -> ArrD a
-arrD (MusicD _ _ arr) = arr
 
--- gets the shape of the (padded) chord array of MusicD
-shapeD :: MusicD a -> (Int, Int)
-shapeD (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
-
-
-instance {-# OVERLAPPABLE #-} MusicT MusicD a where
+instance {-# OVERLAPPABLE #-} ToMusic MusicD a where
     -- in absence of pitch information, just zip together the notes top-to-bottom, padding with rests as needed
     toMusic :: MusicD a -> Music a
     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
@@ -109,10 +117,13 @@ instance {-# OVERLAPPABLE #-} MusicT MusicD a where
     fromMusic :: Music a -> MusicD a
     fromMusic m = mFold (primD q) (/+/) (/=/) g m
         where
-            qinv = lcd m
+            qinv = lcd' m
             q = 1 / fromIntegral qinv
             g :: Control -> MusicD a -> MusicD a
             g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
+
+
+instance MusicT MusicD a where
     prim :: Primitive a -> MusicD a
     prim p = primD q p
         where q = case p of
@@ -161,7 +172,30 @@ instance {-# OVERLAPPABLE #-} MusicT MusicD a where
 
 instance ToMidi MusicD
 
--- Type class for converting to/from MusicU
+-- subdivides MusicD by some factor n
+refineD :: Int -> MusicD a -> MusicD a
+refineD n (MusicD q ctl arr) = MusicD (q `divInt` n) ctl arr'
+    where
+        chopNote :: Tied a -> [Tied a]
+        chopNote (Untied (ctl, Note d x)) = [Untied (ctl, Note (d `divInt` n) x)] ++ replicate (n - 1) (TiedNote (d `divInt` n) x)
+        chopNote (Untied (ctl, Rest d))   = [Untied (ctl, Rest (d `divInt` n))] ++ replicate (n - 1) (Untied (ctl, Rest (d `divInt` n)))
+        chopNote (TiedNote d x)           = replicate n (TiedNote (d `divInt` n) x)
+        chopChord :: [Tied a] -> [[Tied a]]
+        chopChord = Data.List.transpose . map chopNote
+        arr' = concatMap chopChord arr  -- chop each chord, then concatenate together in sequence
+
+instance (Eq a) => Quantizable MusicD a where
+    quantize :: Rational -> MusicD a -> MusicD a
+    quantize q m@(MusicD q' ctl arr)
+        | q <= 0 = error errMsg
+        | q `divides` q' = refineD n1 m
+        | otherwise = error errMsg
+        where
+            errMsg = "invalid quantization: (" ++ (show q') ++ ") to (" ++ (show q) ++ ")"
+            n1 = truncate (q' / q)
+
+-- MusicD conversion --
+
 class ToMusicD m a where
     -- converts to MusicD
     toMusicD :: m a -> MusicD a
@@ -173,8 +207,8 @@ instance ToMusicD MusicD a where
     fromMusicD = id
 
 instance ToMusicD Music a where
-    toMusicD = Parnassus.MusicBase.fromMusic
-    fromMusicD = Parnassus.MusicBase.toMusic
+    toMusicD = fromMusic
+    fromMusicD = toMusic
 
 -- override toMusic for MusicD1 to optimally match notes in sequential chords
 
@@ -194,7 +228,7 @@ greedyMatching f xs ys
         itemSeq = [([(s, (i, x), (j, y))], filter (pred i j) items)] ++ [((s', (i', x'), (j', y')) : chosen, filter (pred i' j') remaining) | (chosen, (s', (i', x'), (j', y')) : remaining) <- itemSeq]
         sortKey (_, (i, _), (_, _)) = -i
         select (_, (_, x), (_, y)) = (x, y)
-        chosen = ((map select . Data.List.sortBy (compare `on` sortKey) . fst) <$> itemSeq) !! (n1 - 1)
+        chosen = ((map select . sortOn sortKey . fst) <$> itemSeq) !! (n1 - 1)
 
 -- given a list of equal-sized sublists, reorders the sublists so that each adjacent sublist matches greedily according to the distance function; transposes at the end so each sublist is now a sequence of matched elements spanning all the original sublists
 greedyMatchSeq :: (Ord a, Ord s) => (a -> a -> s) -> [[a]] -> [[a]]
@@ -209,10 +243,11 @@ greedyMatchSeq f xss = sortedSeqs
                 xtail' = reorder f (x1':xtail)  -- recursively reorder
         xss' = reorder f xss
         -- sort by first element of each sublist
-        sortedSeqs = Data.List.sortBy (compare `on` head) (Data.List.transpose xss')
+        sortedSeqs = sortOn head (Data.List.transpose xss')
 
 -- note distance is a pair, to allow for priority tiering as well as pitch distance
 type NoteDistance = (Int, Int)
+
 tiedNoteDistance :: Tied Note1 -> Tied Note1 -> NoteDistance
 tiedNoteDistance n1 n2 = case (n1, n2) of
     ((Untied (_, Rest _)), (Untied (_, Rest _)))   -> (2, 0)
@@ -225,12 +260,11 @@ tiedNoteDistance n1 n2 = case (n1, n2) of
     ((TiedNote _ (p1, _)), (Untied (_, Note _ (p2, _)))) -> (1, abs (absPitch p1 - absPitch p2))
     ((TiedNote _ (p1, _)), (TiedNote _ (p2, _)))         -> if (p1 == p2) then (0, 0) else (maxBound, maxBound)
 
-instance {-# OVERLAPPING #-} MusicT MusicD Note1 where
+instance {-# OVERLAPPING #-} ToMusic MusicD Note1 where
     toMusic :: MusicD Note1 -> Music Note1
     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
         where
             ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
-            -- m' = transposeWithDefault (Untied ([], Rest q)) m  -- pad chords so they are all the same size, then transpose into lines
             maxlen = maximum (length <$> m)
             m' = padListWithDefault maxlen (Untied ([], Rest q)) <$> m
             lines = resolveTies <$> greedyMatchSeq tiedNoteDistance m'  -- simplify the lines by agglomerating rests & tied notes
@@ -240,7 +274,3 @@ instance {-# OVERLAPPING #-} MusicT MusicD Note1 where
     fromMusic m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
         where
             MusicD q ctl m' = Parnassus.MusicBase.fromMusic m
-    (/+/) :: MusicD Note1 -> MusicD Note1 -> MusicD Note1
-    (/+/) = seqD
-    (/=/) :: MusicD Note1 -> MusicD Note1 -> MusicD Note1
-    (/=/) = parD
