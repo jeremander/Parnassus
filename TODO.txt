@@ -1,5 +1,6 @@
 TODO
 ----
+- NB: play causes superclass's toMusic to be called!
 - debug: play $ toMusicD $ removeTempos mm3
 - map function for MusicD to manipulate all the leaf notes.
 - arbitrary requantization of MusicD (use groupWith to requantize time intervals)

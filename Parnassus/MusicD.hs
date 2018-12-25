@@ -274,3 +274,6 @@ instance {-# OVERLAPPING #-} ToMusic MusicD Note1 where
     fromMusic m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
         where
             MusicD q ctl m' = Parnassus.MusicBase.fromMusic m
+
+-- required to instantiate variations of toMusic/fromMuisc for MusicT functions
+instance {-# OVERLAPPING #-} MusicT MusicD Note1

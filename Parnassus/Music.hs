@@ -15,7 +15,7 @@ import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, transpose)
 import Parnassus.MusicBase (ToMidi (..), ToMusic (..), MusicT (..), Quantizable (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (MusicD (..), MusicD1, primD, ToMusicD (..))
+import Parnassus.MusicD (MusicD (..), MusicD1, parD, primD, seqD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
 
@@ -45,20 +45,21 @@ convUtoD mseq mpar m = mFoldU (primD q) (foldr1 mseq) (foldr1 mpar) g m
 
 instance ToMusicU MusicD a where
     toMusicU = fromMusic . toMusic
-    fromMusicU = convUtoD (/+/) (/=/)
+    fromMusicU = convUtoD seqD parD
 
-instance {-# OVERLAPPING #-} ToMusicU MusicD Note1 where
-    toMusicU = toMusicU
-    fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
-        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
+-- instance {-# OVERLAPPING #-} ToMusicU MusicD Note1 where
+--     toMusicU = toMusicU
+--     fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+--         where MusicD q ctl m' = convUtoD seqD parD m
 
 instance ToMusicD MusicU a where
-    toMusicD = convUtoD (/+/) (/=/)
+    toMusicD = convUtoD seqD parD
     fromMusicD = fromMusic . toMusic
 
 instance {-# OVERLAPPING #-} ToMusicD MusicU Note1 where
-    toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
-        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
+    toMusicD = convUtoD seqD parD
+    --toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+    --    where MusicD q ctl m' = convUtoD seqD parD m
     fromMusicD = fromMusicD
 
 
