@@ -14,8 +14,8 @@ import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, transpose)
-import Parnassus.MusicBase (ToMidi (..), ToMusic (..), MusicT (..), Quantizable (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (MusicD (..), MusicD1, parD, primD, seqD, ToMusicD (..))
+import Parnassus.MusicBase (ToMidi (..), MusicT (..), Quantizable (..), (/+/), (/=/), (/*/))
+import Parnassus.MusicD (MusicD (..), MusicD1, primD', ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
 
@@ -36,7 +36,7 @@ twinkle2 = twinkle /=/ twinkleBass
 -- MusicT type conversions
 
 convUtoD :: (MusicD a -> MusicD a -> MusicD a) -> (MusicD a -> MusicD a -> MusicD a) -> MusicU a -> MusicD a
-convUtoD mseq mpar m = mFoldU (primD q) (foldr1 mseq) (foldr1 mpar) g m
+convUtoD mseq mpar m = mFoldU (primD' q) (foldr1 mseq) (foldr1 mpar) g m
     where
         qinv = lcd m
         q = 1 / fromIntegral qinv
@@ -45,22 +45,21 @@ convUtoD mseq mpar m = mFoldU (primD q) (foldr1 mseq) (foldr1 mpar) g m
 
 instance ToMusicU MusicD a where
     toMusicU = fromMusic . toMusic
-    fromMusicU = convUtoD seqD parD
+    fromMusicU = convUtoD (/+/) (/=/)
 
--- instance {-# OVERLAPPING #-} ToMusicU MusicD Note1 where
---     toMusicU = toMusicU
---     fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
---         where MusicD q ctl m' = convUtoD seqD parD m
+instance {-# OVERLAPPING #-} ToMusicU MusicD Note1 where
+    toMusicU = fromMusic . toMusic
+    fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
 
 instance ToMusicD MusicU a where
-    toMusicD = convUtoD seqD parD
+    toMusicD = convUtoD (/+/) (/=/)
     fromMusicD = fromMusic . toMusic
 
 instance {-# OVERLAPPING #-} ToMusicD MusicU Note1 where
-    toMusicD = convUtoD seqD parD
-    --toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
-    --    where MusicD q ctl m' = convUtoD seqD parD m
-    fromMusicD = fromMusicD
+    toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
+    fromMusicD = fromMusic . toMusic
 
 
 -- Time Signature --

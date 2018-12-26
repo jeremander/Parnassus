@@ -42,8 +42,8 @@ shapeD (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
 type MusicD1 = MusicD Note1
 
 -- creates MusicD from a Primitive element with the given subdivision q
-primD :: Dur -> Primitive a -> MusicD a
-primD q p = MusicD q [] m
+primD' :: Dur -> Primitive a -> MusicD a
+primD' q p = MusicD q [] m
     where m = case p of
             Rest d   -> replicate (floor $ d / q) [Untied ([], Rest q)]
             Note d p -> if (d < q)
@@ -81,7 +81,9 @@ distributeControls ctls = map (map f)
         f (Untied (ctls', p)) = Untied (ctls ++ ctls', p)
         f t                   = t
 
--- combine two MusicD in sequence
+primD :: Primitive a -> MusicD a
+primD p = primD' (durP p) p
+
 seqD :: MusicD a -> MusicD a -> MusicD a
 seqD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
     | q1 == q2  = MusicD q1 prefix (m1' ++ m2')
@@ -91,7 +93,6 @@ seqD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
         m1' = distributeControls ctl1' m1
         m2' = distributeControls ctl2' m2
 
--- combine two MusicD in parallel
 parD :: MusicD a -> MusicD a -> MusicD a
 parD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
     | q1 == q2  = let d = q1 * fromIntegral (max (length m1) (length m2))
@@ -102,8 +103,56 @@ parD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
         m1' = distributeControls ctl1' m1
         m2' = distributeControls ctl2' m2
 
+lineD :: Eq a => [MusicD a] -> MusicD a
+lineD = foldr1 seqD
 
-instance {-# OVERLAPPABLE #-} ToMusic MusicD a where
+chordD :: Eq a => [MusicD a] -> MusicD a
+chordD ms = MusicD q ctl (Data.List.nub <$> ms')
+    where
+        (MusicD q ctl ms') = foldr1 parD ms
+
+unLineD :: Eq a => MusicD a -> [MusicD a]
+unLineD (MusicD q ctl m) = [MusicD q ctl [seg] | seg <- m]
+
+unChordD :: Eq a => MusicD a -> [MusicD a]
+unChordD (MusicD q ctl m) = [MusicD q ctl (pure <$> ln) | ln <- lines]
+    where
+        lines = transposeWithDefault (Untied ([], Rest q)) m
+
+durD :: MusicD a -> Dur
+durD (MusicD q _ m) = q * (fromIntegral $ length m)
+
+lcdD :: MusicD a -> Integer
+lcdD (MusicD q _ _) = denominator q
+
+scaleDurationsD :: Rational -> MusicD a -> MusicD a
+scaleDurationsD c (MusicD q ctl m) = MusicD (q / c) ctl m
+
+cutD :: Eq a => Dur -> MusicD a -> MusicD a
+cutD d (MusicD q ctl m) = MusicD q ctl (take (floor (d / q)) m)
+
+padD :: Dur -> MusicD a -> MusicD a
+padD d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
+
+stripControlsD :: MusicD a -> (Controls, MusicD a)
+stripControlsD (MusicD q ctl m) = (ctl, MusicD q [] m)
+
+removeTemposD :: MusicD a -> MusicD a
+removeTemposD (MusicD q ctl m) = MusicD q (filter (not . isTempo) ctl) m
+
+distributeTemposD :: MusicD a -> MusicD a
+distributeTemposD (MusicD q ctl m) = MusicD (q / scale) ctl' m
+    where
+        (tempos, ctl') = Data.List.partition isTempo ctl
+        getTempo :: Control -> Rational
+        getTempo (Tempo t) = t
+        getTempo _         = 1
+        scale = foldr (*) 1 (getTempo <$> tempos)
+
+transposeD :: AbsPitch -> MusicD a -> MusicD a
+transposeD i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
+
+instance {-# OVERLAPPABLE #-} MusicT MusicD a where
     -- in absence of pitch information, just zip together the notes top-to-bottom, padding with rests as needed
     toMusic :: MusicD a -> Music a
     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
@@ -115,60 +164,44 @@ instance {-# OVERLAPPABLE #-} ToMusic MusicD a where
             lines' = [Euterpea.line $ f <$> ln | ln <- lines]
     -- TODO: use smallest subdivision, which may in fact be bigger than 1 / LCD
     fromMusic :: Music a -> MusicD a
-    fromMusic m = mFold (primD q) (/+/) (/=/) g m
+    fromMusic m = mFold (primD' q) (/+/) (/=/) g m
         where
             qinv = lcd' m
             q = 1 / fromIntegral qinv
             g :: Control -> MusicD a -> MusicD a
             g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
-
-
-instance MusicT MusicD a where
     prim :: Primitive a -> MusicD a
-    prim p = primD q p
-        where q = case p of
-                    Rest d   -> d
-                    Note d _ -> d
+    prim = primD
     (/+/) :: MusicD a -> MusicD a -> MusicD a
     (/+/) = seqD
     (/=/) :: MusicD a -> MusicD a -> MusicD a
     (/=/) = parD
     line :: Eq a => [MusicD a] -> MusicD a
-    line = foldr1 (/+/)
+    line = lineD
     chord :: Eq a => [MusicD a] -> MusicD a
-    chord ms = MusicD q ctl (Data.List.nub <$> ms')
-        where
-            (MusicD q ctl ms') = foldr1 (/=/) ms
+    chord = chordD
     unLine :: Eq a => MusicD a -> [MusicD a]
-    unLine (MusicD q ctl m) = [MusicD q ctl [seg] | seg <- m]
+    unLine = unLineD
     unChord :: Eq a => MusicD a -> [MusicD a]
-    unChord (MusicD q ctl m) = [MusicD q ctl (pure <$> ln) | ln <- lines]
-        where
-            lines = transposeWithDefault (Untied ([], Rest q)) m
+    unChord = unChordD
     dur :: MusicD a -> Dur
-    dur (MusicD q _ m) = q * (fromIntegral $ length m)
+    dur = durD
     lcd :: MusicD a -> Integer
-    lcd (MusicD q _ _) = denominator q
+    lcd = lcdD
     scaleDurations :: Rational -> MusicD a -> MusicD a
-    scaleDurations c (MusicD q ctl m) = MusicD (q / c) ctl m
+    scaleDurations = scaleDurationsD
     cut :: Eq a => Dur -> MusicD a -> MusicD a
-    cut d (MusicD q ctl m) = MusicD q ctl (take (floor (d / q)) m)
+    cut = cutD
     pad :: Dur -> MusicD a -> MusicD a
-    pad d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
+    pad = padD
     stripControls :: MusicD a -> (Controls, MusicD a)
-    stripControls (MusicD q ctl m) = (ctl, MusicD q [] m)
+    stripControls = stripControlsD
     removeTempos :: MusicD a -> MusicD a
-    removeTempos (MusicD q ctl m) = MusicD q (filter (not . isTempo) ctl) m
+    removeTempos = removeTemposD
     distributeTempos :: MusicD a -> MusicD a
-    distributeTempos (MusicD q ctl m) = MusicD (q / scale) ctl' m
-        where
-            (tempos, ctl') = Data.List.partition isTempo ctl
-            getTempo :: Control -> Rational
-            getTempo (Tempo t) = t
-            getTempo _         = 1
-            scale = foldr (*) 1 (getTempo <$> tempos)
+    distributeTempos = distributeTemposD
     transpose :: AbsPitch -> MusicD a -> MusicD a
-    transpose i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
+    transpose = transposeD
 
 instance ToMidi MusicD
 
@@ -210,7 +243,7 @@ instance ToMusicD Music a where
     toMusicD = fromMusic
     fromMusicD = toMusic
 
--- override toMusic for MusicD1 to optimally match notes in sequential chords
+-- override MusicT for MusicD1 to optimally match notes in sequential chords
 
 -- given a distance function f and two equal-sized lists, returns a matching (list of pairs) that greedily minimize f
 -- preserves the order of the first list
@@ -260,7 +293,7 @@ tiedNoteDistance n1 n2 = case (n1, n2) of
     ((TiedNote _ (p1, _)), (Untied (_, Note _ (p2, _)))) -> (1, abs (absPitch p1 - absPitch p2))
     ((TiedNote _ (p1, _)), (TiedNote _ (p2, _)))         -> if (p1 == p2) then (0, 0) else (maxBound, maxBound)
 
-instance {-# OVERLAPPING #-} ToMusic MusicD Note1 where
+instance {-# OVERLAPPING #-} MusicT MusicD Note1 where
     toMusic :: MusicD Note1 -> Music Note1
     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
         where
@@ -274,6 +307,35 @@ instance {-# OVERLAPPING #-} ToMusic MusicD Note1 where
     fromMusic m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
         where
             MusicD q ctl m' = Parnassus.MusicBase.fromMusic m
-
--- required to instantiate variations of toMusic/fromMuisc for MusicT functions
-instance {-# OVERLAPPING #-} MusicT MusicD Note1
+    prim :: Primitive a -> MusicD a
+    prim = primD
+    (/+/) :: MusicD a -> MusicD a -> MusicD a
+    (/+/) = seqD
+    (/=/) :: MusicD a -> MusicD a -> MusicD a
+    (/=/) = parD
+    line :: Eq a => [MusicD a] -> MusicD a
+    line = lineD
+    chord :: Eq a => [MusicD a] -> MusicD a
+    chord = chordD
+    unLine :: Eq a => MusicD a -> [MusicD a]
+    unLine = unLineD
+    unChord :: Eq a => MusicD a -> [MusicD a]
+    unChord = unChordD
+    dur :: MusicD a -> Dur
+    dur = durD
+    lcd :: MusicD a -> Integer
+    lcd = lcdD
+    scaleDurations :: Rational -> MusicD a -> MusicD a
+    scaleDurations = scaleDurationsD
+    cut :: Eq a => Dur -> MusicD a -> MusicD a
+    cut = cutD
+    pad :: Dur -> MusicD a -> MusicD a
+    pad = padD
+    stripControls :: MusicD a -> (Controls, MusicD a)
+    stripControls = stripControlsD
+    removeTempos :: MusicD a -> MusicD a
+    removeTempos = removeTemposD
+    distributeTempos :: MusicD a -> MusicD a
+    distributeTempos = distributeTemposD
+    transpose :: AbsPitch -> MusicD a -> MusicD a
+    transpose = transposeD

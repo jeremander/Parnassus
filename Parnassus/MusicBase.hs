@@ -28,6 +28,12 @@ deriving instance Ord NoteAttribute
 
 -- functions for Music type
 
+-- duration of a Primitive
+durP :: Primitive a -> Dur
+durP p = case p of
+    Rest d   -> d
+    Note d _ -> d
+
 unChord' :: Music a -> [Music a]
 unChord' (x :=: y) = unChord' x ++ unChord' y
 unChord' (Modify ctl x) = map (Modify ctl) (unChord' x)
@@ -45,11 +51,7 @@ pad' d m
     where diff = d - Euterpea.dur m
 
 lcd' :: Music a -> Integer
-lcd' = mFold f lcm lcm (curry snd)
-    where
-        f :: Primitive a -> Integer
-        f (Rest d) = denominator d
-        f (Note d _) = denominator d
+lcd' = mFold (denominator . durP) lcm lcm (curry snd)
 
 stripControls' :: Music a -> (Controls, Music a)
 stripControls' = mFold f (combine (:+:)) (combine (:=:)) g
@@ -79,7 +81,10 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
         g (Tempo t) m = Euterpea.scaleDurations t m
         g ctl m = Modify ctl m
 
-class ToMusic m a where
+infixr 5 /+/, /=/
+
+-- Type class for basic music interface
+class MusicT m a where
     -- converts to Euterpea's Music type
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
@@ -105,53 +110,48 @@ class ToMusic m a where
     -- play the music (NB: Midi synthesizer like SimpleSynth must be active)
     play :: (NFData a, ToMusic1 a) => m a -> IO ()
     play = Euterpea.play . toMusic
-
-infixr 5 /+/, /=/
-
--- Type class for basic music interface
-class MusicT m a where
     -- smart constructor out of a Primitive element
     prim :: Primitive a -> m a
-    -- prim = fromMusic . Prim
+    prim = fromMusic . Prim
     -- combines a pair of musical elements in sequence
     (/+/) :: m a -> m a -> m a
-    -- (/+/) m1 m2 = fromMusic $ (:+:) (toMusic m1) (toMusic m2)
+    (/+/) m1 m2 = fromMusic $ (:+:) (toMusic m1) (toMusic m2)
     -- combines a pair of musical elements in parallel
     (/=/) :: m a -> m a -> m a
-    -- (/=/) m1 m2 = fromMusic $ (:=:) (toMusic m1) (toMusic m2)
+    (/=/) m1 m2 = fromMusic $ (:=:) (toMusic m1) (toMusic m2)
     -- repeats a section of music multiple times
     (/*/) :: m a -> Int -> m a
     (/*/) x n = foldr1 (/+/) (replicate n x)
     -- chains together musical segments in sequence
     line :: Eq a => [m a] -> m a
-    -- line = unConjF1 Euterpea.line
+    line = unConjF1 Euterpea.line
     -- combines musical lines in parallel
     chord :: Eq a => [m a] -> m a
-    -- chord = unConjF1 Euterpea.chord
+    chord = unConjF1 Euterpea.chord
     -- splits music into time-sequential segments
     unLine :: Eq a => m a -> [m a]
-    -- unLine = unConjF2 unLine'
+    unLine = unConjF2 unLine'
     -- splits music into separate lines in parallel
     unChord :: Eq a => m a -> [m a]
-    -- unChord = unConjF2 unChord'
+    unChord = unConjF2 unChord'
     -- computes the duration of the music
     dur :: m a -> Dur
-    -- dur = Euterpea.dur . toMusic
+    dur = Euterpea.dur . toMusic
     -- returns True if the music is empty (has duration 0)
     isEmpty :: m a -> Bool
     isEmpty x = (dur x == 0)
     -- computes the least common denominator of the time intervals occurring in the music, ignoring tempo modifiers
     lcd :: m a -> Integer
-    -- lcd = lcd' . toMusic
+    lcd = lcd' . toMusic
     -- scales durations down by a constant
     scaleDurations :: Rational -> m a -> m a
-    -- scaleDurations c = unConj $ Euterpea.scaleDurations c
+    scaleDurations c = unConj $ Euterpea.scaleDurations c
     -- cuts music to at most the given duration
     cut :: Eq a => Dur -> m a -> m a
-    -- cut d = unConj $ Euterpea.cut d
+    cut d = unConj $ Euterpea.cut d
     -- pads music to at least the given duration
     pad :: Eq a => Dur -> m a -> m a
-    -- pad d = unConj $ pad' d
+    pad d = unConj $ pad' d
     -- fits music to equal the given duration, either by padding or by cutting
     fit :: Eq a => Dur -> m a -> m a
     fit d m
@@ -161,39 +161,19 @@ class MusicT m a where
         where diff = d - dur m
     -- strips off outer level controls, returning the controls as a list, and the stripped music
     stripControls :: m a -> (Controls, m a)
-    -- stripControls = unConjF2 stripControls'
+    stripControls = unConjF2 stripControls'
     -- eliminates all tempo modifiers
     removeTempos :: m a -> m a
-    -- removeTempos = unConj removeTempos'
+    removeTempos = unConj removeTempos'
     -- applies tempo modifiers to note/rest durations, eliminating the modifiers
     distributeTempos :: m a -> m a
-    -- distributeTempos = unConj distributeTempos'
+    distributeTempos = unConj distributeTempos'
     -- transposes the music by some interval
     transpose :: AbsPitch -> m a -> m a
-    -- transpose i = unConj $ Euterpea.transpose i
-
-
-class Quantizable m a where
-    -- quantizes the music so that every note/rest is a multiple of the given duration
-    -- NB: convention will be to ignore tempo modifiers
-    quantize :: Dur -> m a -> m a
-
--- instantiate MusicT in the case of ToMusic
-instance (ToMusic m a) => MusicT m a
-
-
--- class instances for Music
-
-instance MusicT Music a
-
-instance ToMusic Music a where
-    toMusic = id
-    fromMusic = id
-
-instance ToMidi Music
+    transpose i = unConj $ Euterpea.transpose i
 
 -- instantiate ToMidi m for ToMusic m Note1
-class (ToMusic m Note1) => ToMidi m where
+class (MusicT m Note1) => ToMidi m where
     -- constructs from Midi
     fromMidi :: Codec.Midi.Midi -> m Note1
     fromMidi = fromMusic . Euterpea.IO.MIDI.FromMidi.fromMidi
@@ -206,3 +186,17 @@ class (ToMusic m Note1) => ToMidi m where
     -- writes Midi to a file
     toMidiFile :: m Note1 -> FilePath -> IO ()
     toMidiFile m path = exportMidiFile path $ Parnassus.MusicBase.toMidi m
+
+class Quantizable m a where
+    -- quantizes the music so that every note/rest is a multiple of the given duration
+    -- NB: convention will be to ignore tempo modifiers
+    quantize :: Dur -> m a -> m a
+
+-- class instances for Music
+
+instance MusicT Music a where
+    toMusic = id
+    fromMusic = id
+
+instance ToMidi Music
+

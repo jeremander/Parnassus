@@ -63,13 +63,11 @@ mFoldU f seqFold parFold g m = case m of
     where
         rec = mFoldU f seqFold parFold g
 
-instance {-# OVERLAPPABLE #-} ToMusic MusicU a where
+instance MusicT MusicU a where
     fromMusic :: Music a -> MusicU a
     fromMusic = mFold primU (/+/) (/=/) ModifyU
     toMusic :: MusicU a -> Music a
     toMusic = mFoldU Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
-
-instance MusicT MusicU a where
     prim :: Primitive a -> MusicU a
     prim = primU
     (/+/) :: MusicU a -> MusicU a -> MusicU a
