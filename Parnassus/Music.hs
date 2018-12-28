@@ -36,11 +36,9 @@ twinkle2 = twinkle /=/ twinkleBass
 -- MusicT type conversions
 
 convUtoD :: (MusicD a -> MusicD a -> MusicD a) -> (MusicD a -> MusicD a -> MusicD a) -> MusicU a -> MusicD a
-convUtoD mseq mpar m = mFoldU (primD' q) (foldr1 mseq) (foldr1 mpar) g m
+convUtoD mseq mpar m = mFoldU (primD' $ durGCD m) (foldr1 mseq) (foldr1 mpar) g m
     where
-        qinv = lcd m
-        q = 1 / fromIntegral qinv
-        -- g :: Control -> MusicD a -> MusicD a
+        g :: Control -> MusicD a -> MusicD a
         g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
 
 instance ToMusicU MusicD a where

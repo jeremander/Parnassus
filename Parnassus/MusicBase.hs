@@ -50,8 +50,8 @@ pad' d m
     | otherwise = m :+: (Prim $ Rest diff)
     where diff = d - Euterpea.dur m
 
-lcd' :: Music a -> Integer
-lcd' = mFold (denominator . durP) lcm lcm (curry snd)
+gcd' :: Music a -> Rational
+gcd' = mFold durP rationalGCD rationalGCD (curry snd)
 
 stripControls' :: Music a -> (Controls, Music a)
 stripControls' = mFold f (combine (:+:)) (combine (:=:)) g
@@ -141,8 +141,8 @@ class MusicT m a where
     isEmpty :: m a -> Bool
     isEmpty x = (dur x == 0)
     -- computes the least common denominator of the time intervals occurring in the music, ignoring tempo modifiers
-    lcd :: m a -> Integer
-    lcd = lcd' . toMusic
+    durGCD :: m a -> Rational
+    durGCD = gcd' . toMusic
     -- scales durations down by a constant
     scaleDurations :: Rational -> m a -> m a
     scaleDurations c = unConj $ Euterpea.scaleDurations c

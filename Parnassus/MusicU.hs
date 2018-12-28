@@ -114,12 +114,8 @@ instance MusicT MusicU a where
     isEmpty :: MusicU a -> Bool
     isEmpty Empty = True
     isEmpty _     = False
-    lcd :: MusicU a -> Integer
-    lcd = mFoldU f (foldr lcm 1) (foldr lcm 1) (curry snd)
-        where
-            f :: Primitive a -> Integer
-            f (Rest d) = denominator d
-            f (Note d _) = denominator d
+    durGCD :: MusicU a -> Rational
+    durGCD = mFoldU durP (foldr rationalGCD 1) (foldr rationalGCD 1) (curry snd)
     cut :: Eq a => Dur -> MusicU a -> MusicU a
     cut d m | d <= 0            = Empty
     cut _ Empty                 = Empty

@@ -119,11 +119,14 @@ unChordD (MusicD q ctl m) = [MusicD q ctl (pure <$> ln) | ln <- lines]
     where
         lines = transposeWithDefault (Untied ([], Rest q)) m
 
+-- NB: ignores tempo variations at the note level
 durD :: MusicD a -> Dur
-durD (MusicD q _ m) = q * (fromIntegral $ length m)
-
-lcdD :: MusicD a -> Integer
-lcdD (MusicD q _ _) = denominator q
+durD (MusicD q ctl m) = (q / tempoFactor) * (fromIntegral $ length m)
+    where
+        getTempo :: Control -> Rational
+        getTempo (Tempo t) = t
+        getTempo _         = 1
+        tempoFactor = foldr (*) 1 (getTempo <$> ctl)
 
 scaleDurationsD :: Rational -> MusicD a -> MusicD a
 scaleDurationsD c (MusicD q ctl m) = MusicD (q / c) ctl m
@@ -162,12 +165,9 @@ instance {-# OVERLAPPABLE #-} MusicT MusicD a where
             lines = resolveTies <$> m'  -- simplify the lines by agglomerating rests & tied notes
             f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
             lines' = [Euterpea.line $ f <$> ln | ln <- lines]
-    -- TODO: use smallest subdivision, which may in fact be bigger than 1 / LCD
     fromMusic :: Music a -> MusicD a
-    fromMusic m = mFold (primD' q) (/+/) (/=/) g m
+    fromMusic m = mFold (primD' $ durGCD m) (/+/) (/=/) g m
         where
-            qinv = lcd' m
-            q = 1 / fromIntegral qinv
             g :: Control -> MusicD a -> MusicD a
             g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
     prim :: Primitive a -> MusicD a
@@ -186,8 +186,8 @@ instance {-# OVERLAPPABLE #-} MusicT MusicD a where
     unChord = unChordD
     dur :: MusicD a -> Dur
     dur = durD
-    lcd :: MusicD a -> Integer
-    lcd = lcdD
+    durGCD :: MusicD a -> Rational
+    durGCD (MusicD q _ _) = q
     scaleDurations :: Rational -> MusicD a -> MusicD a
     scaleDurations = scaleDurationsD
     cut :: Eq a => Dur -> MusicD a -> MusicD a
@@ -323,8 +323,8 @@ instance {-# OVERLAPPING #-} MusicT MusicD Note1 where
     unChord = unChordD
     dur :: MusicD a -> Dur
     dur = durD
-    lcd :: MusicD a -> Integer
-    lcd = lcdD
+    durGCD :: MusicD a -> Rational
+    durGCD (MusicD q _ _) = q
     scaleDurations :: Rational -> MusicD a -> MusicD a
     scaleDurations = scaleDurationsD
     cut :: Eq a => Dur -> MusicD a -> MusicD a

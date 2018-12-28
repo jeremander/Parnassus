@@ -3,6 +3,7 @@
 module Parnassus.Utils where
 
 import qualified Data.List (transpose)
+import qualified Data.Set
 import Data.Ratio
 
 
@@ -27,16 +28,20 @@ argmax, argmin :: Ord a => [a] -> Int
 argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
 argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]
 
--- given a list of lists of elements, strips off the largest common prefix
-unDistribute :: Eq a => [[a]] -> ([a], [[a]])
+-- given [A1, A2, ..., An], let A be the intersection of these sets; returns (A, [A1 \ A, A2 \ A, ..., An \ A])
+unDistribute :: Ord a => [[a]] -> ([a], [[a]])
 unDistribute [] = ([], [])
-unDistribute xs = (prefix, (drop prefixLength) <$> xs)
+unDistribute xss = (Data.Set.toList xint, (Data.Set.toList . (`Data.Set.difference` xint)) <$> xsets)
     where
-        longestPrefix _ [] = []
-        longestPrefix [] _ = []
-        longestPrefix (x:xtail) (y:ytail) = if (x == y) then [x] ++ longestPrefix xtail ytail else []
-        prefix = foldr1 longestPrefix xs
-        prefixLength = length prefix
+        xsets = Data.Set.fromList <$> xss
+        xint = foldr1 Data.Set.intersection xsets
+
+-- computes GCD of two rationals
+rationalGCD :: Rational -> Rational -> Rational
+rationalGCD x y = (gcd a c) % (lcm b d)
+    where
+        (a, b) = (numerator x, denominator x)
+        (c, d) = (numerator y, denominator y)
 
 
 -- QUANTIZATION --

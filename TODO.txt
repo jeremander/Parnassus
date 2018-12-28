@@ -1,7 +1,4 @@
 TODO
 ----
-- change LCD to LCM
-- map function for MusicD to manipulate all the leaf notes.
 - arbitrary requantization of MusicD (use groupWith to requantize time intervals)
-- ensure tempos work properly when converting (e.g. toMusicD doesn't accurately capture tempo changes for mm3) and quantizing
-    - controlD $ toMusicD $ mm3 doesn't undistribute the tempo because it's on the inside
+- map function for MusicD to manipulate all the leaf notes.
