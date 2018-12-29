@@ -33,8 +33,7 @@ primeFactors n
                 | p * p > n  = [n]
                 | r == 0     =  p : go q ps
                 | otherwise  =      go n t
-                        where
-                        (q, r) = quotRem n p
+                        where (q, r) = quotRem n p
 
 
 -- computes a map from prime factors to exponents, for a given integer
@@ -58,14 +57,14 @@ intToSig base d n = signalChord notes
         tones = (envTone d 0.25) <$> freqs
         notes = [[fromIntegral vol * samp | samp <- tn] | vol <- exponents | tn <- tones]
 
--- normalizes a sequence of floats to be in the range [0, 1]
+-- normalizes a sequence of floats to be in the range [-1, 1]
 normalize :: (Fractional a, Ord a) => [a] -> [a]
 normalize xs = map (/ xAbsMax) xs
     where xAbsMax = maximum $ map abs xs
 
 -- given base frequency, note duration (in seconds), and an integer sequence, generates a signal corresponding to the sequence
 intSeqToSig :: Double -> Double -> [Integer] -> Sig
-intSeqToSig base d = normalize . concat . map (intToSig base d)
+intSeqToSig base d = normalize . concatMap (intToSig base d)
 
 -- default WAV file header
 defaultWaveHeader :: WAVEHeader
