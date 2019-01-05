@@ -168,31 +168,6 @@ instance MusicT MusicU a where
 
 instance ToMidi MusicU
 
--- Quantizable Instance --
-
-quantizeU :: Eq a => Rational -> MusicU a -> MusicU a
-quantizeU q m = case m of
-    Empty        -> Empty
-    PrimU p      -> prim p
-    SeqU ms      -> line [fit qd m' | qd <- qDurs | m' <- ms']
-        where
-            ms' = map rec ms
-            qDurs = quantizeRationals q (dur <$> ms')
-    ParU ms      -> chord $ map rec ms
-    ModifyU c m' -> ModifyU c (rec m')
-    where
-        quantize' = quantizeRational q
-        safeQuantize = \r -> if (r == 0) then 0 else max (quantize' r) q
-        rec = quantizeU q
-
-instance (Eq a) => Quantizable MusicU a where
-    quantize :: Rational -> MusicU a -> MusicU a
-    quantize = quantizeU
-
-instance (Eq a) => Quantizable Music a where
-    quantize :: Rational -> Music a -> Music a
-    quantize q = conj $ (quantizeU q)
-
 -- MusicU conversion --
 
 class ToMusicU m a where

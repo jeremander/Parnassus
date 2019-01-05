@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -14,7 +15,8 @@ import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, transpose)
-import Parnassus.MusicBase (ToMidi (..), MusicT (..), Quantizable (..), (/+/), (/=/), (/*/))
+import Parnassus.Utils (quantizeRationals, quantizeTime)
+import Parnassus.MusicBase (durP, ToMidi (..), MusicT (..), Quantizable (..), Tied, (/+/), (/=/), (/*/))
 import Parnassus.MusicD (MusicD (..), MusicD1, primD', ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
@@ -72,15 +74,47 @@ getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
                             TimeSignature num pow _ _ -> Just (num, (2 :: Int) ^ pow)
                             otherwise                 -> Nothing
 
+-- Quantizable Instance --
 
--- returns the LCD of the music durations, along with a counter of the denominators occurring
--- countDurations :: MusicU a -> (Integer, Counter Integer Int)
--- countDurations m = (lcd, mFoldU f union union (curry snd) m)
---     where
---         lcd = durLCD m
---         f :: Primitive a -> Counter Integer Int
---         f (Rest d) = singleton $ denominator d
---         f (Note d _) = singleton $ denominator d
+quantizeD :: Eq a => Rational -> MusicD a -> MusicD a
+quantizeD q mus@(MusicD q' ctl m)
+    | q == q'   = mus
+    | otherwise = MusicD q ctl m'
+        where
+            groups = quantizeTime q' (zip m [0, q..])
+            mergeGroup :: [(Rational, Rational, [Tied a], Bool)] -> [Tied a]
+            mergeGroup gp =
+                where
+                    retie :: Tied a -> Bool -> Tied a
+                    retie (Untied (_, Note d x)) True = TiedNote d x
+                    retie n _ = n
+                    -- converts a chord into a list of notes tagged with the duration
+                    restructure :: (Rational, Rational, [Tied a], Bool) -> [(Rational, Tied a)]
+                    restructure (_, d, notes, flag) = [(d, 
+            m' = mergeGroup <$> groups
+
+-- given rational q and a sequence of increasing times delimiting time intervals (including start and end points), returns a list of groups of intervals taking place within each q interval, consisting of (start, duration, flag) where flag is True if the interval is a continuation of an interval from the previous group
+-- quantizeTime :: Rational -> [Rational] -> [[(Rational, Rational, Int, Bool)]]
+
+quantizeU :: Eq a => Rational -> MusicU a -> MusicU a
+quantizeU q m = case m of
+    Empty        -> Empty
+    PrimU p      -> prim p
+    SeqU ms      -> line [fit qd m' | qd <- qDurs | m' <- ms']
+        where
+            ms' = rec <$> ms
+            qDurs = quantizeRationals q (dur <$> ms')
+    ParU ms      -> chord $ (rec <$> ms)
+    ModifyU c m' -> ModifyU c (rec m')
+    where rec = quantizeU q
+
+instance (Eq a) => Quantizable MusicU a where
+    quantize :: Rational -> MusicU a -> MusicU a
+    quantize = quantizeU
+
+instance (Eq a) => Quantizable Music a where
+    quantize :: Rational -> Music a -> Music a
+    quantize q = conj $ (quantizeU q)
 
 
 -- Measure splitting --
