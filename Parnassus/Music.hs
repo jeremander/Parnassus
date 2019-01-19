@@ -10,13 +10,16 @@ module Parnassus.Music where
 import Codec.Midi
 import Control.Monad (join)
 import qualified Data.List (nub, transpose)
+import qualified Data.Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Ratio ((%))
+import Data.Tuple.Select
+import GHC.Exts (groupWith)
 import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, transpose)
-import Parnassus.Utils (quantizeRationals, quantizeTime)
-import Parnassus.MusicBase (durP, ToMidi (..), MusicT (..), Quantizable (..), Tied, (/+/), (/=/), (/*/))
+import Parnassus.Utils (aggMax, MapPlus (..), quantizeRationals, quantizeTime)
+import Parnassus.MusicBase (durP, extractTied, fitTied, Pitched, ToMidi (..), MusicT (..), Quantizable (..), Tied (..), (/+/), (/=/), (/*/))
 import Parnassus.MusicD (MusicD (..), MusicD1, primD', ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
@@ -43,24 +46,15 @@ convUtoD mseq mpar m = mFoldU (primD' $ durGCD m) (foldr1 mseq) (foldr1 mpar) g 
         g :: Control -> MusicD a -> MusicD a
         g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
 
-instance ToMusicU MusicD a where
-    toMusicU = fromMusic . toMusic
-    fromMusicU = convUtoD (/+/) (/=/)
-
-instance {-# OVERLAPPING #-} ToMusicU MusicD Note1 where
+instance (Ord a, Pitched a) => ToMusicU MusicD a where
     toMusicU = fromMusic . toMusic
     fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
         where MusicD q ctl m' = convUtoD (/+/) (/=/) m
 
-instance ToMusicD MusicU a where
-    toMusicD = convUtoD (/+/) (/=/)
-    fromMusicD = fromMusic . toMusic
-
-instance {-# OVERLAPPING #-} ToMusicD MusicU Note1 where
+instance (Ord a, Pitched a) => ToMusicD MusicU a where
     toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
         where MusicD q ctl m' = convUtoD (/+/) (/=/) m
     fromMusicD = fromMusic . toMusic
-
 
 -- Time Signature --
 
@@ -76,25 +70,63 @@ getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
 
 -- Quantizable Instance --
 
-quantizeD :: Eq a => Rational -> MusicD a -> MusicD a
+-- TODO: test on twinkle with (1%3) and (1%5), etc.
+quantizeD :: forall a . (Ord a) => Rational -> MusicD a -> MusicD a
 quantizeD q mus@(MusicD q' ctl m)
     | q == q'   = mus
     | otherwise = MusicD q ctl m'
         where
-            groups = quantizeTime q' (zip m [0, q..])
+            -- keep only notes that fill up at least half the quantization interval
+            groups :: [[(Rational, Rational, [Tied a], Bool)]]
+            groups = (map $ filter (\(_, d, _, _) -> d >= q / 2)) $ quantizeTime q (zip (m ++ [[]]) [0, q'..])
+            restructure :: (Rational, Rational, [Tied a], Bool) -> [(Rational, Rational, Tied a, Bool)]
+            restructure (t, d, notes, flag) = [(t, d, note, flag) | note <- notes]
+            groups' :: [[(Rational, Rational, Tied a, Bool)]]
+            groups' = join . map restructure <$> groups
+            -- need to fix tie flags
+            fix :: [(Rational, Rational, Tied a, Bool)] -> [(Rational, Rational, Tied a, Bool)] -> [(Rational, Rational, Tied a, Bool)]
+            fix xs1 xs2 = f <$> xs2
+                where
+                    pairs = [(extractTied x1, t1 + d1) | (t1, d1, x1, _) <- xs1]
+                    f :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
+                    f (t2, d2, x2, False) = (t2, d2, x2, False)
+                    f (t2, d2, x2, flag2) = (t2, d2, x2, flag2 && tiePermitted)
+                        where
+                            note2 = extractTied x2
+                            -- does a previous note tie with this note?
+                            tiePermitted = any (\(note1, st1) -> (note1 == note2) && (st1 >= t2)) pairs
+            groups'' :: [[(Rational, Rational, [Tied a], Bool)]]
+            groups'' = map f <$> gps
+                where
+                    pairs = zip ([] : groups') groups'
+                    pairs' = [(xs1, fix xs1 xs2) | (xs1, xs2) <- pairs]
+                    gps = [groupWith (\(t, d, _, flag) -> (t, d, flag)) gp | gp <- snd <$> pairs']
+                    f :: [(Rational, Rational, Tied a, Bool)] -> (Rational, Rational, [Tied a], Bool)
+                    f items = (t, d, sel3 <$> items, flag)
+                        where (t, d, _, flag) = head items
             mergeGroup :: [(Rational, Rational, [Tied a], Bool)] -> [Tied a]
-            mergeGroup gp =
+            mergeGroup gp = [fitTied q x | (x, _) <- pairs]
                 where
                     retie :: Tied a -> Bool -> Tied a
                     retie (Untied (_, Note d x)) True = TiedNote d x
-                    retie n _ = n
+                    retie note _ = note
                     -- converts a chord into a list of notes tagged with the duration
-                    restructure :: (Rational, Rational, [Tied a], Bool) -> [(Rational, Tied a)]
-                    restructure (_, d, notes, flag) = [(d, 
-            m' = mergeGroup <$> groups
-
--- given rational q and a sequence of increasing times delimiting time intervals (including start and end points), returns a list of groups of intervals taking place within each q interval, consisting of (start, duration, flag) where flag is True if the interval is a continuation of an interval from the previous group
--- quantizeTime :: Rational -> [Rational] -> [[(Rational, Rational, Int, Bool)]]
+                    restructure' :: (Rational, Rational, [Tied a], Bool) -> [(Tied a, Rational)]
+                    restructure' (_, d, notes, flag) = [(retie note flag, d) | note <- notes]
+                    agg :: (Rational -> Rational -> Rational) -> (Tied a, Rational) -> (Tied a, Rational) -> (Tied a, Rational)
+                    agg f (Untied (c1, p1), r1) (_, r2) = (Untied (c1, p1), f r1 r2)
+                    agg f (_, r1) (Untied (c2, p2), r2) = (Untied (c2, p2), f r1 r2)
+                    agg f (TiedNote _ p1, r1) (TiedNote _ _, r2) = (TiedNote r1 p1, f r1 r2)
+                    aggPar = agg max
+                    aggSeq = agg (+)
+                    -- add up the duration of each note over all sequential segments in the group
+                    gatherNotes :: [(Rational, Rational, [Tied a], Bool)] -> [(Tied a, Rational)]
+                    gatherNotes gp' = noteGroup
+                        where
+                            parGroups = map (foldr1 aggPar) . groupWith (extractTied . fst) . restructure' <$> gp'
+                            noteGroup = map (foldr1 aggSeq) . groupWith (extractTied . fst) . join $ parGroups
+                    pairs = gatherNotes gp
+            m' = mergeGroup <$> groups''
 
 quantizeU :: Eq a => Rational -> MusicU a -> MusicU a
 quantizeU q m = case m of

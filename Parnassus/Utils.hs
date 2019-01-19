@@ -2,20 +2,46 @@
 
 module Parnassus.Utils where
 
+import Control.Arrow (second)
 import qualified Data.List (transpose)
+import qualified Data.Map
+import Data.Semigroup
 import qualified Data.Set
 import Data.Ratio
 import Data.Tuple.Select
-import GHC.Exts (groupWith)
 
+
+-- MapPlus --
+
+newtype MapPlus k v = MapPlus {getMapPlus :: Data.Map.Map k v}
+
+instance (Ord k, Semigroup v) => Semigroup (MapPlus k v) where
+    MapPlus x <> MapPlus y = MapPlus $ Data.Map.unionWith (<>) x y
+
+instance (Ord k, Semigroup v) => Monoid (MapPlus k v) where
+    mempty = MapPlus mempty
+    mappend = (<>)
+
+-- given a list of key-value pairs, where values can be added as a semigroup, aggregates the items into a Map from unique keys to the sum of the values
+aggregate :: (Ord k, Semigroup m) => (v -> m) -> (m -> v) -> [(k, v)] -> Data.Map.Map k v
+aggregate toMonoid fromMonoid pairs = Data.Map.map fromMonoid $ getMapPlus agg
+    where
+        singletons = MapPlus . (uncurry Data.Map.singleton) . (second toMonoid) <$> pairs
+        agg = foldr (<>) (MapPlus Data.Map.empty) singletons
+
+aggSum :: (Ord k, Num v) => [(k, v)] -> Data.Map.Map k v
+aggSum pairs = aggregate Sum getSum pairs
+
+aggMax :: (Ord k, Ord v) => [(k, v)] -> Data.Map.Map k v
+aggMax pairs = aggregate Max getMax pairs
 
 -- MISC --
 
--- merges two sorted lists, but terminates when the first list is exhausted
+-- merges two sorted lists, but terminates when the second list is exhausted
 -- f is the sort key
 merge :: Ord b => (a -> b) -> [a] -> [a] -> [a]
-merge f [] ys = []
-merge f xs [] = xs
+merge f [] ys = ys
+merge f xs [] = []
 merge f (x:xs) (y:ys) = if f x <= f y
                             then x : merge f xs (y:ys)
                             else y : merge f (x:xs) ys
@@ -107,9 +133,9 @@ quantizeTime q [] = []
 quantizeTime q pairs = lazyGroupWith (truncate . (/q) . sel1) items'
     where
         (x0, t0) = head pairs
-        triples = merge sel1 [(t, Just x, True) | (x, t) <- pairs] [(t, Nothing, False) | t <- [t0, (t0 + q)..]]
-        itemPairs = filter (\((t1, _, _), (t2, _, _)) -> t1 /= t2) $ zip triples (tail triples ++ [(t0 - 1, Nothing, False)])
-        items = init [(t1, t2 - t1, x1, not flag1) | ((t1, x1, flag1), (t2, _, _)) <- itemPairs]
+        pairs' = merge sel1 [(t, Nothing) | t <- [t0, (t0 + q)..]] [(t, Just x) | (x, t) <- pairs] 
+        pairPairs = filter (\((t1, _), (t2, _)) -> t1 /= t2) $ zip ((t0 - 1, Nothing) : init pairs') pairs' 
+        items = tail [(t1, t2 - t1, x1, null x1) | ((t1, x1), (t2, _)) <- pairPairs]
         f :: a -> Maybe a -> a
         f x Nothing  = x
         f x (Just y) = y

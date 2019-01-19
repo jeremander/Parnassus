@@ -24,6 +24,25 @@ type Controls = [Control]
 data Tied a = Untied (Controls, Primitive a) | TiedNote Dur a
     deriving (Eq, Ord, Show)
 
+extractTied :: Tied a -> Maybe a
+extractTied (Untied (_, Note _ p)) = Just p
+extractTied (TiedNote _ p) = Just p
+extractTied _ = Nothing
+
+fitTied :: Dur -> Tied a -> Tied a
+fitTied d (Untied (ctl, Note _ p)) = Untied (ctl, Note d p)
+fitTied d (Untied (ctl, Rest _))   = Untied (ctl, Rest d)
+fitTied d (TiedNote _ p)           = TiedNote d p
+
+class Pitched a where
+    getPitch :: a -> Pitch
+
+instance Pitched Pitch where
+    getPitch = id
+
+instance Pitched Note1 where
+    getPitch = fst
+
 deriving instance Ord NoteAttribute
 
 -- functions for Music type

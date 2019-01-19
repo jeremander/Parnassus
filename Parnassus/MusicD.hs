@@ -155,53 +155,54 @@ distributeTemposD (MusicD q ctl m) = MusicD (q / scale) ctl' m
 transposeD :: AbsPitch -> MusicD a -> MusicD a
 transposeD i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
 
-instance {-# OVERLAPPABLE #-} MusicT MusicD a where
-    -- in absence of pitch information, just zip together the notes top-to-bottom, padding with rests as needed
-    toMusic :: MusicD a -> Music a
-    toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
-        where
-            ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
-            m' = transposeWithDefault (Untied ([], Rest q)) m  -- pad chords so they are all the same size, then transpose into lines
-            lines = resolveTies <$> m'  -- simplify the lines by agglomerating rests & tied notes
-            f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
-            lines' = [Euterpea.line $ f <$> ln | ln <- lines]
-    fromMusic :: Music a -> MusicD a
-    fromMusic m = mFold (primD' $ durGCD m) (/+/) (/=/) g m
-        where
-            g :: Control -> MusicD a -> MusicD a
-            g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
-    prim :: Primitive a -> MusicD a
-    prim = primD
-    (/+/) :: MusicD a -> MusicD a -> MusicD a
-    (/+/) = seqD
-    (/=/) :: MusicD a -> MusicD a -> MusicD a
-    (/=/) = parD
-    line :: Eq a => [MusicD a] -> MusicD a
-    line = lineD
-    chord :: Eq a => [MusicD a] -> MusicD a
-    chord = chordD
-    unLine :: Eq a => MusicD a -> [MusicD a]
-    unLine = unLineD
-    unChord :: Eq a => MusicD a -> [MusicD a]
-    unChord = unChordD
-    dur :: MusicD a -> Dur
-    dur = durD
-    durGCD :: MusicD a -> Rational
-    durGCD (MusicD q _ _) = q
-    scaleDurations :: Rational -> MusicD a -> MusicD a
-    scaleDurations = scaleDurationsD
-    cut :: Eq a => Dur -> MusicD a -> MusicD a
-    cut = cutD
-    pad :: Dur -> MusicD a -> MusicD a
-    pad = padD
-    stripControls :: MusicD a -> (Controls, MusicD a)
-    stripControls = stripControlsD
-    removeTempos :: MusicD a -> MusicD a
-    removeTempos = removeTemposD
-    distributeTempos :: MusicD a -> MusicD a
-    distributeTempos = distributeTemposD
-    transpose :: AbsPitch -> MusicD a -> MusicD a
-    transpose = transposeD
+-- TODO: this is called for e.g. Music Pitch type, should other version be called, even when not Music Note1?
+-- instance {-# OVERLAPPABLE #-} MusicT MusicD a where
+--     -- in absence of pitch information, just zip together the notes top-to-bottom, padding with rests as needed
+--     toMusic :: MusicD a -> Music a
+--     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
+--         where
+--             ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
+--             m' = transposeWithDefault (Untied ([], Rest q)) m  -- pad chords so they are all the same size, then transpose into lines
+--             lines = resolveTies <$> m'  -- simplify the lines by agglomerating rests & tied notes
+--             f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
+--             lines' = [Euterpea.line $ f <$> ln | ln <- lines]
+--     fromMusic :: Music a -> MusicD a
+--     fromMusic m = mFold (primD' $ durGCD m) (/+/) (/=/) g m
+--         where
+--             g :: Control -> MusicD a -> MusicD a
+--             g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
+--     prim :: Primitive a -> MusicD a
+--     prim = primD
+--     (/+/) :: MusicD a -> MusicD a -> MusicD a
+--     (/+/) = seqD
+--     (/=/) :: MusicD a -> MusicD a -> MusicD a
+--     (/=/) = parD
+--     line :: Eq a => [MusicD a] -> MusicD a
+--     line = lineD
+--     chord :: Eq a => [MusicD a] -> MusicD a
+--     chord = chordD
+--     unLine :: Eq a => MusicD a -> [MusicD a]
+--     unLine = unLineD
+--     unChord :: Eq a => MusicD a -> [MusicD a]
+--     unChord = unChordD
+--     dur :: MusicD a -> Dur
+--     dur = durD
+--     durGCD :: MusicD a -> Rational
+--     durGCD (MusicD q _ _) = q
+--     scaleDurations :: Rational -> MusicD a -> MusicD a
+--     scaleDurations = scaleDurationsD
+--     cut :: Eq a => Dur -> MusicD a -> MusicD a
+--     cut = cutD
+--     pad :: Dur -> MusicD a -> MusicD a
+--     pad = padD
+--     stripControls :: MusicD a -> (Controls, MusicD a)
+--     stripControls = stripControlsD
+--     removeTempos :: MusicD a -> MusicD a
+--     removeTempos = removeTemposD
+--     distributeTempos :: MusicD a -> MusicD a
+--     distributeTempos = distributeTemposD
+--     transpose :: AbsPitch -> MusicD a -> MusicD a
+--     transpose = transposeD
 
 instance ToMidi MusicD
 
@@ -239,7 +240,7 @@ instance ToMusicD MusicD a where
     toMusicD = id
     fromMusicD = id
 
-instance ToMusicD Music a where
+instance (Ord a, Pitched a) => ToMusicD Music a where
     toMusicD = fromMusic
     fromMusicD = toMusic
 
@@ -281,20 +282,20 @@ greedyMatchSeq f xss = sortedSeqs
 -- note distance is a pair, to allow for priority tiering as well as pitch distance
 type NoteDistance = (Int, Int)
 
-tiedNoteDistance :: Tied Note1 -> Tied Note1 -> NoteDistance
+tiedNoteDistance :: (Pitched a) => Tied a -> Tied a -> NoteDistance
 tiedNoteDistance n1 n2 = case (n1, n2) of
     ((Untied (_, Rest _)), (Untied (_, Rest _)))   -> (2, 0)
     ((Untied (_, Rest _)), (Untied (_, Note _ _))) -> (3, 0)
     ((Untied (_, Rest _)), (TiedNote _ _))         -> (maxBound, maxBound)
     ((Untied (_, Note _ _)), (Untied (_, Rest _))) -> (3, 0)
-    ((Untied (_, Note _ (p1, _))), (Untied (_, Note _ (p2, _)))) -> (1, abs (absPitch p1 - absPitch p2))
-    ((Untied (_, Note _ (p1, _))), (TiedNote _ (p2, _))) -> if (p1 == p2) then (0, 1) else (maxBound, maxBound)
+    ((Untied (_, Note _ p1)), (Untied (_, Note _ p2))) -> (1, abs (absPitch (getPitch p1) - absPitch (getPitch p2)))
+    ((Untied (_, Note _ p1)), (TiedNote _ p2)) -> if (getPitch p1 == getPitch p2) then (0, 1) else (maxBound, maxBound)
     ((TiedNote _ _), (Untied (_, Rest _)))               -> (3, 0)
-    ((TiedNote _ (p1, _)), (Untied (_, Note _ (p2, _)))) -> (1, abs (absPitch p1 - absPitch p2))
-    ((TiedNote _ (p1, _)), (TiedNote _ (p2, _)))         -> if (p1 == p2) then (0, 0) else (maxBound, maxBound)
+    ((TiedNote _ p1), (Untied (_, Note _ p2))) -> (1, abs (absPitch (getPitch p1) - absPitch (getPitch p2)))
+    ((TiedNote _ p1), (TiedNote _ p2))         -> if (getPitch p1 == getPitch p2) then (0, 0) else (maxBound, maxBound)
 
-instance {-# OVERLAPPING #-} MusicT MusicD Note1 where
-    toMusic :: MusicD Note1 -> Music Note1
+instance (Ord a, Pitched a) => MusicT MusicD a where
+    toMusic :: MusicD a -> Music a
     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
         where
             ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
@@ -303,7 +304,7 @@ instance {-# OVERLAPPING #-} MusicT MusicD Note1 where
             lines = resolveTies <$> greedyMatchSeq tiedNoteDistance m'  -- simplify the lines by agglomerating rests & tied notes
             f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
             lines' = [Euterpea.line $ f <$> ln | ln <- lines]
-    fromMusic :: Music Note1 -> MusicD Note1
+    fromMusic :: Music a -> MusicD a
     fromMusic m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
         where
             MusicD q ctl m' = Parnassus.MusicBase.fromMusic m
