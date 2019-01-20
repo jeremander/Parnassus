@@ -1,19 +1,43 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Parnassus.MusicD where
 
+import Control.Monad (join)
 import Data.Foldable (foldl')
 import Data.Function (on)
 import qualified Data.List (nub, partition, sort, sortBy, transpose)
 import Data.Ratio
 import Data.Sort (sortOn)
+import Data.Tuple.Select
+import GHC.Exts (groupWith)
 
-import Euterpea
+import Euterpea hiding (line, scaleDurations)
+import qualified Euterpea
 import Parnassus.Utils
 import Parnassus.MusicBase 
 
+
+data Tied a = Untied (Controls, Primitive a) | TiedNote Dur a
+    deriving (Eq, Ord, Show)
+
+extractTied :: Tied a -> Maybe a
+extractTied (Untied (_, Note _ p)) = Just p
+extractTied (TiedNote _ p) = Just p
+extractTied _ = Nothing
+
+-- returns True if the note is tied
+isTied :: Tied a -> Bool
+isTied (Untied _)     = False
+isTied (TiedNote _ _) = True
+
+-- fits a Tied into the given duration
+fitTied :: Dur -> Tied a -> Tied a
+fitTied d (Untied (ctl, Note _ p)) = Untied (ctl, Note d p)
+fitTied d (Untied (ctl, Rest _))   = Untied (ctl, Rest d)
+fitTied d (TiedNote _ p)           = TiedNote d p
 
 type ArrD a = [[Tied a]]
 
@@ -75,30 +99,6 @@ distributeControls ctls = map (map f)
         f t                   = t
 
 instance ToMidi MusicD
-
--- Quantizable Instance --
-
--- subdivides MusicD by some factor n
-refineD :: Int -> MusicD a -> MusicD a
-refineD n (MusicD q ctl arr) = MusicD (q `divInt` n) ctl arr'
-    where
-        chopNote :: Tied a -> [Tied a]
-        chopNote (Untied (ctl, Note d x)) = [Untied (ctl, Note (d `divInt` n) x)] ++ replicate (n - 1) (TiedNote (d `divInt` n) x)
-        chopNote (Untied (ctl, Rest d))   = [Untied (ctl, Rest (d `divInt` n))] ++ replicate (n - 1) (Untied (ctl, Rest (d `divInt` n)))
-        chopNote (TiedNote d x)           = replicate n (TiedNote (d `divInt` n) x)
-        chopChord :: [Tied a] -> [[Tied a]]
-        chopChord = Data.List.transpose . map chopNote
-        arr' = concatMap chopChord arr  -- chop each chord, then concatenate together in sequence
-
-instance (Eq a) => Quantizable MusicD a where
-    quantize :: Rational -> MusicD a -> MusicD a
-    quantize q m@(MusicD q' ctl arr)
-        | q <= 0 = error errMsg
-        | q `divides` q' = refineD n1 m
-        | otherwise = error errMsg
-        where
-            errMsg = "invalid quantization: (" ++ (show q') ++ ") to (" ++ (show q) ++ ")"
-            n1 = truncate (q' / q)
 
 -- MusicD conversion --
 
@@ -232,3 +232,109 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
             scale = foldr (*) 1 (getTempo <$> tempos)
     transpose :: AbsPitch -> MusicD a -> MusicD a
     transpose i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
+
+-- Quantizable Instance --
+
+instance (Ord a, Pitched a) => Quantizable MusicD a where
+    quantize :: Rational -> MusicD a -> MusicD a
+    quantize q mus@(MusicD q' ctl m)
+        | q == q' = mus
+        | q `divides` q' = MusicD q ctl (concatMap chopChord m)  -- chop each chord, then concatenate together in sequence
+        | otherwise = MusicD q ctl (mergeGroup <$> groups5)
+            where
+                -- simple case of refinement
+                n = truncate (q' / q)
+                chopNote :: Tied a -> [Tied a]
+                chopNote (Untied (ctl, Note d x)) = [Untied (ctl, Note q x)] ++ replicate (n - 1) (TiedNote q x)
+                chopNote (Untied (ctl, Rest d))   = [Untied (ctl, Rest q)] ++ replicate (n - 1) (Untied (ctl, Rest q))
+                chopNote (TiedNote d x)           = replicate n (TiedNote q x)
+                chopChord :: [Tied a] -> [[Tied a]]
+                chopChord = Data.List.transpose . map chopNote
+                -- "otherwise" case: need to process
+                -- group the chord array by quantization slices
+                groups1 :: [[(Rational, Rational, [Tied a], Bool)]]
+                groups1 = quantizeTime q (zip (m ++ [[]]) [0, q'..])
+                -- distribute time data across a chord
+                distrib :: (Rational, Rational, [Tied a], Bool) -> [(Rational, Rational, Tied a, Bool)]
+                distrib (t, d, notes, flag) = [(t, d, note, flag) | note <- notes]
+                -- undistribute time data for a chord (assuming all time data is the same)
+                undistrib :: [(Rational, Rational, Tied a, Bool)] -> (Rational, Rational, [Tied a], Bool)
+                undistrib items = (t, d, sel3 <$> items, flag)
+                    where (t, d, _, flag) = head items
+                groups2 :: [[(Rational, Rational, Tied a, Bool)]]
+                groups2 = join . map distrib <$> groups1
+                -- tie together identical notes
+                combine :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
+                combine (t1, d1, p, flag1) (_, d2, _, flag2) = (t1, d1 + d2, p, flag1 && flag2)
+                groups3 :: [[(Rational, Rational, Tied a, Bool)]]
+                groups3 = (map $ foldr1 combine) . groupWith (extractTied . sel3) <$> groups2
+                -- keep only notes that fill up at least half the quantization interval (if untied), or more than half (if tied)
+                keepNote :: (Rational, Rational, Tied a, Bool) -> Bool
+                keepNote (_, d, p, flag) = if (flag || isTied p) then (d > q / 2) else (d >= q / 2)
+                groups4 :: [[(Rational, Rational, Tied a, Bool)]]
+                groups4 = filter keepNote <$> groups3
+                -- need to fix tie flags
+                fix :: [(Rational, Rational, Tied a, Bool)] -> [(Rational, Rational, Tied a, Bool)] -> [(Rational, Rational, Tied a, Bool)]
+                fix xs1 xs2 = f <$> xs2
+                    where
+                        pairs = [(extractTied x1, t1 + d1) | (t1, d1, x1, _) <- xs1]
+                        f :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
+                        f (t2, d2, x2, False) = (t2, d2, x2, False)
+                        f (t2, d2, x2, flag2) = (t2, d2, x2, flag2 && tiePermitted)
+                            where
+                                note2 = extractTied x2
+                                -- does a previous note tie with this note?
+                                tiePermitted = any (\(note1, st1) -> (note1 == note2) && (st1 >= t2)) pairs
+                groups5 :: [[(Rational, Rational, [Tied a], Bool)]]
+                groups5 = map undistrib <$> gps
+                    where
+                        pairs = zip ([] : groups4) groups4
+                        -- fix the ties
+                        fixed = snd <$> [(xs1, fix xs1 xs2) | (xs1, xs2) <- pairs]
+                        -- undistribute identical time data for efficiency
+                        gps = [groupWith (\(t, d, _, flag) -> (t, d, flag)) gp | gp <- fixed]
+                mergeGroup :: [(Rational, Rational, [Tied a], Bool)] -> [Tied a]
+                mergeGroup gp = [fitTied q x | (x, _) <- pairs]
+                    where
+                        -- a True tie flag converts an Untied note to a Tied one
+                        retie :: Tied a -> Bool -> Tied a
+                        retie (Untied (_, Note d x)) True = TiedNote d x
+                        retie note _ = note
+                        -- converts a chord into a list of notes tagged with the duration
+                        restructure :: (Rational, Rational, [Tied a], Bool) -> [(Tied a, Rational)]
+                        restructure (_, d, notes, flag) = [(retie note flag, d) | note <- notes]
+                        -- add up the duration of each note over all sequential segments in the group
+                        gatherNotes :: [(Rational, Rational, [Tied a], Bool)] -> [(Tied a, Rational)]
+                        gatherNotes gp' = noteGroup
+                            where
+                                -- helper function; given binary operation on rationals, and two (Tied a, Rational) pairs where the notes are presumed to be the same, combines them appropriately
+                                agg :: (Rational -> Rational -> Rational) -> (Tied a, Rational) -> (Tied a, Rational) -> (Tied a, Rational)
+                                agg f (Untied (c1, p1), r1) (_, r2) = (Untied (c1, p1), f r1 r2)
+                                agg f (_, r1) (Untied (c2, p2), r2) = (Untied (c2, p2), f r1 r2)
+                                agg f (TiedNote _ p1, r1) (TiedNote _ _, r2) = (TiedNote r1 p1, f r1 r2)
+                                aggPar = agg max  -- parallel aggregation: take max duration
+                                aggSeq = agg (+)  -- sequential aggregation: take total duration
+                                parGroups = map (foldr1 aggPar) . groupWith (extractTied . fst) . restructure <$> gp'
+                                noteGroup = map (foldr1 aggSeq) . groupWith (extractTied . fst) . join $ parGroups
+                        pairs = gatherNotes gp
+    split :: Rational -> MusicD a -> [MusicD a]
+    split d mus@(MusicD q ctl m)
+        | q `divides` d = [MusicD q ctl group | group <- chunkListWithDefault (truncate (d / q)) [Untied ([], Rest q)] m]
+        | otherwise = split d (quantize (rationalGCD q d) mus)
+    changeTimeSig :: TimeSig -> TimeSig -> MusicD a -> MusicD a
+    changeTimeSig (n1, d1) (n2, d2) m = line m'
+        where
+            r1 = (toInteger n1) % (toInteger d1)
+            r2 = (toInteger n2) % (toInteger d2)
+            scale = r1 / r2
+            measures = split r1 m
+            q = rationalGCD (1 % toInteger d1) (durGCD m)
+            m' = quantize q . scaleDurations (r1 / r2) <$> measures
+            --MusicD _ ctl arr = line m'
+                -- TODO: fix twinkleBass (8/4) time
+
+---         r1 = (toInteger n1) % (toInteger d1)
+---         r2 = (toInteger n2) % (toInteger d2)
+---         q = toInteger $ lcm d1 d2
+---         meas = splitMeasuresU r1 0 m
+---         meas' = map ((quantizeU q) . (scaleDurations (r1 / r2))) meas

@@ -4,6 +4,7 @@ module Parnassus.Utils where
 
 import Control.Arrow (second)
 import qualified Data.List (transpose)
+import Data.List.Split (chunksOf)
 import qualified Data.Map
 import Data.Semigroup
 import qualified Data.Set
@@ -53,6 +54,10 @@ composeFuncs = foldr (.) id
 -- pads a list to a certain length with a default value
 padListWithDefault :: Int -> a -> [a] -> [a]
 padListWithDefault n def xs = take n (xs ++ repeat def)
+
+-- chunks a list into length-n pieces; the last chunk may be too short, so pad it with a default value
+chunkListWithDefault :: Int -> a -> [a] -> [[a]]
+chunkListWithDefault n def xs = padListWithDefault n def <$> chunksOf n xs
 
 -- transposes a list of lists of varying length, padding any short lists with a default value
 transposeWithDefault :: a -> [[a]] -> [[a]]

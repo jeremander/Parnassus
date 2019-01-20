@@ -20,25 +20,7 @@ import Parnassus.Utils
 -- Types
 
 type Controls = [Control]
-
-data Tied a = Untied (Controls, Primitive a) | TiedNote Dur a
-    deriving (Eq, Ord, Show)
-
-extractTied :: Tied a -> Maybe a
-extractTied (Untied (_, Note _ p)) = Just p
-extractTied (TiedNote _ p) = Just p
-extractTied _ = Nothing
-
--- returns True if the note is tied
-isTied :: Tied a -> Bool
-isTied (Untied _)     = False
-isTied (TiedNote _ _) = True
-
--- fits a Tied into the given duration
-fitTied :: Dur -> Tied a -> Tied a
-fitTied d (Untied (ctl, Note _ p)) = Untied (ctl, Note d p)
-fitTied d (Untied (ctl, Rest _))   = Untied (ctl, Rest d)
-fitTied d (TiedNote _ p)           = TiedNote d p
+type TimeSig = (Int, Int)
 
 class Pitched a where
     getPitch :: a -> Pitch
@@ -222,6 +204,10 @@ class Quantizable m a where
     -- quantizes the music so that every note/rest is a multiple of the given duration
     -- NB: convention will be to ignore tempo modifiers
     quantize :: Dur -> m a -> m a
+    -- splits the music into segments of the same length
+    split :: Dur -> m a -> [m a]
+    -- changes the time signature of the music
+    changeTimeSig :: TimeSig -> TimeSig -> m a -> m a
 
 -- class instances for Music
 
