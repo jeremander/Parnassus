@@ -33,6 +33,11 @@ isTied :: Tied a -> Bool
 isTied (Tied _) = True
 isTied _        = False
 
+-- returns True if the note is a rest
+isRest :: Tied a -> Bool
+isRest Rest = True
+isRest _    = False
+
 type ArrD a = [[Tied a]]
 
 -- "dense" music data structure
@@ -175,22 +180,24 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     modify :: Control -> MusicD a -> MusicD a
     modify c (MusicD q ctl m) = MusicD q (c:ctl) m
     (/+/) :: MusicD a -> MusicD a -> MusicD a
-    (/+/) (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
+    (/+/) mus1@(MusicD q1 ctl1 m1) mus2@(MusicD q2 ctl2 m2)
         | q1 == q2  = MusicD q1 prefix (m1' ++ m2')
-        | otherwise = error "MusicD quantization levels must match"
+        | otherwise = quantize q mus1 /+/ quantize q mus2
         where  -- distribute controls that are not in common prefix
             (prefix, [ctl1', ctl2']) = unDistribute [ctl1, ctl2]
             m1' = distributeControls ctl1' m1
             m2' = distributeControls ctl2' m2
+            q = rationalGCD q1 q2
     (/=/) :: MusicD a -> MusicD a -> MusicD a
-    (/=/) (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
+    (/=/) mus1@(MusicD q1 ctl1 m1) mus2@(MusicD q2 ctl2 m2)
         | q1 == q2  = let d = q1 * fromIntegral (max (length m1) (length m2))
                     in MusicD q1 prefix (zipWith (++) (padArr q1 d m1') (padArr q2 d m2'))
-        | otherwise = error "MusicD quantization level must match"
+        | otherwise = quantize q mus1 /=/ quantize q mus2
         where  -- distribute controls that are not in common prefix
             (prefix, [ctl1', ctl2']) = unDistribute [ctl1, ctl2]
             m1' = distributeControls ctl1' m1
             m2' = distributeControls ctl2' m2
+            q = rationalGCD q1 q2
     line :: Eq a => [MusicD a] -> MusicD a
     line = foldr1 (/+/)
     chord :: Eq a => [MusicD a] -> MusicD a
@@ -271,8 +278,11 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                     where
                         pairs = [(extractTied x1, t1 + d1) | (t1, d1, x1, _) <- xs1]
                         f :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
-                        f (t2, d2, x2, False) = (t2, d2, x2, False)
-                        f (t2, d2, x2, flag2) = (t2, d2, x2, flag2 && tiePermitted)
+                        f (t2, d2, x2, flag) = case (x2, flag) of
+                            (Tied p, _)           -> (t2, d2, Tied p, tiePermitted)
+                            (Untied ctl p, True)  -> (t2, d2, Untied ctl p, tiePermitted)
+                            (Untied ctl p, False) -> (t2, d2, Untied ctl p, False)
+                            otherwise             -> (t2, d2, x2, flag)
                             where
                                 note2 = extractTied x2
                                 -- does a previous note tie with this note?
@@ -288,8 +298,9 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                 mergeGroup :: [(Rational, Rational, [Tied a], Bool)] -> [Tied a]
                 mergeGroup gp = fst <$> pairs
                     where
-                        -- a True tie flag converts an Untied note to a Tied one
+                        -- a True tie flag converts an Untied note to a Tied one, and vice versa
                         retie :: Tied a -> Bool -> Tied a
+                        retie (Tied p) False    = Untied [] p
                         retie (Untied _ p) True = Tied p
                         retie note _            = note
                         -- converts a chord into a list of notes tagged with the duration

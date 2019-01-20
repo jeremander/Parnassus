@@ -18,9 +18,10 @@ import System.IO.Unsafe (unsafePerformIO)
 import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, toMusic1, transpose)
 import Parnassus.Utils (aggMax, MapPlus (..), quantizeRationals, quantizeTime)
 import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (MusicD (..), MusicD1, primD, ToMusicD (..))
+import Parnassus.MusicD (isRest, MusicD (..), MusicD1, primD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
 
+import Parnassus.MusicD (isTied, extractTied)
 
 -- song paths
 vgmusicPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/vgmusic/"
@@ -44,39 +45,41 @@ twinkle2 = twinkle /=/ twinkleBass
 
 -- Metronome --
 
--- infinite metronome of a fixed time signature
+-- metronome for a fixed time signature
 -- claves for downbeat, high wood block for upbeats
-metronome :: (MusicT m Note1) => TimeSig -> m Note1
-metronome (n, d) = modify (Instrument Percussion) $ line $ (prim <$> beats)
+metronome :: (MusicT m Note1) => TimeSig -> Dur -> m Note1
+metronome (n, d) r = modify (Instrument Percussion) $ line $ (prim <$> beats)
     where
+        numBeats = ceiling (r * fromIntegral d)
         flags = [rem i n == 0 | i <- [0..]]
-        beats = [Note (1 % toInteger d) (if flag then ((Ds, 5), [Volume 127]) else ((E, 5), [Volume 90])) | flag <- flags]
+        beats = take numBeats [Note (1 % toInteger d) (if flag then ((Ds, 5), [Volume 127]) else ((E, 5), [Volume 90])) | flag <- flags]
 
 -- overlays music with a metronome
 withMetronome :: (MusicT m Note1) => TimeSig -> m Note1 -> m Note1
 withMetronome ts mus = mus /=/ metro'
     where
-        metro = (cut (dur mus) (metronome ts))
+        d = dur mus
+        metro = metronome ts d
         -- modify metronome's tempo with the music's global tempo
         (tempo, _) = stripTempo mus
         metro' = modify tempo metro
 
 -- MusicT type conversions
 
-convUtoD :: (MusicD a -> MusicD a -> MusicD a) -> (MusicD a -> MusicD a -> MusicD a) -> MusicU a -> MusicD a
-convUtoD mseq mpar m = mFoldU (primD $ durGCD m) (foldr1 mseq) (foldr1 mpar) g m
+convUtoD :: (Ord a, Pitched a) => MusicU a -> MusicD a
+convUtoD mus = MusicD q ctl m''
     where
         g :: Control -> MusicD a -> MusicD a
-        g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
+        g c (MusicD q' ctl' x') = MusicD q' (c : ctl') x'
+        (MusicD q ctl m') = mFoldU (primD $ durGCD mus) (foldr1 (/+/)) (foldr1 (/=/)) g mus
+        m'' = Data.List.nub . filter (not . isRest) <$> m'  -- dedupe identical notes, eliminate rests in a chord
 
 instance (Ord a, Pitched a) => ToMusicU MusicD a where
     toMusicU = fromMusic . toMusic
-    fromMusicU m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
-        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
+    fromMusicU = convUtoD
 
 instance (Ord a, Pitched a) => ToMusicD MusicU a where
-    toMusicD m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
-        where MusicD q ctl m' = convUtoD (/+/) (/=/) m
+    toMusicD = convUtoD
     fromMusicD = fromMusic . toMusic
 
 -- Time Signature --
