@@ -54,7 +54,12 @@ metronome (n, d) = modify (Instrument Percussion) $ line $ (prim <$> beats)
 
 -- overlays music with a metronome
 withMetronome :: (MusicT m Note1) => TimeSig -> m Note1 -> m Note1
-withMetronome ts mus = mus /=/ (cut (dur mus) (metronome ts))
+withMetronome ts mus = mus /=/ metro'
+    where
+        metro = (cut (dur mus) (metronome ts))
+        -- modify metronome's tempo with the music's global tempo
+        (tempo, _) = stripTempo mus
+        metro' = modify tempo metro
 
 -- MusicT type conversions
 

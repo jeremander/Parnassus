@@ -1,6 +1,3 @@
 TODO
 ----
-- refactor ArrD so as not to store redundant durations!
-    - alter/consolidate chopNote/chopChord
-- arbitrary requantization of MusicD (use groupWith to requantize time intervals)
 - map function for MusicD to manipulate all the leaf notes.

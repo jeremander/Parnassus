@@ -9,6 +9,7 @@ module Parnassus.MusicBase where
 import Codec.Midi
 import Control.DeepSeq (NFData)
 import Data.Either (partitionEithers)
+import Data.List (partition)
 import Data.Ratio
 
 import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, toMusic1, transpose)
@@ -175,6 +176,20 @@ class MusicT m a where
     -- strips off outer level controls, returning the controls as a list, and the stripped music
     stripControls :: m a -> (Controls, m a)
     stripControls = unConjF2 stripControls'
+    -- strips off outer level tempos, aggregating them into one tempo; returns this tempo and the stripped music
+    stripTempo :: m a -> (Control, m a)
+    stripTempo x = (tempo, ctlMod x')
+        where
+            (ctls, x') = stripControls x
+            isTempo :: Control -> Bool
+            isTempo (Tempo _) = True
+            isTempo _         = False
+            extractTempo :: Control -> Rational
+            extractTempo (Tempo t) = t
+            extractTempo _         = 1
+            (tempos, nonTempos) = partition isTempo ctls
+            tempo = Tempo $ foldr (*) 1 (extractTempo <$> tempos)
+            ctlMod = composeFuncs (modify <$> nonTempos)
     -- eliminates all tempo modifiers
     removeTempos :: m a -> m a
     removeTempos = unConj removeTempos'
