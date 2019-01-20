@@ -11,7 +11,7 @@ import Control.DeepSeq (NFData)
 import Data.Either (partitionEithers)
 import Data.Ratio
 
-import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, transpose)
+import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, toMusic1, transpose)
 import qualified Euterpea
 import qualified Euterpea.IO.MIDI.FromMidi
 import qualified Euterpea.IO.MIDI.ToMidi
@@ -29,6 +29,12 @@ extractTied (Untied (_, Note _ p)) = Just p
 extractTied (TiedNote _ p) = Just p
 extractTied _ = Nothing
 
+-- returns True if the note is tied
+isTied :: Tied a -> Bool
+isTied (Untied _)     = False
+isTied (TiedNote _ _) = True
+
+-- fits a Tied into the given duration
 fitTied :: Dur -> Tied a -> Tied a
 fitTied d (Untied (ctl, Note _ p)) = Untied (ctl, Note d p)
 fitTied d (Untied (ctl, Rest _))   = Untied (ctl, Rest d)
@@ -108,6 +114,9 @@ class MusicT m a where
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
     fromMusic :: Music a -> m a
+    -- if possible, convert to Music1
+    toMusic1 :: ToMusic1 a => m a -> Music1
+    toMusic1 = Euterpea.toMusic1 . toMusic
     -- conjugates an endomorphism on this type to an endomorphism on Music
     conj :: (m a -> m a) -> (Music a -> Music a)
     conj f = toMusic . f . fromMusic
@@ -132,6 +141,9 @@ class MusicT m a where
     -- smart constructor out of a Primitive element
     prim :: Primitive a -> m a
     prim = fromMusic . Prim
+    -- modifies the music with a Control
+    modify :: Control -> m a -> m a
+    modify ctl = unConj $ Modify ctl
     -- combines a pair of musical elements in sequence
     (/+/) :: m a -> m a -> m a
     (/+/) m1 m2 = fromMusic $ (:+:) (toMusic m1) (toMusic m2)

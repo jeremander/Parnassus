@@ -23,27 +23,15 @@ type ArrD a = [[Tied a]]
 data MusicD a = MusicD Dur Controls (ArrD a)
     deriving (Eq, Ord, Show)
 
--- gets the quantization level of MusicD
-quantumD :: MusicD a -> Dur
-quantumD (MusicD q _ _) = q
-
--- gets the controls of MusicD
-controlD :: MusicD a -> Controls
-controlD (MusicD _ ctl _) = ctl
-
--- gets the note array of MusicD
-arrD :: MusicD a -> ArrD a
-arrD (MusicD _ _ arr) = arr
-
--- gets the shape of the (padded) chord array of MusicD
-shapeD :: MusicD a -> (Int, Int)
-shapeD (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
-
 type MusicD1 = MusicD Note1
 
+-- gets the shape of the (padded) chord array of MusicD
+shape :: MusicD a -> (Int, Int)
+shape (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
+
 -- creates MusicD from a Primitive element with the given subdivision q
-primD' :: Dur -> Primitive a -> MusicD a
-primD' q p = MusicD q [] m
+primD :: Dur -> Primitive a -> MusicD a
+primD q p = MusicD q [] m
     where m = case p of
             Rest d   -> replicate (floor $ d / q) [Untied ([], Rest q)]
             Note d p -> if (d < q)
@@ -54,6 +42,11 @@ primD' q p = MusicD q [] m
 -- pads with single rests of duration q
 padArr :: Dur -> Dur -> ArrD a -> ArrD a
 padArr q d xs = padListWithDefault (floor $ d / q) [Untied ([], Rest q)] xs
+
+-- gets the tempo from a Tempo Control, or 1 if the Control is not a Tempo
+getTempo :: Control -> Rational
+getTempo (Tempo t) = t
+getTempo _         = 1
 
 -- returns True if the Control is a Tempo
 isTempo :: Control -> Bool
@@ -81,130 +74,9 @@ distributeControls ctls = map (map f)
         f (Untied (ctls', p)) = Untied (ctls ++ ctls', p)
         f t                   = t
 
-primD :: Primitive a -> MusicD a
-primD p = primD' (durP p) p
-
-seqD :: MusicD a -> MusicD a -> MusicD a
-seqD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
-    | q1 == q2  = MusicD q1 prefix (m1' ++ m2')
-    | otherwise = error "MusicD quantization levels must match"
-    where  -- distribute controls that are not in common prefix
-        (prefix, [ctl1', ctl2']) = unDistribute [ctl1, ctl2]
-        m1' = distributeControls ctl1' m1
-        m2' = distributeControls ctl2' m2
-
-parD :: MusicD a -> MusicD a -> MusicD a
-parD (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
-    | q1 == q2  = let d = q1 * fromIntegral (max (length m1) (length m2))
-                  in MusicD q1 prefix (zipWith (++) (padArr q1 d m1') (padArr q2 d m2'))
-    | otherwise = error "MusicD quantization level must match"
-    where  -- distribute controls that are not in common prefix
-        (prefix, [ctl1', ctl2']) = unDistribute [ctl1, ctl2]
-        m1' = distributeControls ctl1' m1
-        m2' = distributeControls ctl2' m2
-
-lineD :: Eq a => [MusicD a] -> MusicD a
-lineD = foldr1 seqD
-
-chordD :: Eq a => [MusicD a] -> MusicD a
-chordD ms = MusicD q ctl (Data.List.nub <$> ms')
-    where
-        (MusicD q ctl ms') = foldr1 parD ms
-
-unLineD :: Eq a => MusicD a -> [MusicD a]
-unLineD (MusicD q ctl m) = [MusicD q ctl [seg] | seg <- m]
-
-unChordD :: Eq a => MusicD a -> [MusicD a]
-unChordD (MusicD q ctl m) = [MusicD q ctl (pure <$> ln) | ln <- lines]
-    where
-        lines = transposeWithDefault (Untied ([], Rest q)) m
-
--- NB: ignores tempo variations at the note level
-durD :: MusicD a -> Dur
-durD (MusicD q ctl m) = (q / tempoFactor) * (fromIntegral $ length m)
-    where
-        getTempo :: Control -> Rational
-        getTempo (Tempo t) = t
-        getTempo _         = 1
-        tempoFactor = foldr (*) 1 (getTempo <$> ctl)
-
-scaleDurationsD :: Rational -> MusicD a -> MusicD a
-scaleDurationsD c (MusicD q ctl m) = MusicD (q / c) ctl m
-
-cutD :: Eq a => Dur -> MusicD a -> MusicD a
-cutD d (MusicD q ctl m) = MusicD q ctl (take (floor (d / q)) m)
-
-padD :: Dur -> MusicD a -> MusicD a
-padD d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
-
-stripControlsD :: MusicD a -> (Controls, MusicD a)
-stripControlsD (MusicD q ctl m) = (ctl, MusicD q [] m)
-
-removeTemposD :: MusicD a -> MusicD a
-removeTemposD (MusicD q ctl m) = MusicD q (filter (not . isTempo) ctl) m
-
-distributeTemposD :: MusicD a -> MusicD a
-distributeTemposD (MusicD q ctl m) = MusicD (q / scale) ctl' m
-    where
-        (tempos, ctl') = Data.List.partition isTempo ctl
-        getTempo :: Control -> Rational
-        getTempo (Tempo t) = t
-        getTempo _         = 1
-        scale = foldr (*) 1 (getTempo <$> tempos)
-
-transposeD :: AbsPitch -> MusicD a -> MusicD a
-transposeD i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
-
--- TODO: this is called for e.g. Music Pitch type, should other version be called, even when not Music Note1?
--- instance {-# OVERLAPPABLE #-} MusicT MusicD a where
---     -- in absence of pitch information, just zip together the notes top-to-bottom, padding with rests as needed
---     toMusic :: MusicD a -> Music a
---     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
---         where
---             ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
---             m' = transposeWithDefault (Untied ([], Rest q)) m  -- pad chords so they are all the same size, then transpose into lines
---             lines = resolveTies <$> m'  -- simplify the lines by agglomerating rests & tied notes
---             f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
---             lines' = [Euterpea.line $ f <$> ln | ln <- lines]
---     fromMusic :: Music a -> MusicD a
---     fromMusic m = mFold (primD' $ durGCD m) (/+/) (/=/) g m
---         where
---             g :: Control -> MusicD a -> MusicD a
---             g c (MusicD q' ctl m') = MusicD q' (c : ctl) m'
---     prim :: Primitive a -> MusicD a
---     prim = primD
---     (/+/) :: MusicD a -> MusicD a -> MusicD a
---     (/+/) = seqD
---     (/=/) :: MusicD a -> MusicD a -> MusicD a
---     (/=/) = parD
---     line :: Eq a => [MusicD a] -> MusicD a
---     line = lineD
---     chord :: Eq a => [MusicD a] -> MusicD a
---     chord = chordD
---     unLine :: Eq a => MusicD a -> [MusicD a]
---     unLine = unLineD
---     unChord :: Eq a => MusicD a -> [MusicD a]
---     unChord = unChordD
---     dur :: MusicD a -> Dur
---     dur = durD
---     durGCD :: MusicD a -> Rational
---     durGCD (MusicD q _ _) = q
---     scaleDurations :: Rational -> MusicD a -> MusicD a
---     scaleDurations = scaleDurationsD
---     cut :: Eq a => Dur -> MusicD a -> MusicD a
---     cut = cutD
---     pad :: Dur -> MusicD a -> MusicD a
---     pad = padD
---     stripControls :: MusicD a -> (Controls, MusicD a)
---     stripControls = stripControlsD
---     removeTempos :: MusicD a -> MusicD a
---     removeTempos = removeTemposD
---     distributeTempos :: MusicD a -> MusicD a
---     distributeTempos = distributeTemposD
---     transpose :: AbsPitch -> MusicD a -> MusicD a
---     transpose = transposeD
-
 instance ToMidi MusicD
+
+-- Quantizable Instance --
 
 -- subdivides MusicD by some factor n
 refineD :: Int -> MusicD a -> MusicD a
@@ -243,8 +115,6 @@ instance ToMusicD MusicD a where
 instance (Ord a, Pitched a) => ToMusicD Music a where
     toMusicD = fromMusic
     fromMusicD = toMusic
-
--- override MusicT for MusicD1 to optimally match notes in sequential chords
 
 -- given a distance function f and two equal-sized lists, returns a matching (list of pairs) that greedily minimize f
 -- preserves the order of the first list
@@ -309,34 +179,56 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
         where
             MusicD q ctl m' = Parnassus.MusicBase.fromMusic m
     prim :: Primitive a -> MusicD a
-    prim = primD
+    prim p = primD (durP p) p
+    modify :: Control -> MusicD a -> MusicD a
+    modify c (MusicD q ctl m) = MusicD q (c:ctl) m
     (/+/) :: MusicD a -> MusicD a -> MusicD a
-    (/+/) = seqD
+    (/+/) (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
+        | q1 == q2  = MusicD q1 prefix (m1' ++ m2')
+        | otherwise = error "MusicD quantization levels must match"
+        where  -- distribute controls that are not in common prefix
+            (prefix, [ctl1', ctl2']) = unDistribute [ctl1, ctl2]
+            m1' = distributeControls ctl1' m1
+            m2' = distributeControls ctl2' m2
     (/=/) :: MusicD a -> MusicD a -> MusicD a
-    (/=/) = parD
+    (/=/) (MusicD q1 ctl1 m1) (MusicD q2 ctl2 m2)
+        | q1 == q2  = let d = q1 * fromIntegral (max (length m1) (length m2))
+                    in MusicD q1 prefix (zipWith (++) (padArr q1 d m1') (padArr q2 d m2'))
+        | otherwise = error "MusicD quantization level must match"
+        where  -- distribute controls that are not in common prefix
+            (prefix, [ctl1', ctl2']) = unDistribute [ctl1, ctl2]
+            m1' = distributeControls ctl1' m1
+            m2' = distributeControls ctl2' m2
     line :: Eq a => [MusicD a] -> MusicD a
-    line = lineD
+    line = foldr1 (/+/)
     chord :: Eq a => [MusicD a] -> MusicD a
-    chord = chordD
+    chord ms = MusicD q ctl (Data.List.nub <$> ms')
+        where (MusicD q ctl ms') = foldr1 (/=/) ms
     unLine :: Eq a => MusicD a -> [MusicD a]
-    unLine = unLineD
+    unLine (MusicD q ctl m) = [MusicD q ctl [seg] | seg <- m]
     unChord :: Eq a => MusicD a -> [MusicD a]
-    unChord = unChordD
+    unChord (MusicD q ctl m) = [MusicD q ctl (pure <$> ln) | ln <- lines]
+        where lines = transposeWithDefault (Untied ([], Rest q)) m
+    -- NB: ignores tempo variations at the note level
     dur :: MusicD a -> Dur
-    dur = durD
+    dur (MusicD q ctl m) = (q / tempoFactor) * (fromIntegral $ length m)
+        where tempoFactor = foldr (*) 1 (getTempo <$> ctl)
     durGCD :: MusicD a -> Rational
     durGCD (MusicD q _ _) = q
     scaleDurations :: Rational -> MusicD a -> MusicD a
-    scaleDurations = scaleDurationsD
+    scaleDurations c (MusicD q ctl m) = MusicD (q / c) ctl m
     cut :: Eq a => Dur -> MusicD a -> MusicD a
-    cut = cutD
+    cut d (MusicD q ctl m) = MusicD q ctl (take (floor (d / q)) m)
     pad :: Dur -> MusicD a -> MusicD a
-    pad = padD
+    pad d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
     stripControls :: MusicD a -> (Controls, MusicD a)
-    stripControls = stripControlsD
+    stripControls (MusicD q ctl m) = (ctl, MusicD q [] m)
     removeTempos :: MusicD a -> MusicD a
-    removeTempos = removeTemposD
+    removeTempos (MusicD q ctl m) = MusicD q (filter (not . isTempo) ctl) m
     distributeTempos :: MusicD a -> MusicD a
-    distributeTempos = distributeTemposD
+    distributeTempos (MusicD q ctl m) = MusicD (q / scale) ctl' m
+        where
+            (tempos, ctl') = Data.List.partition isTempo ctl
+            scale = foldr (*) 1 (getTempo <$> tempos)
     transpose :: AbsPitch -> MusicD a -> MusicD a
-    transpose = transposeD
+    transpose i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m

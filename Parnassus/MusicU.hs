@@ -8,7 +8,7 @@ module Parnassus.MusicU where
 import qualified Data.List (nub)
 import Data.Ratio
 
-import Euterpea hiding (chord, cut, dur, line, scaleDurations)
+import Euterpea hiding (chord, cut, dur, line, scaleDurations, toMusic1)
 import Parnassus.Utils
 import Parnassus.MusicBase
 
@@ -70,6 +70,8 @@ instance MusicT MusicU a where
     toMusic = mFoldU Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
     prim :: Primitive a -> MusicU a
     prim = primU
+    modify :: Control -> MusicU a -> MusicU a
+    modify = ModifyU
     (/+/) :: MusicU a -> MusicU a -> MusicU a
     (/+/) m1 Empty = m1
     (/+/) Empty m2 = m2
