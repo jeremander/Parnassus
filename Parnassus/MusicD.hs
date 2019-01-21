@@ -46,16 +46,17 @@ type ArrD a = [[Tied a]]
 data MusicD a = MusicD Dur Controls (ArrD a)
     deriving (Eq, Ord, Show)
 
-type MusicD1 = MusicD Note1
-
 -- gets the shape of the (padded) chord array of MusicD
 shape :: MusicD a -> (Int, Int)
 shape (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
 
 -- creates MusicD from a Primitive element with the given subdivision q
 primD :: Dur -> Primitive a -> MusicD a
-primD q p = MusicD q [] m
-    where m = case p of
+primD q p
+    | (q == 0)  = MusicD 0 [] []
+    | otherwise = MusicD q [] m
+    where 
+        m = case p of
             Euterpea.Rest d -> replicate (floor $ d / q) [Rest]
             Note d p        -> if (d < q)
                                     then [[]]
@@ -172,9 +173,12 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
             f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
             lines' = [Euterpea.line $ f <$> ln | ln <- lines]
     fromMusic :: Music a -> MusicD a
-    fromMusic m = MusicD q ctl (Data.List.nub <$> m')  -- dedupe identical notes/rests in a chord
+    fromMusic mus = MusicD q ctl m''
         where
-            MusicD q ctl m' = Parnassus.MusicBase.fromMusic m
+            g :: Control -> MusicD a -> MusicD a
+            g c (MusicD q' ctl' x') = MusicD q' (c : ctl') x'
+            (MusicD q ctl m') = mFold (primD $ durGCD mus) (/+/) (/=/) g mus
+            m'' = Data.List.nub . filter (not . isRest) <$> m'  -- dedupe identical notes, eliminate rests in a chord
     prim :: Primitive a -> MusicD a
     prim p = primD (durP p) p
     modify :: Control -> MusicD a -> MusicD a
@@ -248,7 +252,8 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                 chopNote (Tied p)       = replicate n (Tied p)
                 chopNote Rest           = [Rest] ++ replicate (n - 1) Rest
                 chopChord :: [Tied a] -> [[Tied a]]
-                chopChord = Data.List.transpose . map chopNote
+                chopChord [] = replicate n []
+                chopChord chrds = Data.List.transpose $ chopNote <$> chrds
                 -- "otherwise" case: need to process
                 -- group the chord array by quantization slices
                 groups1 :: [[(Rational, Rational, [Tied a], Bool)]]
@@ -324,16 +329,3 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
     split d mus@(MusicD q ctl m)
         | q `divides` d = [MusicD q ctl group | group <- chunkListWithDefault (truncate (d / q)) [Rest] m]
         | otherwise = split d (quantize (rationalGCD q d) mus)
-    changeTimeSig :: TimeSig -> TimeSig -> MusicD a -> MusicD a
-    changeTimeSig (n1, d1) (n2, d2) mus@(MusicD q ctl m) = modify ctl $ line measures'
-        where
-            r1 = (toInteger n1) % (toInteger d1)
-            r2 = (toInteger n2) % (toInteger d2)
-            -- ensure quantization is appropriate for measure splitting
-            q' = if (q `divides` r1) then q else (rationalGCD q r1)
-            mus' = quantize q' mus
-            measures = split r1 mus'  -- split the measures
-            measures' = quantize q' . scaleDurations (r1 / r2) <$> measures
-            -- rescale tempo externally so that the music's total duration is invariant
-            -- (strip this off to make note durations invariant)
-            ctl = Tempo (r2 / r1)

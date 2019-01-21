@@ -1,6 +1,7 @@
 TODO
 ----
-- quantize (1 % 24) mm3'
-- get mm3 & zelda to work
+- changing zelda's (q = 1 % 32) timeSig seems to do nothing
+    -  play $ withMetronome (14,8) $ changeTimeSig (12,8) (14,8) $ quantize (1 % 8) (cut 12 zelda)
+        - this works, but quantize at (1 % 16) and it doesn't
 - make things more efficient
 - map function for MusicD to manipulate all the leaf notes.

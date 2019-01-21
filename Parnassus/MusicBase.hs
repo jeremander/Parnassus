@@ -222,7 +222,20 @@ class Quantizable m a where
     -- splits the music into segments of the same length
     split :: Dur -> m a -> [m a]
     -- changes the time signature of the music
-    changeTimeSig :: TimeSig -> TimeSig -> m a -> m a
+    changeTimeSig :: (MusicT m a, Eq a) => TimeSig -> TimeSig -> m a -> m a
+    changeTimeSig (n1, d1) (n2, d2) mus = modify ctl $ line measures'
+        where
+            r1 = (toInteger n1) % (toInteger d1)
+            r2 = (toInteger n2) % (toInteger d2)
+            -- ensure quantization is appropriate for measure splitting
+            q = durGCD mus
+            q' = foldr1 rationalGCD [q, r1, r2]
+            mus' = quantize q' mus
+            measures = split r1 mus'  -- split the measures
+            measures' = quantize q' . scaleDurations (r1 / r2) <$> measures
+            -- rescale tempo externally so that the music's total duration is invariant
+            -- (strip this off to make note durations invariant)
+            ctl = Tempo (r2 / r1)
 
 -- class instances for Music
 

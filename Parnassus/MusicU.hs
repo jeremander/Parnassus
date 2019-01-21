@@ -17,8 +17,6 @@ import Parnassus.MusicBase
 data MusicU a = Empty | PrimU (Primitive a) | SeqU [MusicU a] | ParU [MusicU a] | ModifyU Control (MusicU a)
     deriving (Show, Eq, Ord)
 
-type MusicU1 = MusicU Note1
-
 primU :: Primitive a -> MusicU a
 primU (Rest d)   = if (d <= 0) then Empty else (PrimU $ Rest d)
 primU (Note d p) = if (d <= 0) then Empty else (PrimU $ Note d p)
@@ -54,20 +52,21 @@ combineU f con = combine
                 outerCtl = foldr1 op outerCtls
 
 -- general fold for MusicU
-mFoldU :: (Primitive a -> b) -> ([b] -> b) -> ([b] -> b) -> (Control -> b -> b) -> MusicU a -> b
-mFoldU f seqFold parFold g m = case m of
+mFoldU :: b -> (Primitive a -> b) -> ([b] -> b) -> ([b] -> b) -> (Control -> b -> b) -> MusicU a -> b
+mFoldU empty f seqFold parFold g m = case m of
+    Empty        -> empty
     PrimU p      -> f p
     SeqU ms      -> seqFold (map rec ms)
     ParU ms      -> parFold (map rec ms)
     ModifyU c m' -> g c (rec m')
     where
-        rec = mFoldU f seqFold parFold g
+        rec = mFoldU empty f seqFold parFold g
 
 instance MusicT MusicU a where
     fromMusic :: Music a -> MusicU a
     fromMusic = mFold primU (/+/) (/=/) ModifyU
     toMusic :: MusicU a -> Music a
-    toMusic = mFoldU Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
+    toMusic = mFoldU (Prim $ Rest 0) Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
     prim :: Primitive a -> MusicU a
     prim = primU
     modify :: Control -> MusicU a -> MusicU a
@@ -117,7 +116,7 @@ instance MusicT MusicU a where
     isEmpty Empty = True
     isEmpty _     = False
     durGCD :: MusicU a -> Rational
-    durGCD = mFoldU durP (foldr rationalGCD 1) (foldr rationalGCD 1) (curry snd)
+    durGCD = mFoldU 0 durP (foldr rationalGCD 1) (foldr rationalGCD 1) (curry snd)
     cut :: Eq a => Dur -> MusicU a -> MusicU a
     cut d m | d <= 0            = Empty
     cut _ Empty                 = Empty
@@ -140,7 +139,7 @@ instance MusicT MusicU a where
     pad d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (pad (d * r) m)
     pad d (ModifyU c m)         = ModifyU c (pad d m)
     stripControls :: MusicU a -> (Controls, MusicU a)
-    stripControls = mFoldU f (combine SeqU) (combine ParU) g
+    stripControls = mFoldU ([], Empty) f (combine SeqU) (combine ParU) g
         where
         f :: Primitive a -> (Controls, MusicU a)
         f p = ([], PrimU p)
@@ -151,15 +150,15 @@ instance MusicT MusicU a where
             where
                 (ctls, ms) = unzip pairs
                 (prefix, ctls') = unDistribute ctls  -- extract common controls
-                ms' = (((foldr (.) id) . (map ModifyU)) <$> ctls') <*> ms  -- reapply unextracted controls
+                ms' = [((foldr (.) id) $ (map ModifyU) $ ctl') $ m | ctl' <- ctls' | m <- ms]
     removeTempos :: MusicU a -> MusicU a
-    removeTempos = mFoldU PrimU SeqU ParU g
+    removeTempos = mFoldU Empty PrimU SeqU ParU g
         where
             g :: Control -> MusicU a -> MusicU a
             g (Tempo d) m = m
             g ctl m = ModifyU ctl m
     distributeTempos :: MusicU a -> MusicU a
-    distributeTempos = mFoldU prim SeqU ParU g
+    distributeTempos = mFoldU Empty prim SeqU ParU g
         where
             g :: Control -> MusicU a -> MusicU a
             g (Tempo t) m = scaleDurations t m

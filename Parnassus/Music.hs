@@ -16,22 +16,21 @@ import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, toMusic1, transpose)
-import Parnassus.Utils (aggMax, MapPlus (..), quantizeRationals, quantizeTime)
+import Parnassus.Utils (aggMax, MapPlus (..), quantizeRational, quantizeRationals, quantizeTime)
 import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (isRest, MusicD (..), MusicD1, primD, ToMusicD (..))
-import Parnassus.MusicU (mFoldU, MusicU (..), MusicU1, ToMusicU (..))
-
-import Parnassus.MusicD (isTied, extractTied)
+import Parnassus.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
+import Parnassus.MusicU (mFoldU, MusicU (..), ToMusicU (..))
 
 -- song paths
+inputPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/test/input/"
 vgmusicPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/vgmusic/"
 xmasPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/xmas/"
 
 -- songs
-zelda :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "loz_overworld.mid"
+zelda :: MusicU1 = unsafePerformIO $ fromMidiFile $ inputPath ++ "zelda.mid"
 mm3 :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "mm3_password.mid"
 gradius :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "gradius_stage4.mid"
-bells :: MusicU1 = unsafePerformIO $ fromMidiFile $ xmasPath ++ "ringxms.mid"
+bells :: MusicU1 = unsafePerformIO $ fromMidiFile $ inputPath ++ "bells.mid"
 
 twinkle :: MusicU Pitch = fromMusic $ line $ map ($ qn) (section1 ++ section2 ++ section2 ++ section1)
     where
@@ -43,6 +42,11 @@ twinkleBass :: MusicU Pitch = fromMusic $ line $ (section1 ++ section2 ++ sectio
         section2 = [e 3 hn, a 3 hn, f 3 en, e 3 en, f 3 en, fs 3 en, g 3 qn, g 2 qn]
 twinkle2 = twinkle /=/ twinkleBass
 
+-- Types --
+
+type MusicU1 = MusicU Note1
+type MusicD1 = MusicD Note1
+
 -- Metronome --
 
 -- metronome for a fixed time signature
@@ -52,17 +56,17 @@ metronome (n, d) r = modify (Instrument Percussion) $ line $ (prim <$> beats)
     where
         numBeats = ceiling (r * fromIntegral d)
         flags = [rem i n == 0 | i <- [0..]]
-        beats = take numBeats [Note (1 % toInteger d) (if flag then ((Ds, 5), [Volume 127]) else ((E, 5), [Volume 90])) | flag <- flags]
+        beats = take numBeats [Note (1 % toInteger d) (if flag then ((Ds, 5), [Volume 95]) else ((E, 5), [Volume 70])) | flag <- flags]
 
 -- overlays music with a metronome
 withMetronome :: (MusicT m Note1) => TimeSig -> m Note1 -> m Note1
 withMetronome ts mus = mus /=/ metro'
     where
-        d = dur mus
+        (tempo, mus') = stripTempo mus
+        d = dur mus'
         metro = metronome ts d
         -- modify metronome's tempo with the music's global tempo
-        (tempo, _) = stripTempo mus
-        metro' = modify tempo metro
+        metro' = distributeTempos $ modify tempo metro
 
 -- MusicT type conversions
 
@@ -71,7 +75,7 @@ convUtoD mus = MusicD q ctl m''
     where
         g :: Control -> MusicD a -> MusicD a
         g c (MusicD q' ctl' x') = MusicD q' (c : ctl') x'
-        (MusicD q ctl m') = mFoldU (primD $ durGCD mus) (foldr1 (/+/)) (foldr1 (/=/)) g mus
+        (MusicD q ctl m') = mFoldU (MusicD 0 [] []) (primD $ durGCD mus) (foldr1 (/+/)) (foldr1 (/=/)) g mus
         m'' = Data.List.nub . filter (not . isRest) <$> m'  -- dedupe identical notes, eliminate rests in a chord
 
 instance (Ord a, Pitched a) => ToMusicU MusicD a where
@@ -99,16 +103,18 @@ unConjD f = fromMusicD . f . toMusicD
 
 instance (Ord a, Pitched a) => Quantizable MusicU a where
     quantize :: Rational -> MusicU a -> MusicU a
-    quantize q = unConjD $ quantize q
+    --quantize q = unConjD $ quantize q
+    -- somewhat improve efficiency by quantizing parallel sections separately
+    quantize q mus = case mus of
+        ParU ms          -> ParU $ quantizeD <$> ms
+        ModifyU ctl mus' -> ModifyU ctl $ quantize q mus'
+        otherwise        -> quantizeD mus
+        where quantizeD = (unConjD $ quantize q)
     split :: Rational -> MusicU a -> [MusicU a]
     split d = (fromMusicD <$>) . split d . toMusicD
-    changeTimeSig :: TimeSig -> TimeSig -> MusicU a -> MusicU a
-    changeTimeSig ts1 ts2 = unConjD $ changeTimeSig ts1 ts2
 
 instance (Ord a, Pitched a) => Quantizable Music a where
     quantize :: Rational -> Music a -> Music a
     quantize q = fromMusicD . quantize q . toMusicD
     split :: Rational -> Music a -> [Music a]
     split d = (fromMusicD <$>) . split d . toMusicD
-    changeTimeSig :: TimeSig -> TimeSig -> Music a -> Music a
-    changeTimeSig ts1 ts2 = unConjD $ changeTimeSig ts1 ts2
