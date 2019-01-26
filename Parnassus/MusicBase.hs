@@ -12,7 +12,7 @@ import Data.Either (partitionEithers)
 import Data.List (partition)
 import Data.Ratio
 
-import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, toMusic1, transpose)
+import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
 import qualified Euterpea
 import qualified Euterpea.IO.MIDI.FromMidi
 import qualified Euterpea.IO.MIDI.ToMidi
@@ -163,6 +163,9 @@ class MusicT m a where
     -- cuts music to at most the given duration
     cut :: Eq a => Dur -> m a -> m a
     cut d = unConj $ Euterpea.cut d
+    -- removes some duration from the start of the music
+    remove :: Eq a => Dur -> m a -> m a
+    remove d = unConj $ Euterpea.remove d
     -- pads music to at least the given duration
     pad :: Eq a => Dur -> m a -> m a
     pad d = unConj $ pad' d
@@ -236,6 +239,7 @@ class Quantizable m a where
             -- rescale tempo externally so that the music's total duration is invariant
             -- (strip this off to make note durations invariant)
             ctl = Tempo (r2 / r1)
+
 
 -- class instances for Music
 

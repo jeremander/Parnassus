@@ -222,6 +222,8 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     scaleDurations c (MusicD q ctl m) = MusicD (q / c) ctl m
     cut :: Eq a => Dur -> MusicD a -> MusicD a
     cut d (MusicD q ctl m) = MusicD q ctl (take (floor (d / q)) m)
+    remove :: Eq a => Dur -> MusicD a -> MusicD a
+    remove d (MusicD q ctl m) = MusicD q ctl (drop (ceiling (d / q)) m)
     pad :: Dur -> MusicD a -> MusicD a
     pad d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
     stripControls :: MusicD a -> (Controls, MusicD a)

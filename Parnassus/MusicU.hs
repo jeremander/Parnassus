@@ -8,7 +8,7 @@ module Parnassus.MusicU where
 import qualified Data.List (nub)
 import Data.Ratio
 
-import Euterpea hiding (chord, cut, dur, line, scaleDurations, toMusic1)
+import Euterpea hiding (chord, cut, dur, line, remove, scaleDurations, toMusic1)
 import Parnassus.Utils
 import Parnassus.MusicBase
 
@@ -122,13 +122,26 @@ instance MusicT MusicU a where
     cut _ Empty                 = Empty
     cut d (PrimU (Note oldD p)) = prim $ Note (min oldD d) p
     cut d (PrimU (Rest oldD))   = prim $ Rest (min oldD d)
-    cut d (SeqU ms)             = line [cut maxDur m' | (m', maxDur) <- zip ms maxDurs, maxDur > 0]
+    cut d (SeqU ms)             = line [cut cutDur m | (m, cutDur) <- zip ms cutDurs, cutDur > 0]
         where
-            cumDurs = scanl (+) 0 (map dur ms)
-            maxDurs = [(d - cumDur) | cumDur <- cumDurs]
+            cumDurs = scanl (+) 0 (dur <$> ms)
+            cutDurs = [d - cumDur | cumDur <- cumDurs]
     cut d (ParU ms)             = chord ((cut d) <$> ms)
     cut d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (cut (d * r) m)
     cut d (ModifyU c m)         = ModifyU c (cut d m)
+    remove :: Eq a => Dur -> MusicU a -> MusicU a
+    remove d m | d <= 0            = m
+    remove d Empty                 = Empty
+    remove d (PrimU (Note oldD p)) = prim $ Note (max (oldD - d) 0) p
+    remove d (PrimU (Rest oldD))   = prim $ Rest (max (oldD - d) 0)
+    remove d (SeqU ms)             = line [remove dropDur m | (m, dropDur, d') <- zip3 ms dropDurs durs, dropDur < d']
+        where 
+            durs = dur <$> ms
+            cumDurs = scanl (+) 0 durs
+            dropDurs = [d - cumDur | cumDur <- cumDurs]
+    remove d (ParU ms)             = chord ((remove d) <$> ms)
+    remove d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (remove (d * r) m)
+    remove d (ModifyU c m)         = ModifyU c (remove d m)
     pad :: Eq a => Dur -> MusicU a -> MusicU a
     pad d Empty                 = prim $ Rest d
     pad d (PrimU (Note oldD p)) = prim $ Note (max oldD d) p

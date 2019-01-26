@@ -15,8 +15,8 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Ratio ((%))
 import System.IO.Unsafe (unsafePerformIO)
 
-import Euterpea hiding (chord, cut, dur, line, play, scaleDurations, toMusic1, transpose)
-import Parnassus.Utils (aggMax, MapPlus (..), quantizeRational, quantizeRationals, quantizeTime)
+import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
+import Parnassus.Utils (aggMax, MapPlus (..), quantizeRational, quantizeRationals, quantizeTime, transposeWithDefault)
 import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
 import Parnassus.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), ToMusicU (..))
@@ -56,7 +56,7 @@ metronome (n, d) r = modify (Instrument Percussion) $ line $ (prim <$> beats)
     where
         numBeats = ceiling (r * fromIntegral d)
         flags = [rem i n == 0 | i <- [0..]]
-        beats = take numBeats [Note (1 % toInteger d) (if flag then ((Ds, 5), [Volume 95]) else ((E, 5), [Volume 70])) | flag <- flags]
+        beats = take numBeats [Note (1 % toInteger d) (if flag then ((Ds, 5), [Volume 85]) else ((E, 5), [Volume 60])) | flag <- flags]
 
 -- overlays music with a metronome
 withMetronome :: (MusicT m Note1) => TimeSig -> m Note1 -> m Note1
@@ -102,19 +102,26 @@ unConjD :: (MusicT m a, ToMusicD m a) => (MusicD a -> MusicD a) -> (m a -> m a)
 unConjD f = fromMusicD . f . toMusicD
 
 instance (Ord a, Pitched a) => Quantizable MusicU a where
+    -- improve memory efficiency by quantizing parallel sections separately
     quantize :: Rational -> MusicU a -> MusicU a
-    --quantize q = unConjD $ quantize q
-    -- somewhat improve efficiency by quantizing parallel sections separately
+    --quantize q = unConjD $ quantize q  -- inefficient version
     quantize q mus = case mus of
-        ParU ms          -> ParU $ quantizeD <$> ms
+        Empty            -> Empty
+        ParU ms          -> chord $ quantize' <$> ms
         ModifyU ctl mus' -> ModifyU ctl $ quantize q mus'
-        otherwise        -> quantizeD mus
-        where quantizeD = (unConjD $ quantize q)
+        otherwise        -> quantize' mus
+        where quantize' = (unConjD $ quantize q)
     split :: Rational -> MusicU a -> [MusicU a]
-    split d = (fromMusicD <$>) . split d . toMusicD
+    split d mus = case mus of
+        Empty            -> []
+        ParU ms          -> ParU <$> transposeWithDefault (PrimU $ Rest d) (split d <$> ms)
+        ModifyU ctl mus' -> ModifyU ctl <$> split d mus'
+        otherwise        -> split' mus
+        where split' = (fromMusicD <$>) . split d . toMusicD
+
 
 instance (Ord a, Pitched a) => Quantizable Music a where
     quantize :: Rational -> Music a -> Music a
-    quantize q = fromMusicD . quantize q . toMusicD
+    quantize q = fromMusicU . quantize q . toMusicU
     split :: Rational -> Music a -> [Music a]
-    split d = (fromMusicD <$>) . split d . toMusicD
+    split d = (fromMusicU <$>) . split d . toMusicU
