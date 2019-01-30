@@ -10,12 +10,15 @@ outputPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/test/output/"
 
 -- songs
 twinkle = fromMidiFile $ inputPath ++ "twinkle.mid" :: IO MusicU1
+birthday = fromMidiFile $ inputPath ++ "birthday8.mid" :: IO MusicU1
 bells = fromMidiFile $ inputPath ++ "bells.mid" :: IO MusicU1
-zelda = quantize (1 % 16) <$> (fromMidiFile $ inputPath ++ "zelda.mid") :: IO MusicU1
-bach_invention4 = fromMidiFile $ inputPath ++ "bach_invention4.mid" :: IO MusicU1
+zelda = fromMidiFile $ inputPath ++ "zelda16.mid" :: IO MusicU1
+bach_invention4 = fromMidiFile $ inputPath ++ "invention.mid" :: IO MusicU1
 pachelbel = fromMidiFile $ inputPath ++ "pachelbel.mid" :: IO MusicU1
 turkish_march = fromMidiFile $ inputPath ++ "turkish_march.mid" :: IO MusicU1
-wedding_march = fromMidiFile $ inputPath ++ "wedding.mid" :: IO MusicU1
+wedding_march = fromMidiFile $ inputPath ++ "wedding_march.mid" :: IO MusicU1
+entertainer = fromMidiFile $ inputPath ++ "entertainer16.mid" :: IO MusicU1
+takefive = fromMidiFile $ inputPath ++ "takefive.mid" :: IO MusicU1
 
 
 type SongData = (String, Rational, TimeSig, MusicU1)
@@ -24,13 +27,16 @@ mkSongData :: String -> Rational -> TimeSig -> IO MusicU1 -> IO SongData
 mkSongData name tempo timeSig = liftM ((,,,) name tempo timeSig)
 
 songData = [
-    -- mkSongData "twinkle" (9 % 8)  (4, 4)  twinkle,
-    -- mkSongData "bells"   (7 % 5)  (6, 8)  bells,
-    -- mkSongData "zelda"   (16 % 9) (12, 8) zelda,
-    -- mkSongData "invention" (2 % 3) (3, 8) bach_invention4,
-    --mkSongData "pachelbel" (1 % 1) (4, 4) pachelbel,
-    mkSongData "turkish_march" (6 % 5) (4, 8) turkish_march,
-    mkSongData "wedding_march" (1 % 5) (4, 4) wedding_march
+    mkSongData "twinkle" (9 % 8)  (4, 4)  twinkle,
+    mkSongData "birthday" (1 % 1) (3, 4) birthday
+    mkSongData "bells"   (7 % 5)  (6, 8)  bells,
+    mkSongData "zelda"   (16 % 9) (12, 8) zelda,
+    mkSongData "invention" (2 % 3) (3, 8) bach_invention4,
+    mkSongData "pachelbel" (1 % 1) (4, 4) pachelbel,
+    mkSongData "turkish_march" (6 % 5) (4, 8) turkish_march
+    mkSongData "wedding_march" (1 % 1) (12, 12) wedding_march
+    mkSongData "entertainer" (8 % 11) (4, 8) entertainer
+    mkSongData "takefive" (7 % 5) (5, 4) takefive
     ]
 
 timeSigMappings = [(n, d) | n <- [2..15], d <- [1, 2]]

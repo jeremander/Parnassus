@@ -109,16 +109,11 @@ instance (Ord a, Pitched a) => Quantizable MusicU a where
         Empty            -> Empty
         ParU ms          -> chord $ quantize' <$> ms
         ModifyU ctl mus' -> ModifyU ctl $ quantize q mus'
-        otherwise        -> quantize' mus
+        otherwise        -> quantize' mus  -- TODO: make more efficient
         where quantize' = (unConjD $ quantize q)
     split :: Rational -> MusicU a -> [MusicU a]
-    split d mus = case mus of
-        Empty            -> []
-        ParU ms          -> ParU <$> transposeWithDefault (PrimU $ Rest d) (split d <$> ms)
-        ModifyU ctl mus' -> ModifyU ctl <$> split d mus'
-        otherwise        -> split' mus
-        where split' = (fromMusicD <$>) . split d . toMusicD
-
+    split d mus = fst <$> takeWhile (\(prev, _) -> not $ isEmpty prev) (tail pairs)
+        where pairs = [(Empty, mus)] ++ [bisect d prev | (_, prev) <- pairs]
 
 instance (Ord a, Pitched a) => Quantizable Music a where
     quantize :: Rational -> Music a -> Music a

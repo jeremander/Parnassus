@@ -7,8 +7,9 @@ module Parnassus.MusicU where
 
 import qualified Data.List (nub)
 import Data.Ratio
+import Data.Tuple.Select
 
-import Euterpea hiding (chord, cut, dur, line, remove, scaleDurations, toMusic1)
+import Euterpea hiding (chord, dur, line, scaleDurations, toMusic1)
 import Parnassus.Utils
 import Parnassus.MusicBase
 
@@ -16,10 +17,6 @@ import Parnassus.MusicBase
 -- unassociative music data structure (isomorphic to Music)
 data MusicU a = Empty | PrimU (Primitive a) | SeqU [MusicU a] | ParU [MusicU a] | ModifyU Control (MusicU a)
     deriving (Show, Eq, Ord)
-
-primU :: Primitive a -> MusicU a
-primU (Rest d)   = if (d <= 0) then Empty else (PrimU $ Rest d)
-primU (Note d p) = if (d <= 0) then Empty else (PrimU $ Note d p)
 
 -- strips away outer control, returning the control (if present) and the remaining MusicU
 stripControlU :: MusicU a -> (Maybe Control, MusicU a)
@@ -64,11 +61,12 @@ mFoldU empty f seqFold parFold g m = case m of
 
 instance MusicT MusicU a where
     fromMusic :: Music a -> MusicU a
-    fromMusic = mFold primU (/+/) (/=/) ModifyU
+    fromMusic = mFold prim (/+/) (/=/) ModifyU
     toMusic :: MusicU a -> Music a
     toMusic = mFoldU (Prim $ Rest 0) Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
     prim :: Primitive a -> MusicU a
-    prim = primU
+    prim (Rest d)   = if (d <= 0) then Empty else (PrimU $ Rest d)
+    prim (Note d p) = if (d <= 0) then Empty else (PrimU $ Note d p)
     modify :: Control -> MusicU a -> MusicU a
     modify = ModifyU
     (/+/) :: MusicU a -> MusicU a -> MusicU a
@@ -113,35 +111,35 @@ instance MusicT MusicU a where
     dur (ModifyU (Tempo r) m) = dur m / r
     dur (ModifyU _ m) = dur m
     isEmpty :: MusicU a -> Bool
-    isEmpty Empty = True
-    isEmpty _     = False
+    isEmpty Empty         = True
+    isEmpty (ModifyU _ m) = isEmpty m
+    isEmpty _             = False
     durGCD :: MusicU a -> Rational
     durGCD = mFoldU 0 durP (foldr rationalGCD 1) (foldr rationalGCD 1) (curry snd)
-    cut :: Eq a => Dur -> MusicU a -> MusicU a
-    cut d m | d <= 0            = Empty
-    cut _ Empty                 = Empty
-    cut d (PrimU (Note oldD p)) = prim $ Note (min oldD d) p
-    cut d (PrimU (Rest oldD))   = prim $ Rest (min oldD d)
-    cut d (SeqU ms)             = line [cut cutDur m | (m, cutDur) <- zip ms cutDurs, cutDur > 0]
+    bisect :: Eq a => Dur -> MusicU a -> (MusicU a, MusicU a)
+    bisect d m | d <= 0            = (Empty, m)
+    bisect _ Empty                 = (Empty, Empty)
+    bisect d (PrimU (Note oldD p)) = (prim $ Note (min oldD d) p, prim $ Note (oldD - d) p)
+    bisect d (PrimU (Rest oldD))   = (prim $ Rest (min oldD d), prim $ Rest (oldD - d))
+    bisect d (SeqU ms)             = (line left', line right')
         where
-            cumDurs = scanl (+) 0 (dur <$> ms)
-            cutDurs = [d - cumDur | cumDur <- cumDurs]
-    cut d (ParU ms)             = chord ((cut d) <$> ms)
-    cut d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (cut (d * r) m)
-    cut d (ModifyU c m)         = ModifyU c (cut d m)
-    remove :: Eq a => Dur -> MusicU a -> MusicU a
-    remove d m | d <= 0            = m
-    remove d Empty                 = Empty
-    remove d (PrimU (Note oldD p)) = prim $ Note (max (oldD - d) 0) p
-    remove d (PrimU (Rest oldD))   = prim $ Rest (max (oldD - d) 0)
-    remove d (SeqU ms)             = line [remove dropDur m | (m, dropDur, d') <- zip3 ms dropDurs durs, dropDur < d']
-        where 
             durs = dur <$> ms
             cumDurs = scanl (+) 0 durs
-            dropDurs = [d - cumDur | cumDur <- cumDurs]
-    remove d (ParU ms)             = chord ((remove d) <$> ms)
-    remove d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (remove (d * r) m)
-    remove d (ModifyU c m)         = ModifyU c (remove d m)
+            items = zip3 (tail cumDurs) durs ms
+            (items1, items2) = span (\(cd, _, _) -> cd - d <= 0) items
+            emptyRight = null items2
+            (cd', d', mid) = if emptyRight then (0, 0, Empty) else (head items2)
+            (midLeft, midRight) = bisect (d' + d - cd') mid
+            (left, right) = (sel3 <$> items1, sel3 <$> items2)
+            left' = if (isEmpty midLeft) then left else (left ++ [midLeft])
+            right' = midRight : (if emptyRight then [] else tail right)
+    bisect d (ParU ms)             = (chord lefts, chord rights)
+        where
+            (lefts, rights) = unzip $ (bisect d) <$> ms
+    bisect d (ModifyU (Tempo r) m) = (ModifyU (Tempo r) mhead, ModifyU (Tempo r) mtail)
+        where (mhead, mtail) = bisect (d * r) m
+    bisect d (ModifyU ctl m)        = (ModifyU ctl mhead, ModifyU ctl mtail)
+        where (mhead, mtail) = bisect d m
     pad :: Eq a => Dur -> MusicU a -> MusicU a
     pad d Empty                 = prim $ Rest d
     pad d (PrimU (Note oldD p)) = prim $ Note (max oldD d) p

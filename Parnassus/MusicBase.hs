@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
@@ -89,6 +90,11 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
         g (Tempo t) m = Euterpea.scaleDurations t m
         g ctl m = Modify ctl m
 
+-- Gets the tempo from a Tempo control (1 if not a tempo)
+extractTempo :: Control -> Rational
+extractTempo (Tempo t) = t
+extractTempo _         = 1
+
 infixr 5 /+/, /=/
 
 -- Type class for basic music interface
@@ -160,12 +166,14 @@ class MusicT m a where
     -- scales durations down by a constant
     scaleDurations :: Rational -> m a -> m a
     scaleDurations c = unConj $ Euterpea.scaleDurations c
+    -- bisects music into two sections
+    bisect :: Eq a => Dur -> m a -> (m a, m a)
     -- cuts music to at most the given duration
     cut :: Eq a => Dur -> m a -> m a
-    cut d = unConj $ Euterpea.cut d
+    cut d = fst . bisect d
     -- removes some duration from the start of the music
     remove :: Eq a => Dur -> m a -> m a
-    remove d = unConj $ Euterpea.remove d
+    remove d = snd . bisect d
     -- pads music to at least the given duration
     pad :: Eq a => Dur -> m a -> m a
     pad d = unConj $ pad' d
@@ -187,9 +195,6 @@ class MusicT m a where
             isTempo :: Control -> Bool
             isTempo (Tempo _) = True
             isTempo _         = False
-            extractTempo :: Control -> Rational
-            extractTempo (Tempo t) = t
-            extractTempo _         = 1
             (tempos, nonTempos) = partition isTempo ctls
             tempo = Tempo $ foldr (*) 1 (extractTempo <$> tempos)
             ctlMod = composeFuncs (modify <$> nonTempos)
@@ -246,6 +251,26 @@ class Quantizable m a where
 instance MusicT Music a where
     toMusic = id
     fromMusic = id
+    bisect :: Eq a => Dur -> Music a -> (Music a, Music a)
+    bisect d m | d <= 0             = (rest 0, m)
+    bisect d m@(Prim (Note oldD p)) = if (d < oldD) then (note d p, note (oldD - d) p) else (m, rest 0)
+    bisect d m@(Prim (Rest oldD))   = if (d < oldD) then (rest d, rest (oldD - d)) else (m, rest 0)
+    bisect d (m1 :+: m2)
+        | d == d1 = (m1, m2)
+        | d < d1  = (m1head, m1tail :+: m2)
+        | d > d1  = (m1 :+: m2head, m2tail)
+        where
+            d1 = dur m1
+            (m1head, m1tail) = bisect d m1
+            (m2head, m2tail) = bisect (d - d1) m2
+    bisect d (m1 :=: m2)            = (m1head :=: m2head, m1tail :=: m2tail)
+        where
+            (m1head, m1tail) = bisect d m1
+            (m2head, m2tail) = bisect d m2
+    bisect d (Modify (Tempo r) m)   = (tempo r mhead, tempo r mtail)
+        where (mhead, mtail) = bisect (d * r) m
+    bisect d (Modify ctl m)         = (Modify ctl mhead, Modify ctl mtail)
+        where (mhead, mtail) = bisect d m
 
 instance ToMidi Music
 

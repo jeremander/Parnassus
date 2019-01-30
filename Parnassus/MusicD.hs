@@ -167,7 +167,7 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
         where
             ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
-            maxlen = maximum (length <$> m)
+            maxlen = max 1 (maximum $ length <$> m)
             m' = padListWithDefault maxlen Rest <$> m
             lines = resolveTies q <$> greedyMatchSeq tiedNoteDistance m'  -- simplify the lines by agglomerating rests & tied notes
             f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
@@ -220,10 +220,12 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     durGCD (MusicD q _ _) = q
     scaleDurations :: Rational -> MusicD a -> MusicD a
     scaleDurations c (MusicD q ctl m) = MusicD (q / c) ctl m
-    cut :: Eq a => Dur -> MusicD a -> MusicD a
-    cut d (MusicD q ctl m) = MusicD q ctl (take (floor (d / q)) m)
-    remove :: Eq a => Dur -> MusicD a -> MusicD a
-    remove d (MusicD q ctl m) = MusicD q ctl (drop (ceiling (d / q)) m)
+    bisect :: Eq a => Dur -> MusicD a -> (MusicD a, MusicD a)
+    bisect d (MusicD q ctl m) = (MusicD q ctl mhead, MusicD q ctl mtail)
+        where
+            t = foldr (*) 1 (extractTempo <$> ctl)
+            d' = d / t  -- scale duration by the tempo
+            (mhead, mtail) = splitAt (round (d' / q)) m
     pad :: Dur -> MusicD a -> MusicD a
     pad d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
     stripControls :: MusicD a -> (Controls, MusicD a)
