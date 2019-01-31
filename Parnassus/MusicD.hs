@@ -41,7 +41,7 @@ isRest _    = False
 type ArrD a = [[Tied a]]
 
 -- "dense" music data structure
--- represents music as a sequence of chords with fixed duration q (which should be the smallest subdivision of the music
+-- represents music as a sequence of chords with fixed duration q (which should be the smallest subdivision of the music)
 -- can support a list of global controls to be applied to the whole music
 data MusicD a = MusicD Dur Controls (ArrD a)
     deriving (Eq, Ord, Show)

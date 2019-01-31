@@ -28,14 +28,14 @@ mkSongData name tempo timeSig = liftM ((,,,) name tempo timeSig)
 
 songData = [
     mkSongData "twinkle" (9 % 8)  (4, 4)  twinkle,
-    mkSongData "birthday" (1 % 1) (3, 4) birthday
+    mkSongData "birthday" (1 % 1) (3, 4) birthday,
     mkSongData "bells"   (7 % 5)  (6, 8)  bells,
     mkSongData "zelda"   (16 % 9) (12, 8) zelda,
     mkSongData "invention" (2 % 3) (3, 8) bach_invention4,
     mkSongData "pachelbel" (1 % 1) (4, 4) pachelbel,
-    mkSongData "turkish_march" (6 % 5) (4, 8) turkish_march
-    mkSongData "wedding_march" (1 % 1) (12, 12) wedding_march
-    mkSongData "entertainer" (8 % 11) (4, 8) entertainer
+    mkSongData "turkish_march" (6 % 5) (4, 8) turkish_march,
+    mkSongData "wedding_march" (1 % 1) (12, 12) wedding_march,
+    mkSongData "entertainer" (8 % 11) (4, 8) entertainer,
     mkSongData "takefive" (7 % 5) (5, 4) takefive
     ]
 
