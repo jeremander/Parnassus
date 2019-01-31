@@ -5,8 +5,8 @@ import Euterpea (Control (..))
 import Parnassus.MusicBase (fromMidiFile, MusicT (..), Quantizable (..), TimeSig, toMidiFile)
 import Parnassus.Music (MusicU1, withMetronome)
 
-inputPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/test/input/"
-outputPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/test/output/"
+inputPath = "tunes/test/input/"
+outputPath = "tunes/test/output/"
 
 -- songs
 twinkle = fromMidiFile $ inputPath ++ "twinkle.mid" :: IO MusicU1
