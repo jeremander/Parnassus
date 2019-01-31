@@ -13,7 +13,6 @@ import qualified Data.List (nub, transpose)
 import qualified Data.Map
 import Data.Maybe (isJust, listToMaybe)
 import Data.Ratio ((%))
-import System.IO.Unsafe (unsafePerformIO)
 
 import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
 import Parnassus.Utils (aggMax, MapPlus (..), quantizeRational, quantizeRationals, quantizeTime, transposeWithDefault)
@@ -21,16 +20,7 @@ import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToM
 import Parnassus.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), ToMusicU (..))
 
--- song paths
-inputPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/test/input/"
-vgmusicPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/vgmusic/"
-xmasPath :: String = "/Users/jeremander/Programming/Music/Parnassus/tunes/xmas/"
-
 -- songs
-zelda :: MusicU1 = unsafePerformIO $ fromMidiFile $ inputPath ++ "zelda.mid"
-mm3 :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "mm3_password.mid"
-gradius :: MusicU1 = unsafePerformIO $ fromMidiFile $ vgmusicPath ++ "gradius_stage4.mid"
-bells :: MusicU1 = unsafePerformIO $ fromMidiFile $ inputPath ++ "bells.mid"
 
 twinkle :: MusicU Pitch = fromMusic $ line $ map ($ qn) (section1 ++ section2 ++ section2 ++ section1)
     where
