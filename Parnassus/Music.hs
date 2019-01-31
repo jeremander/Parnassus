@@ -15,7 +15,7 @@ import Data.Maybe (isJust, listToMaybe)
 import Data.Ratio ((%))
 
 import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
-import Parnassus.Utils (aggMax, MapPlus (..), quantizeRational, quantizeRationals, quantizeTime, transposeWithDefault)
+import Parnassus.Utils (quantizeRational, quantizeRationals, quantizeTime, transposeWithDefault)
 import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
 import Parnassus.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), ToMusicU (..))

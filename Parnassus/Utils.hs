@@ -5,36 +5,10 @@ module Parnassus.Utils where
 import Control.Arrow (second)
 import qualified Data.List (transpose)
 import Data.List.Split (chunksOf)
-import qualified Data.Map
-import Data.Semigroup
 import qualified Data.Set
 import Data.Ratio
 import Data.Tuple.Select
 
-
--- MapPlus --
-
-newtype MapPlus k v = MapPlus {getMapPlus :: Data.Map.Map k v}
-
-instance (Ord k, Semigroup v) => Semigroup (MapPlus k v) where
-    MapPlus x <> MapPlus y = MapPlus $ Data.Map.unionWith (<>) x y
-
-instance (Ord k, Semigroup v) => Monoid (MapPlus k v) where
-    mempty = MapPlus mempty
-    mappend = (<>)
-
--- given a list of key-value pairs, where values can be added as a semigroup, aggregates the items into a Map from unique keys to the sum of the values
-aggregate :: (Ord k, Semigroup m) => (v -> m) -> (m -> v) -> [(k, v)] -> Data.Map.Map k v
-aggregate toMonoid fromMonoid pairs = Data.Map.map fromMonoid $ getMapPlus agg
-    where
-        singletons = MapPlus . (uncurry Data.Map.singleton) . (second toMonoid) <$> pairs
-        agg = foldr (<>) (MapPlus Data.Map.empty) singletons
-
-aggSum :: (Ord k, Num v) => [(k, v)] -> Data.Map.Map k v
-aggSum pairs = aggregate Sum getSum pairs
-
-aggMax :: (Ord k, Ord v) => [(k, v)] -> Data.Map.Map k v
-aggMax pairs = aggregate Max getMax pairs
 
 -- MISC --
 
@@ -132,7 +106,6 @@ lazyGroupWith f (x:xs) = (x : gp) : lazyGroupWith f rest
         (gp, rest) = break pred xs
 
 -- given rational q and a sequence of (x_i, t_i) pairs, where the x_i are values and the t_i are increasing times delimiting time intervals (including start and end points), returns a list of groups of intervals taking place within each q interval, consisting of (start, duration, x, flag), where x denotes the original value, and flag is True if the interval is a continuation of an interval from the previous group
-
 quantizeTime :: Rational -> [(a, Rational)] -> [[(Rational, Rational, a, Bool)]]
 quantizeTime q [] = []
 quantizeTime q pairs = lazyGroupWith (truncate . (/q) . sel1) items'
@@ -146,8 +119,3 @@ quantizeTime q pairs = lazyGroupWith (truncate . (/q) . sel1) items'
         f x (Just y) = y
         values = scanl f x0 $ map sel3 items
         items' = [(t, d, x, flag) | (t, d, _, flag) <- items | x <- tail values]
-
-test = [0, 1 % 3, 2 % 3, 1, 5 % 4, 3 % 2, 5 % 2, 10 % 3, 4, 21 % 5, 22 % 5, 23 % 5, 24 % 5, 5, 21 % 4, 25 % 4, 33 % 4, 10]
-
-test1 = zip [0..] test
-test2 = zip "abcdefghijklmnopqrstuvwxyz" test
