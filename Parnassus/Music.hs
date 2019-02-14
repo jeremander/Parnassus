@@ -110,3 +110,6 @@ instance (Ord a, Pitched a) => Quantizable Music a where
     quantize q = fromMusicU . quantize q . toMusicU
     split :: Rational -> Music a -> [Music a]
     split d = (fromMusicU <$>) . split d . toMusicU
+
+-- toMusicD $ scaleDurations (4 % 5) $ ((split 1 $ quantize (1 % 8) twinkle) !! 0)
+--quantize (1 % 8) $ toMusicD $ scaleDurations (4 % 5) $ ((split 1 $ quantize (1 % 8) twinkle) !! 0)

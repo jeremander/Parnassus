@@ -12,6 +12,9 @@ import Data.Tuple.Select
 
 -- MISC --
 
+prod :: (Foldable f, Num a) => f a -> a
+prod = foldr (*) 1
+
 -- merges two sorted lists, but terminates when the second list is exhausted
 -- f is the sort key
 merge :: Ord b => (a -> b) -> [a] -> [a] -> [a]

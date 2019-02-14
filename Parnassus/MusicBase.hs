@@ -7,11 +7,16 @@
 
 module Parnassus.MusicBase where
 
-import Codec.Midi
+import Codec.Midi hiding (Key)
 import Control.DeepSeq (NFData)
 import Data.Either (partitionEithers)
 import Data.List (partition)
+import qualified Data.Map
+import Data.Maybe (fromJust)
 import Data.Ratio
+import qualified Music.Lilypond as LP
+import System.Process (rawSystem)
+import Text.Pretty (braces, pretty)
 
 import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
 import qualified Euterpea
@@ -23,6 +28,7 @@ import Parnassus.Utils
 
 type Controls = [Control]
 type TimeSig = (Int, Int)
+type Key = (PitchClass, Mode)
 
 class Pitched a where
     getPitch :: a -> Pitch
@@ -42,6 +48,11 @@ durP :: Primitive a -> Dur
 durP p = case p of
     Rest d   -> d
     Note d _ -> d
+
+-- Gets the tempo from a Tempo control (1 if not a tempo)
+extractTempo :: Control -> Rational
+extractTempo (Tempo t) = t
+extractTempo _         = 1
 
 unChord' :: Music a -> [Music a]
 unChord' (x :=: y) = unChord' x ++ unChord' y
@@ -90,10 +101,56 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
         g (Tempo t) m = Euterpea.scaleDurations t m
         g ctl m = Modify ctl m
 
--- Gets the tempo from a Tempo control (1 if not a tempo)
-extractTempo :: Control -> Rational
-extractTempo (Tempo t) = t
-extractTempo _         = 1
+-- Lilypond conversion --
+
+-- converts Euterpea PitchClass to Lilypond PitchClass (with Accidental)
+noteMapping :: Data.Map.Map PitchClass (LP.PitchClass, LP.Accidental)
+noteMapping = Data.Map.fromList [(Cff, (LP.C, -2)), (Cf, (LP.C, -1)), (C, (LP.C, 0)), (Dff, (LP.D, -2)), (Cs, (LP.C, 1)), (Df, (LP.D, -1)), (Css, (LP.C, 2)), (D, (LP.D, 0)), (Eff, (LP.E, -2)), (Ds, (LP.D, 1)), (Ef, (LP.E, -1)), (Fff, (LP.F, -2)), (Dss, (LP.D, 2)), (E, (LP.E, 0)), (Ff, (LP.F, -1)), (Es, (LP.E, 1)), (F, (LP.F, 0)), (Gff, (LP.G, -2)), (Ess, (LP.E, 2)), (Fs, (LP.F, 1)), (Gf, (LP.G, -1)), (Fss, (LP.F, 2)), (G, (LP.G, 0)), (Aff, (LP.A, -2)), (Gs, (LP.G, 1)), (Af, (LP.A, -1)), (Gss, (LP.G, 2)), (A, (LP.A, 0)), (Bff, (LP.B, -2)), (As, (LP.A, 1)), (Bf, (LP.B, -1)), (Ass, (LP.A, 2)), (B, (LP.B, 0)), (Bs, (LP.B, 1)), (Bss, (LP.B, 2))]
+
+-- converts a proper mode to the corresponding major or minor key signature
+modeToMajMin :: Key -> LP.Music
+modeToMajMin (pc, mode) = LP.Key (LP.Pitch (pc'', acc, 0)) mode'
+    where
+        (pc', mode') = case mode of
+            Major      -> (pc, LP.Major)
+            Minor      -> (pc, LP.Minor)
+            Ionian     -> (pc, LP.Major)
+            Dorian     -> (fst $ pitch (absPitch (pc, 4) - 5), LP.Minor)
+            Phrygian   -> (fst $ pitch (absPitch (pc, 4) - 7), LP.Minor)
+            Lydian     -> (fst $ pitch (absPitch (pc, 4) - 5), LP.Minor)
+            Mixolydian -> (fst $ pitch (absPitch (pc, 4) - 7), LP.Major)
+            Aeolian    -> (pc, LP.Minor)
+            Locrian    -> (fst $ pitch (absPitch (pc, 4) + 1), LP.Major)
+            _          -> (pc, LP.Major)
+        (pc'', acc) = fromJust $ Data.Map.lookup pc' noteMapping
+
+toLilypond' :: (Pitched a) => Music a -> LP.Music
+toLilypond' = mFold f combineSeq combinePar g
+    where
+        f :: (Pitched a) => Primitive a -> LP.Music
+        f (Note d x) = LP.Note (LP.NotePitch (LP.Pitch (p', acc, oct + 1)) Nothing) (Just (LP.Duration d)) []
+            where
+                (p, oct) = getPitch x
+                (p', acc) = fromJust $ Data.Map.lookup p noteMapping
+        f (Rest d) = LP.Rest (Just (LP.Duration d)) []
+        combineSeq :: LP.Music -> LP.Music -> LP.Music
+        combineSeq m1 m2 = LP.Sequential [m1, m2]
+        combinePar :: LP.Music -> LP.Music -> LP.Music
+        combinePar m1 m2 = LP.Simultaneous True [m1, m2]
+        g :: Control -> LP.Music -> LP.Music
+        -- Lilypond library wrongly uses \time instead of \tempo: fix this
+        -- g (Tempo r) m         = LP.Sequential [t, m]
+        --     where
+        --         bpm = round $ 120 * r
+        --         t = LP.Tempo Nothing (Just (LP.Duration (1 % 4), bpm))
+        g (Transpose d) m     = LP.Transpose (LP.Pitch (LP.C, 0, 4)) (LP.Pitch (p', acc, oct)) m
+            where
+                (p, oct) = pitch (absPitch (C, 4) + d)
+                (p', acc) = fromJust $ Data.Map.lookup p noteMapping
+        g (Instrument inst) m = LP.Set "Staff.instrumentName" (LP.toValue $ show inst)
+        g (KeySig p mode) m   = LP.Sequential [key, m]
+            where key = modeToMajMin (p, mode)
+        g _ m                 = m  -- TODO: PhraseAttribute
 
 infixr 5 /+/, /=/
 
@@ -103,6 +160,20 @@ class MusicT m a where
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
     fromMusic :: Music a -> m a
+    -- converts music to a Lilypond string
+    toLilypond :: (Pitched a) => m a -> String -> TimeSig -> String
+    toLilypond mus title (n, d) = header ++ (show $ pretty mus')
+        where
+            mus' = LP.Sequential [LP.Time (toInteger n) (toInteger d), toLilypond' $ toMusic mus]
+            header = "\\header {title = " ++ show title ++ "}\n"
+    -- converts music to PDF via Lilypond
+    toPDF :: (Pitched a) => m a -> String -> TimeSig -> IO ()
+    toPDF mus title ts = do
+        let path = title ++ ".ly"
+        let content = toLilypond mus title ts
+        writeFile path content
+        _ <- rawSystem "lilypond" [path]
+        return ()
     -- if possible, convert to Music1
     toMusic1 :: ToMusic1 a => m a -> Music1
     toMusic1 = Euterpea.toMusic1 . toMusic

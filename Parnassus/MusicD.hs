@@ -7,7 +7,6 @@ module Parnassus.MusicD where
 
 import Control.Monad (join)
 import Data.Foldable (foldl')
-import Data.Function (on)
 import qualified Data.List (nub, partition, sort, sortBy, transpose)
 import Data.Ratio
 import Data.Sort (sortOn)
@@ -18,6 +17,8 @@ import Euterpea hiding (line, Rest, scaleDurations)
 import qualified Euterpea
 import Parnassus.Utils
 import Parnassus.MusicBase 
+
+import Debug.Trace
 
 
 data Tied a = Untied Controls a | Tied a | Rest
@@ -273,7 +274,14 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                 groups2 = join . map distrib <$> groups1
                 -- tie together identical notes
                 combine :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
-                combine (t1, d1, p1, flag1) (_, d2, p2, flag2) = (t1, d1 + d2, p1, (isTied p1 || flag1) && (isTied p2 || flag2))
+                -- combine (t1, d1, p1, flag1) (_, d2, p2, flag2) = (t1, d1 + d2, p1, (isTied p1 || flag1) && (isTied p2 || flag2))
+                combine (t1, d1, p1, flag1) (_, d2, p2, flag2) = (t1, d1 + d2, p, flag)
+                    where
+                        p = case (p1, p2) of
+                                (Tied _, Tied _) -> p1
+                                (Untied _ _, _)  -> p1
+                                otherwise        -> p2
+                        flag = (isTied p1 || flag1) && (isTied p2 || flag2)
                 groups3 :: [[(Rational, Rational, Tied a, Bool)]]
                 groups3 = (map $ foldr1 combine) . groupWith (extractTied . sel3) <$> groups2
                 -- keep only notes that fill up at least half the quantization interval (if untied), or more than half (if tied)
@@ -287,11 +295,9 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                     where
                         pairs = [(extractTied x1, t1 + d1) | (t1, d1, x1, _) <- xs1]
                         f :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
-                        f (t2, d2, x2, flag) = case (x2, flag) of
-                            (Tied p, _)           -> (t2, d2, Tied p, tiePermitted)
-                            (Untied ctl p, True)  -> (t2, d2, Untied ctl p, tiePermitted)
-                            (Untied ctl p, False) -> (t2, d2, Untied ctl p, False)
-                            otherwise             -> (t2, d2, x2, flag)
+                        f (t2, d2, x2, flag) = case x2 of
+                            Tied p       -> (t2, d2, Tied p, flag && tiePermitted)
+                            Untied ctl p -> (t2, d2, Untied ctl p, flag && tiePermitted)
                             where
                                 note2 = extractTied x2
                                 -- does a previous note tie with this note?
@@ -333,3 +339,5 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
     split d mus@(MusicD q ctl m)
         | q `divides` d = [MusicD q ctl group | group <- chunkListWithDefault (truncate (d / q)) [Rest] m]
         | otherwise = split d (quantize (rationalGCD q d) mus)
+
+z = (MusicD (1 % 16) [] [[Untied [] (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Untied [] (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Untied [] (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)],[Untied [] (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)]])::(MusicD Pitch)
