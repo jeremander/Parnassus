@@ -15,6 +15,14 @@ import Data.Tuple.Select
 prod :: (Foldable f, Num a) => f a -> a
 prod = foldr (*) 1
 
+-- given n, a list of sorted indices in [0, n), and a list of items, selects items from the list at the corresponding indices
+-- does no bounds checking
+selector :: Int -> [Int] -> [a] -> [a]
+selector n indices xs = fst <$> filter snd (zip xs indexIndicators)
+    where
+        indexSet = Data.Set.fromList indices
+        indexIndicators = [Data.Set.member i indexSet | i <- [0..(n - 1)]]
+
 -- merges two sorted lists, but terminates when the second list is exhausted
 -- f is the sort key
 merge :: Ord b => (a -> b) -> [a] -> [a] -> [a]

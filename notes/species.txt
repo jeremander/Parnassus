@@ -1,0 +1,48 @@
+Species inherits from Composition class.
+Has two tracks, cantus firmus and counterpoint. (T.B.D what voice parts, possibly tenor and alto).
+
+
+
+Define function on two pairs of notes determining type of motion. Make dictionary for perfect consonances, imperfect consonances, and dissonances, i.e. what intervals are permitted. Certain types of motion only permitted with certain interval types. Create predicates defined over either motions or intervals determining whether a violation has occurred. Have a function evaluate all of these predicates over the entire composition, listing all the violations. Possibly have some score associated with violations. Could also have scores for other "stylistic" principles, such as not repeating a note too many times. 
+
+Techniques for composition:
+1) Start with C.F. (input or generated), create counterpoint.
+	a) Sequential approach: set of possible notes is highly constrained: pick each successive one randomly, perhaps based on distribution decreasing with distance.
+	b) Use hill-climbing strategy, with minimal constraint on the notes initially, to minimize cost.
+	c) Similar to above, but use CSP solver to guarantee no violations.
+	d) Unique solution won't exist, but we can try to do things like minimize large jumps while not being too static. (e.g. avg. motion is 1 step? To extend on this, we could get actual distributions of interval motion and try to score closeness to this distribution.
+2) To create C.F., use prob. distribution strategy (also see later in 
+
+
+
+Principles/Rules:
+Perfect Consonances: Unison, Octave, Perfect Fifth
+Imperfect Consonances: Sixth, Third
+Dissonances: Everything else
+
+Melodies (basic guidelines):
+1. No augmented, diminished, or chromatic intervals (possibly excepting leading tones), nor intervals larger than fifth (except for octave and minor sixth, which should only be used ascending).
+2. Stay within vocal ranges.
+3. No successive (large?) skips in same direction.
+4. Stay within mode.
+
+Modes:
+1. Locrian doesn't exist yet.
+2. Lydian in practice tends to flat the fourth degree (making it essentially Ionian) -- could have either available.
+
+Counterpoint:
+1. Conform to proportions of usage of contrary, oblique, and parallel motion.
+2. Conform to proportions of usage of imperfect consonances vs. perfect consonances (use more imperfect).
+3. Begin and end with perfect consonances. (Intervals, position)
+4. No parallel motion into a perfect consonance. (Pairwise Motion)
+5. Cadence: major sixth if C.F. in lower part, otherwise minor third. (Intervals, voicing, position)
+6. Counterpoint must be in the same mode as C.F., thus, if C.F. is the top part, cannot start with a perfect fifth. (Intervals, voicing, position)
+7. Reckon intervals from the lower note, not the lower voice.
+8. No battuta (suggested), i.e. 10th to octave in stepwise contrary motion. (Pairwise Motion)
+9. No >8th into octave via a skip. (Pairwise Motion)
+10. No unison except at beginning or end. (Intervals, position)
+11. No progressing into unison via a skip. (Pairwise Motion)
+12. No progressing from a unison into another consonance via skip, unless the skip is in the C.F. (Pairwise Motion)
+13. Avoid non-diatonic semitones near each other (e.g. F, G, F#).
+14. "Fa leads down, mi leads up." (NB: This refers to the scale, not the mode. So even in G Mixolydian, F is fa. So ascending from F# to G is preferred.)  (
+
