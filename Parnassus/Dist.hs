@@ -4,21 +4,23 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
-
 {-# LANGUAGE TypeFamilies #-}
 
 
 module Parnassus.Dist where
 
+import Control.Monad.Random (getRandoms, interleave, Rand)
 import Data.Counter (count)
-import Data.List (nub, scanl', sort, transpose, zip4, (\\))
+import Data.List (elemIndex, nub, scanl', sort, transpose, zip4, (\\))
 import qualified Data.Map as M
 import Data.Maybe (fromJust)
 import qualified Data.Set as S
 import qualified Data.Vector as VB
-import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector.Storable as V
+import GHC.Exts (groupWith)
+import qualified Numeric.Log as L
 import System.Random
-import Test.QuickCheck hiding (sample)
+import Test.QuickCheck hiding (sample, sample')
 
 import Parnassus.Utils (merge, prod, selector)
 
@@ -31,13 +33,25 @@ type IndexMap a = M.Map a Int
 
 -- UTILITIES --
 
+-- \log \sum_i \exp{x_i}
+logSumExp :: [Double] -> Double
+logSumExp = L.ln . L.sum . map L.Exp 
+
+-- gets the index of an element in a vector
+vecElemIndex :: (Eq a) => a -> VB.Vector a -> Maybe Int
+vecElemIndex x v = elemIndex x (VB.toList v)
+
 -- division with rule that 0 / 0 = 0
 safeDiv :: Double -> Double -> Double
 safeDiv 0 0 = 0
 safeDiv x y = x / y
 
+-- normalizes a vector of nonnegative numbers so that they sum to 1
+normalizeVec :: V.Vector Double -> V.Vector Prob
+normalizeVec v = V.map (flip safeDiv $ V.sum v) v
+
 -- given an element e and a sorted vector v, returns the index i for which v[i] <= e < v[i + 1]
-bisect :: (Ord a, V.Unbox a) => a -> V.Vector a -> Int
+bisect :: (Ord a, V.Storable a) => a -> V.Vector a -> Int
 bisect e v = f 0 (V.length v)
     where
         f :: Int -> Int -> Int
@@ -64,7 +78,7 @@ data MultiArray a = MArray
     deriving (Eq, Show)
 
 -- constructor
-multiarray :: (V.Unbox a) => [Int] -> [a] -> MultiArray a
+multiarray :: (V.Storable a) => [Int] -> [a] -> MultiArray a
 multiarray sizes entries = arr
     where
         cumProds = scanl' (*) 1 (reverse sizes)
@@ -94,12 +108,12 @@ indexToMultiIndex (MArray {sizes, cumProds}) i
 
 -- gets the entry at a multi-index
 infixr 5 ^!^
-(^!^) :: (V.Unbox a) => MultiArray a -> [Int] -> a
+(^!^) :: (V.Storable a) => MultiArray a -> [Int] -> a
 (^!^) arr@(MArray {entries}) indices = entries V.! (multiIndexToIndex arr indices)
 
 -- slices in multiple dimensions
 -- the index consists of a list of Maybe [Int], where an actual list gives the slice indices, while Nothing means to include the whole axis
-(^:^) :: (V.Unbox a) => MultiArray a -> [Maybe [Int]] -> MultiArray a
+(^:^) :: (V.Storable a) => MultiArray a -> [Maybe [Int]] -> MultiArray a
 (^:^) m []           = m
 (^:^) m (Nothing:[]) = m
 (^:^) (MArray {sizes = [size], entries}) ((Just indices):[]) = MArray {sizes = [length indices], cumProds = [1], entries = V.fromList [entries V.! i | i <- indices]}
@@ -122,7 +136,6 @@ infixr 5 ^!^
 data DiscreteDist v a = Discrete
     { var :: v,
       vals :: VB.Vector a,
-      valIdx :: IndexMap a,
       probs :: V.Vector Prob,
       cdf :: V.Vector Prob
     }
@@ -132,29 +145,33 @@ instance (Show v, Show a) => Show (DiscreteDist v a) where
     show :: DiscreteDist v a -> String
     show (Discrete {var, vals, probs}) = "discreteDist " ++ show var ++ " " ++ show (VB.toList vals) ++ " " ++ show (V.toList probs)
 
+instance Functor (DiscreteDist v) where
+    fmap :: (a -> b) -> DiscreteDist v a -> DiscreteDist v b
+    fmap f (Discrete {var, vals, probs, cdf}) = Discrete {var = var, vals = VB.map f vals, probs = probs, cdf = cdf}
+
 -- constructors --
 
 -- main constructor for DiscreteDist
 discreteDist :: (Ord a) => v -> [a] -> [Prob] -> DiscreteDist v a
 discreteDist var vals probs
-    | length probs /= numVals = error "mismatch between number of vals and probs"
-    | V.minimum probVec < 0.0 = error "minimum prob must be >= 0"
-    | otherwise               = Discrete {var = var, vals = VB.fromList vals', valIdx = valIdx, probs = pmf, cdf = cdf}
+    | length probs /= length vals = error "mismatch between number of vals and probs"
+    | V.minimum probVec < 0.0     = error "minimum prob must be >= 0"
+    | otherwise                   = Discrete {var = var, vals = VB.fromList vals', probs = pmf, cdf = cdf}
         where
-            vals' = nub vals
-            numVals = length vals'
-            probVec = V.fromList probs
-            probSum = V.sum probVec
-            valIdx = M.fromList $ zip vals' [0..]
-            pmf = V.map (flip safeDiv $ probSum) probVec
+            -- aggregate probs for identical values
+            groups = groupWith fst (zip vals probs)
+            vals' = (fst . head) <$> groups
+            probs' = (sum . map snd) <$> groups
+            probVec = V.fromList probs'
+            pmf = normalizeVec probVec
             cdf = V.scanl' (+) 0.0 pmf
-        
-instance (forall b . Ord b) => Functor (DiscreteDist v) where
-    fmap :: (a -> b) -> DiscreteDist v a -> DiscreteDist v b
-    fmap f (Discrete {var, vals, probs}) = discreteDist var (f <$> VB.toList vals) (V.toList probs)
+
+-- normalizes the probability vector in a DiscreteDist
+normalizeDist :: (Ord a) => DiscreteDist v a -> DiscreteDist v a
+normalizeDist (Discrete {var, vals, probs}) = discreteDist var (VB.toList vals) (V.toList probs)
 
 -- creates DiscreteDist from data (optionally include a smoothing constant)
-trainDiscrete :: (Ord a) => v -> Maybe [a] -> Int -> [a] -> DiscreteDist v a
+trainDiscrete :: (Ord a) => v -> Maybe [a] -> Double -> [a] -> DiscreteDist v a
 trainDiscrete var vals smooth xs = discreteDist var vals' counts
     where
         freqs = count xs
@@ -162,17 +179,37 @@ trainDiscrete var vals smooth xs = discreteDist var vals' counts
         vals' = case vals of
             Just vs -> sort $ nub vs
             Nothing -> observedVals
-        counts = [fromIntegral $ M.findWithDefault 0 val freqs + smooth | val <- vals']
+        counts = [(fromIntegral $ M.findWithDefault 0 val freqs) + smooth | val <- vals']
 
--- -- accessors --
+-- accessors --
+
+-- converts a list of values to their corresponding indices
+valsToIndices :: (Ord a, Show a) => DiscreteDist v a -> [a] -> [Int]
+valsToIndices (Discrete {vals}) = map f
+    where 
+        valIdx = M.fromList $ zip (VB.toList vals) ([0..]::[Int])
+        f val = case (M.lookup val valIdx) of
+            Just i -> i
+            Nothing -> error $ "invalid value " ++ show val
 
 -- gets the probability of a particular outcome
-getProb :: (Ord a, Show a) => DiscreteDist v a -> a -> Double
-getProb (Discrete {valIdx, probs}) val = probs V.! (valIdx M.! val)
+getProb :: (Ord a, Show a) => DiscreteDist v a -> a -> Prob
+getProb (Discrete {vals, probs}) val = case i of
+    Just i' -> probs V.! i'
+    Nothing -> error $ "invalid value " ++ show val
+    where i = vecElemIndex val vals
 
 -- gets the probability of an event (a set of particular outcomes)
-getProbEvent :: (Ord a, Show a) => DiscreteDist v a -> [a] -> Double
-getProbEvent d vals = sum $ [getProb d val | val <- nub vals]
+getProbEvent :: (Ord a, Show a) => DiscreteDist v a -> [a] -> Prob
+getProbEvent dist@(Discrete {probs}) vals = sum [probs V.! i | i <- valsToIndices dist (nub vals)]
+
+-- gets the log-probability of a particular outcome
+getLogProb :: (Ord a, Show a) => DiscreteDist v a -> a -> Double
+getLogProb dist val = log $ getProb dist val
+
+-- gets the log-probability of an event (a set of particular outcomes)
+getLogProbEvent :: (Ord a, Show a) => DiscreteDist v a -> [a] -> Double
+getLogProbEvent dist@(Discrete {probs}) vals = log $ getProbEvent dist vals
 
 -- -- simulation --
 
@@ -182,26 +219,47 @@ class Simulable s a b where
     -- computes a single random sample from a distribution
     sample :: s a -> IO b
     sample = (head <$>) . samples
+    -- computes random samples from a distribution
+    samples' :: (RandomGen g) => s a -> Rand g [b]
+    -- computes a single random sample from a distribution
+    sample' :: (RandomGen g) => s a -> Rand g b
+    sample' = (head <$>) . samples'
 
 instance (b ~ a) => Simulable (DiscreteDist v) a b where
     samples :: DiscreteDist v a -> IO [a]
     samples (Discrete {vals, cdf}) = do
         gen <- newStdGen
         return [vals VB.! (bisect r cdf) | r <- randoms gen]
+    -- samples' :: (RandomGen g) => DiscreteDist v a -> Rand g [a]
+    -- samples' (Discrete {vals, cdf}) = do
+    --     rs <- getRandoms
+    --     return [vals VB.! (bisect r cdf) | r <- rs]
+    sample' :: (RandomGen g) => DiscreteDist v a -> Rand g a
+    sample' (Discrete {vals, cdf}) = do
+        r <- head <$> getRandoms
+        return $ vals VB.! (bisect r cdf)
+    samples' = sequence . repeat . interleave . sample'
+
+
 
 -- -- JOINT DISCRETE DISTRIBUTION --
 
 class (Eq v, Ord v) => JointDiscreteDistribution d v a where
     -- gets the list of variables associated with the joint distribution
     getVars :: d v a -> [v]
-    -- trains a JointDiscreteDistribution from data
-    trainJointDiscrete :: [v] -> Maybe [[a]] -> Int -> [[a]] -> d v a
     -- gets the probability of a particular outcome
-    getJointProb :: d v a -> [a] -> Double
+    getJointProb :: d v a -> [a] -> Prob
+    getJointProb dist val = exp $ getJointLogProb dist val
     -- gets the probability of an event (a set of particular outcomes)
     -- the event is given as a list of events for each variable, and the joint event is the Cartesian product of them all
-    getJointProbEvent :: d v a -> [[a]] -> Double
-    getJointProbEvent d vals = sum $ [getJointProb d val | val <- cartesianProduct vals]
+    getJointProbEvent :: d v a -> [[a]] -> Prob
+    getJointProbEvent dist vals = sum $ getJointProb dist <$> cartesianProduct vals
+    -- gets the log-probability of a particular outcome
+    getJointLogProb :: d v a -> [a] -> Double
+    getJointLogProb dist val = log $ getJointProb dist val
+    -- gets the log-probability of an event
+    getJointLogProbEvent :: d v a -> [[a]] -> Double
+    getJointLogProbEvent dist vals = logSumExp $ getJointLogProb dist <$> cartesianProduct vals
     -- marginal distribution over the given indices
     marginalizeIndices :: d v a -> [Int] -> d v a
     -- marginal distribution over the given variables
@@ -242,8 +300,8 @@ instance (Show v, Show a) => Show (JointDiscreteDist v a) where
     show :: JointDiscreteDist v a -> String
     show (JointDiscrete {jVars, jVals, jProbs}) = "jointDiscreteDist " ++ show jVars ++ " " ++ show jVals ++ " " ++ show jProbs
 
-jointDiscreteDist :: (Eq v, Ord a, Show a) => [v] -> [[a]] -> MultiArray Prob -> JointDiscreteDist v a
-jointDiscreteDist vars vals probs
+jointDiscrete :: (Eq v, Ord a, Show a) => [v] -> [[a]] -> MultiArray Prob -> JointDiscreteDist v a
+jointDiscrete vars vals probs
     | numVars /= (length $ nub vars)  = error "duplicate var names not allowed"
     | probMin < 0.0                   = error "minimum prob must be >= 0"
     | otherwise                       = JointDiscrete {numVars = numVars, jVars = vars, jVals = jVals, jValIdx = jValIdx, jProbs = jProbs, jCdf = cdf}
@@ -265,28 +323,29 @@ jointDiscreteDist vars vals probs
             jProbs = MArray {sizes = sizes probs, cumProds = cumProds probs, entries = pmf}
             cdf = V.scanl' (+) 0.0 pmf
 
+trainJointDiscrete :: (Eq v, Eq a, Ord a, Show a) => [v] -> Maybe [[a]] -> Int -> [[a]] -> JointDiscreteDist v a
+trainJointDiscrete vars vals smooth xs = jointDiscrete vars vals' countArr
+    where
+        numVars = length vars
+        lengths = length <$> xs
+        freqs
+            | all (== numVars) lengths = count xs
+            | otherwise                = error $ "all data entries must have length " ++ show numVars
+        observedVals = (sort . nub) <$> (transpose $ M.keys freqs)
+        vals' = case vals of
+            Just vs -> vs'
+                where vs' | (length vs == numVars) = (sort . nub) <$> vs
+                            | otherwise              = error $ show numVars ++ " value lists required, " ++ show (length vs) ++ " given"
+            Nothing -> observedVals
+        valProduct = cartesianProduct vals'
+        counts = [fromIntegral $ M.findWithDefault 0 val freqs + smooth | val <- valProduct]
+        countArr = multiarray (length <$> vals') counts
+
 instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscreteDist v a where
     getVars :: JointDiscreteDist v a -> [v]
     getVars = jVars
-    trainJointDiscrete :: [v] -> Maybe [[a]] -> Int -> [[a]] -> JointDiscreteDist v a
-    trainJointDiscrete vars vals smooth xs = jointDiscreteDist vars vals' countArr
-        where
-            numVars = length vars
-            lengths = length <$> xs
-            freqs
-                | all (== numVars) lengths = count xs
-                | otherwise                = error $ "all data entries must have length " ++ show numVars
-            observedVals = (sort . nub) <$> (transpose $ M.keys freqs)
-            vals' = case vals of
-                Just vs -> vs'
-                    where vs' | (length vs == numVars) = (sort . nub) <$> vs
-                              | otherwise              = error $ show numVars ++ " value lists required, " ++ show (length vs) ++ " given"
-                Nothing -> observedVals
-            valProduct = cartesianProduct vals'
-            counts = [fromIntegral $ M.findWithDefault 0 val freqs + smooth | val <- valProduct]
-            countArr = multiarray (length <$> vals') counts
     -- gets the probability of a particular outcome
-    getJointProb :: JointDiscreteDist v a -> [a] -> Double
+    getJointProb :: JointDiscreteDist v a -> [a] -> Prob
     getJointProb (JointDiscrete {numVars, jValIdx, jProbs}) vals = jProbs ^!^ multiIdx
         where
             numVals = length vals
@@ -311,7 +370,7 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
             updatePairs = zip updateInds (V.toList probs)
             probVec = V.replicate size2 0.0
             probs' = MArray {sizes = sizes2, cumProds = cumProds2, entries = V.accum (+) probVec updatePairs}
-            dist = jointDiscreteDist (sel jVars) (VB.toList <$> (sel jVals)) probs'
+            dist = jointDiscrete (sel jVars) (VB.toList <$> (sel jVals)) probs'
     marginals :: JointDiscreteDist v a -> [DiscreteDist v a]
     marginals dist = zipWith3 discreteDist (jVars dist) (VB.toList <$> jVals dist) pss
         where pss = (V.toList . entries . jProbs) <$> [marginalizeIndices dist [i] | i <- [0..(numVars dist) - 1]]
@@ -328,7 +387,7 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
                 Just inds -> (vals VB.!) <$> inds
                 Nothing   -> VB.toList vals
             valss' = zipWith3 getVals jValIdx jVals slice
-            dist = jointDiscreteDist jVars valss' probs
+            dist = jointDiscrete jVars valss' probs
             -- marginalize out variables with a single value
             margVars = [var | (var, vals) <- zip jVars valss, (length <$> vals) == Just 1]
             dist' = marginalizeOut dist margVars
@@ -344,33 +403,47 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
 data IndependentDiscreteDist v a = IndependentDiscrete [DiscreteDist v a]
     deriving (Eq, Show)
 
+instance Monoid (IndependentDiscreteDist v a) where
+    mempty :: IndependentDiscreteDist v a
+    mempty = IndependentDiscrete []
+    mappend :: IndependentDiscreteDist v a -> IndependentDiscreteDist v a -> IndependentDiscreteDist v a
+    mappend (IndependentDiscrete dists1) (IndependentDiscrete dists2) = IndependentDiscrete (dists1 ++ dists2)
+    mconcat :: [IndependentDiscreteDist v a] -> IndependentDiscreteDist v a
+    mconcat = IndependentDiscrete . concat . map extract
+        where extract (IndependentDiscrete dists) = dists
+
 independentDiscreteDist :: (Eq v) => [DiscreteDist v a] -> IndependentDiscreteDist v a
 independentDiscreteDist dists
     | numVars /= (length $ nub $ var <$> dists) = error "duplicate var names not allowed"
     | otherwise                                 = IndependentDiscrete dists
         where numVars = length dists
 
+trainJointIndependent :: (Eq v, Ord a) => [v] -> Maybe [[a]] -> Double -> [[a]] -> IndependentDiscreteDist v a
+trainJointIndependent vars vals smooth xs = independentDiscreteDist dists
+    where
+        numVars = length vars
+        lengths = length <$> xs
+        xs'
+            | all (== numVars) lengths = transpose xs
+            | otherwise                = error $ "all data entries must have length " ++ show numVars
+        vals' = case vals of
+            Just vs -> vs'
+                where vs' | (length vs == numVars) = Just <$> vs
+                            | otherwise              = error $ show numVars ++ " value lists required, " ++ show (length vs) ++ " given"
+            Nothing -> replicate numVars Nothing
+        dists = [trainDiscrete var vs smooth col | (var, vs, col) <- zip3 vars vals' xs']
+
 instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution IndependentDiscreteDist v a where
     getVars :: IndependentDiscreteDist v a -> [v]
     getVars (IndependentDiscrete dists) = var <$> dists
-    trainJointDiscrete :: [v] -> Maybe [[a]] -> Int -> [[a]] -> IndependentDiscreteDist v a
-    trainJointDiscrete vars vals smooth xs = independentDiscreteDist dists
-        where
-            numVars = length vars
-            lengths = length <$> xs
-            xs'
-                | all (== numVars) lengths = transpose xs
-                | otherwise                = error $ "all data entries must have length " ++ show numVars
-            vals' = case vals of
-                Just vs -> vs'
-                    where vs' | (length vs == numVars) = Just <$> vs
-                              | otherwise              = error $ show numVars ++ " value lists required, " ++ show (length vs) ++ " given"
-                Nothing -> replicate numVars Nothing
-            dists = [trainDiscrete var vs smooth col | (var, vs, col) <- zip3 vars vals' xs']
-    getJointProb :: IndependentDiscreteDist v a -> [a] -> Double
+    getJointProb :: IndependentDiscreteDist v a -> [a] -> Prob
     getJointProb (IndependentDiscrete dists) vals = prod $ zipWith getProb dists vals
-    getJointProbEvent :: IndependentDiscreteDist v a -> [[a]] -> Double
-    getJointProbEvent (IndependentDiscrete dists) vals = prod $ zipWith getProbEvent dists vals
+    getJointProbEvent :: IndependentDiscreteDist v a -> [[a]] -> Prob
+    getJointProbEvent (IndependentDiscrete dists) valss = prod $ zipWith getProbEvent dists valss
+    getJointLogProb :: IndependentDiscreteDist v a -> [a] -> Double
+    getJointLogProb (IndependentDiscrete dists) vals = sum $ zipWith getLogProb dists vals
+    getJointLogProbEvent :: IndependentDiscreteDist v a -> [[a]] -> Double
+    getJointLogProbEvent (IndependentDiscrete dists) valss = sum $ zipWith getLogProbEvent dists valss
     marginalizeIndices :: IndependentDiscreteDist v a -> [Int] -> IndependentDiscreteDist v a
     marginalizeIndices (IndependentDiscrete dists) indices = independentDiscreteDist $ selector numVars indices dists
         where numVars = length dists
@@ -379,8 +452,8 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution IndependentDi
     conditionOn :: IndependentDiscreteDist v a -> [Maybe [a]] -> IndependentDiscreteDist v a
     conditionOn (IndependentDiscrete dists) valss = independentDiscreteDist dists'
         where
-            getCondDist dist@(Discrete {var, vals, valIdx, probs}) vals' = case vals' of
-                Just vs -> discreteDist var vs (((probs V.!) . (valIdx M.!)) <$> vs)
+            getCondDist dist@(Discrete {var, vals, probs}) vals' = case vals' of
+                Just vs -> discreteDist var vs (((probs V.!) . fromJust . (flip vecElemIndex vals)) <$> vs)
                 Nothing -> dist
             dists' = filter (\dist -> (VB.length $ vals dist) > 1) (zipWith getCondDist dists valss)
     forgetJoint :: IndependentDiscreteDist v a -> DiscreteDist [v] [a]
@@ -390,25 +463,13 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution IndependentDi
             vals' = cartesianProduct $ (VB.toList . vals) <$> dists
             probs' = prod <$> (cartesianProduct $ (V.toList . probs) <$> dists)
 
--- instance Functor (IndependentDiscreteDist v a) where
---     fmap :: (a -> b) -> IndependentDiscreteDist v a -> IndependentDiscreteDist v b
---     fmap f (In
--- instance Monoid (IndependentDiscreteDist v a) where
---     mempty :: IndependentDiscreteDist v a
---     mempty = IndependentDiscrete []
---     mappend :: IndependentDiscreteDist v a -> IndependentDiscreteDist v a -> IndependentDiscreteDist v a
---     mappend (IndependentDiscrete dists1) (IndependentDiscrete dists2) = IndependentDiscrete (dists1 ++ dists2)
---     mconcat :: [IndependentDiscreteDist v a] -> IndependentDiscreteDist v a
---     mconcat = IndependentDiscrete . concat . map extract
---         where extract (IndependentDiscrete dists) = dists
-
 
 -- TESTS --
 
 testArr = multiarray [2, 3, 4] [(0::Int)..23]
 testDist = trainDiscrete "example" Nothing 0 ['a', 'c', 'b', 'b', 'c', 'c', 'c', 'c', 'd', 'b']
 testJointDist = (trainJointDiscrete ["var1", "var2", "var3"] Nothing 0 ["aA0", "aB1", "cB0", "dC0", "dA0", "bB0", "cC1", "aA0", "bB0", "aA0", "aC1", "dC1", "cA0", "cB1", "bB0", "aB1", "dA0", "dC1", "aA0", "aA1"]) :: JointDiscreteDist String Char
-testIndepDist = (trainJointDiscrete ["var1", "var2", "var3"] Nothing 0 ["aA0", "aB1", "cB0", "dC0", "dA0", "bB0", "cC1", "aA0", "bB0", "aA0", "aC1", "dC1", "cA0", "cB1", "bB0", "aB1", "dA0", "dC1", "aA0", "aA1"]) :: IndependentDiscreteDist String Char
+testIndepDist = (trainJointIndependent ["var1", "var2", "var3"] Nothing 0 ["aA0", "aB1", "cB0", "dC0", "dA0", "bB0", "cC1", "aA0", "bB0", "aA0", "aC1", "dC1", "cA0", "cB1", "bB0", "aB1", "dA0", "dC1", "aA0", "aA1"]) :: IndependentDiscreteDist String Char
 
 test :: IO ()
 test = do
