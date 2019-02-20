@@ -7,7 +7,7 @@
 
 module Parnassus.Markov where
 
-import Control.Monad.Loops (unfoldrM)
+import Control.Monad.Random (getRandoms, Rand, RandomGen)
 import Data.Counter (count)
 import Data.List (nub, sort)
 import qualified Data.Map as M
@@ -80,23 +80,14 @@ trainMarkovModel vals smooth chains = markov pi0 (LA.toRows trans)
         indices = valsToIndices pi0 <$> chains
         transitionPairs = concat [zip inds (tail inds) | inds <- indices]
         n = length allVals
-        addSmooth = \(key, val) -> (key, val + smooth)
+        smooth' = smooth / fromIntegral n  -- total smoothing in each row equals the smooth parameter
+        addSmooth = \(key, val) -> (key, val + smooth')
         trans = LA.assoc (n, n) smooth (addSmooth <$> (M.toList $ count transitionPairs))
 
--- type for values in a Markov chain
-data Token a = Token a | Stop
-    deriving (Eq, Ord, Show)
-
--- converts elements to Justs and appends a final Nothing element
--- this Nothing value can be used as a terminating value for Markov chain generation
-terminate :: [a] -> [Token a]
-terminate = (++ [Stop]) . map Token
-
 -- samples a Markov model (infinitely)
-markovSample :: MarkovModel v a -> IO [a]
+markovSample :: (RandomGen g) => MarkovModel v a -> Rand g [a]
 markovSample (Markov {pi0, trans}) = do
-    gen <- newStdGen
-    let rs = randoms gen
+    rs <- getRandoms
     let indices = [bisect (head rs) cdf0] ++ [bisect r (transCdfs VB.! i) | (i, r) <- zip indices (tail rs)]
     return $ (vs VB.!) <$> indices
     where
@@ -105,28 +96,90 @@ markovSample (Markov {pi0, trans}) = do
         transCdfs = VB.fromList $ (V.scanl' (+) 0.0) <$> (LA.toRows trans)
 
 instance (b ~ [a]) => Simulable (MarkovModel v) a b where
-    sample :: MarkovModel v a -> IO [a]
+    sample :: (RandomGen g) => MarkovModel v a -> Rand g [a]
     sample = markovSample
-    -- FIXIT: this will hang!!  Migrate to MonadRandom?
-    samples :: MarkovModel v a -> IO [[a]]
-    --samples = sequence . repeat . sample
-    samples = unfoldrM f
-        where
-            f dist = (\samp -> Just (samp, dist)) <$> sample dist
+
+-- TERMINATING MARKOV CHAINS --
+
+-- type for values in a Markov chain
+data Token a = Start | Token a | Stop
+    deriving (Eq, Ord, Show)
+
+isStart :: Token a -> Bool
+isStart Start = True
+isStart _     = False
+
+isToken :: Token a -> Bool
+isToken (Token _) = True
+isToken _         = False
+
+fromToken :: Token a -> a
+fromToken (Token t) = t
+fromToken _         = error "invalid token"
+
+-- converts elements to Tokens and appends a final Stop element
+-- this Nothing value can be used as a terminating value for Markov chain generation
+terminate :: [a] -> [Token a]
+terminate = (++ [Stop]) . map Token
+
+trainTerminatingMarkovModel :: (Ord a, Show a) => Maybe [a] -> Double -> [[a]] -> MarkovModel Integer (Token a)
+trainTerminatingMarkovModel vals smooth chains = trainMarkovModel (map Token <$> vals) smooth (terminate <$> chains)
 
 instance {-# OVERLAPPING #-} (b ~ [a]) => Simulable (MarkovModel v) (Token a) b where
-    -- override behavior so the chain terminates upon reaching Stop
-    sample = fmap (map fromToken . takeWhile (not . isStop)) . markovSample
-        where
-            isStop Stop = True
-            isStop _    = False
-            fromToken Stop      = error "Stop"
-            fromToken (Token t) = t
-    --samples = sequence . repeat . sample
-    samples = unfoldrM f
-        where
-            f dist = (\samp -> Just (samp, dist)) <$> sample dist
+    -- override behavior so sampling skips over Start and terminates upon reaching Stop
+    sample = fmap (map fromToken . takeWhile isToken . dropWhile isStart) . markovSample
+
+-- POLYGRAPHIC MODELS --
+
+newtype Polygraph a = Poly { getPoly :: [a] }
+    deriving (Eq, Ord, Show)
+
+-- newtype NgramModel a = NgramModel { getMarkov :: MarkovModel Integer (Polygraph (Token a)) }
+--     deriving (Eq, Show)
+
+-- computes n-grams from a list of items
+ngrams :: Int -> [a] -> [[a]]
+ngrams n xs 
+    | (n <= length xs) = take n xs : ngrams n (drop 1 xs)
+    | otherwise = []
 
 
-testMarkov = trainMarkovModel Nothing 0.01 ([terminate "the quick brown fox jumps over the lazy dog"])
-samps = sample testMarkov
+-- stores n, initial distribution on alphabet, and transition probability matrices for each Markovity level
+data NgramModel a = Ngrams Int (DiscreteDist a) [LA.Matrix Prob]
+    deriving (Eq, Show)
+
+
+-- construct a MarkovModel from an initial distribution and a transition matrix (entry i, j is probability of transition from i to j, so that the matrix is row-stochastic)
+markov :: DiscreteDist v a -> [V.Vector Prob] -> MarkovModel v a
+-- markov dist rows
+--     | length rows /= n               = error $ "transition matrix must have " ++ show n ++ " rows"
+--     | any (/= n) $ V.length <$> rows = error $ "all rows of transition matrix must have length " ++ show n
+--     | otherwise                      = Markov {pi0 = dist, trans = mat}
+--     where
+--         n = length $ vals dist
+--         mat
+--             | (minimum $ V.sum <$> rows) <= 0.0 = error "row sums must be positive"
+--             | otherwise                       = LA.fromRows $ normalizeVec <$> rows
+
+-- trainNgramModel :: (Ord a, Show a) => Int -> Maybe [a] -> Double -> [[a]] -> NgramModel a
+-- trainNgramModel n alphabet smooth chains = NgramModel mkov
+--     where
+--         alphabet' = case alphabet of
+--             Just alph -> alph
+--             Nothing   -> sort $ nub $ concat chains
+--         alphabetTokens = [Start, Stop] ++ (Token <$> alphabet')
+--         allNgrams = Poly <$> cartesianProduct (replicate n alphabetTokens)
+--         fixChain :: [a] -> [Token a]
+--         fixChain chain = (replicate (n - 1) Start) ++ (Token <$> chain) ++ [Stop]
+--         observedNgrams = (map Poly . ngrams n . fixChain) <$> chains
+--         mkov = trainMarkovModel (Just allNgrams) smooth observedNgrams
+
+-- instance (b ~ [a]) => Simulable NgramModel a b where
+--     sample (NgramModel markov) = do
+--         samp <- sample markov
+--         let toks = takeWhile isToken $ dropWhile isStart $ head . getPoly <$> samp
+--         return $ fromToken <$> toks
+
+
+
+testMarkov = trainTerminatingMarkovModel Nothing 0.01 (["the quick brown fox jumps over the lazy dog", "i like pizza", "this is english", "beef curd stew", "to be or not to be that is the question", "fourscore and seven years ago", "give me fuel give me fire give me that which i desire"])

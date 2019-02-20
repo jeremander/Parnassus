@@ -20,7 +20,7 @@ import qualified Data.Vector.Storable as V
 import GHC.Exts (groupWith)
 import qualified Numeric.Log as L
 import System.Random
-import Test.QuickCheck hiding (sample, sample')
+import Test.QuickCheck hiding (sample)
 
 import Parnassus.Utils (merge, prod, selector)
 
@@ -214,32 +214,19 @@ getLogProbEvent dist@(Discrete {probs}) vals = log $ getProbEvent dist vals
 -- -- simulation --
 
 class Simulable s a b where
-    -- computes random samples from a distribution
-    samples :: s a -> IO [b]
     -- computes a single random sample from a distribution
-    sample :: s a -> IO b
+    sample :: (RandomGen g) => s a -> Rand g b
     sample = (head <$>) . samples
     -- computes random samples from a distribution
-    samples' :: (RandomGen g) => s a -> Rand g [b]
-    -- computes a single random sample from a distribution
-    sample' :: (RandomGen g) => s a -> Rand g b
-    sample' = (head <$>) . samples'
+    samples :: (RandomGen g) => s a -> Rand g [b]
+    samples = sequence . repeat . interleave . sample
+
 
 instance (b ~ a) => Simulable (DiscreteDist v) a b where
-    samples :: DiscreteDist v a -> IO [a]
+    samples :: (RandomGen g) => DiscreteDist v a -> Rand g [a]
     samples (Discrete {vals, cdf}) = do
-        gen <- newStdGen
-        return [vals VB.! (bisect r cdf) | r <- randoms gen]
-    -- samples' :: (RandomGen g) => DiscreteDist v a -> Rand g [a]
-    -- samples' (Discrete {vals, cdf}) = do
-    --     rs <- getRandoms
-    --     return [vals VB.! (bisect r cdf) | r <- rs]
-    sample' :: (RandomGen g) => DiscreteDist v a -> Rand g a
-    sample' (Discrete {vals, cdf}) = do
-        r <- head <$> getRandoms
-        return $ vals VB.! (bisect r cdf)
-    samples' = sequence . repeat . interleave . sample'
-
+        rs <- getRandoms
+        return [vals VB.! (bisect r cdf) | r <- rs]
 
 
 -- -- JOINT DISCRETE DISTRIBUTION --
@@ -280,7 +267,7 @@ class (Eq v, Ord v) => JointDiscreteDistribution d v a where
 
 -- convert joint distribution into a 1D distribution on lists, then sample
 instance {-# OVERLAPPABLE #-} (JointDiscreteDistribution d v a, b ~ [a]) => Simulable (d v) a b where
-    samples :: d v a -> IO [[a]]
+    samples :: (RandomGen g) => d v a -> Rand g [[a]]
     samples = samples . forgetJoint
 
 
