@@ -22,6 +22,9 @@ import Parnassus.Dist
 data MarkovModel v a = Markov { pi0 :: DiscreteDist v a, trans :: LA.Matrix Prob }
     deriving (Eq, Show)
 
+rowStochasticMatrix :: [V.Vector Double] -> LA.Matrix Prob
+rowStochasticMatrix rows = LA.fromRows $ normalizeVec <$> rows
+
 -- construct a MarkovModel from an initial distribution and a transition matrix (entry i, j is probability of transition from i to j, so that the matrix is row-stochastic)
 markov :: DiscreteDist v a -> [V.Vector Prob] -> MarkovModel v a
 markov dist rows
@@ -30,10 +33,7 @@ markov dist rows
     | otherwise                      = Markov {pi0 = dist, trans = mat}
     where
         n = length $ vals dist
-        mat
-            | (minimum $ V.sum <$> rows) <= 0.0 = error "row sums must be positive"
-            | otherwise                       = LA.fromRows $ normalizeVec <$> rows
-
+        mat = rowStochasticMatrix rows
 
 instance (Enum v, Num v, Ord v, Ord a, Show a) => JointDiscreteDistribution MarkovModel v a where
     -- vars are always [0, 1, 2, ...]
@@ -49,7 +49,6 @@ instance (Enum v, Num v, Ord v, Ord a, Show a) => JointDiscreteDistribution Mark
             transitionIndices = zip indices (tail indices)
             logProbs = log <$> ((probs pi0 V.! (head indices)) : (LA.atIndex trans <$> transitionIndices))
     -- marginal distribution is no longer a simple Markov chain
-    marginalizeIndices :: MarkovModel v a -> [Int] -> MarkovModel v a
     marginalizeIndices = undefined
     -- infinite list of marginal distributions
     marginals :: MarkovModel v a -> [DiscreteDist v a]
@@ -61,10 +60,8 @@ instance (Enum v, Num v, Ord v, Ord a, Show a) => JointDiscreteDistribution Mark
             cdfs = V.scanl' (+) 0.0 <$> pmfs
             dists = [Discrete {var = i, vals = vals', probs = pmf', cdf = cdf'} | (i, pmf', cdf') <- zip3 [0..] pmfs cdfs]
     -- conditional distribution is no longer a simple Markov chain
-    conditionOn :: MarkovModel v a -> [Maybe [a]] -> MarkovModel v a
     conditionOn = undefined
     -- distribution is infinite so can't be represented as a DiscreteDist
-    forgetJoint :: MarkovModel v a -> DiscreteDist [v] [a]
     forgetJoint = undefined
 
 -- trains a Markov model from data
@@ -80,8 +77,7 @@ trainMarkovModel vals smooth chains = markov pi0 (LA.toRows trans)
         indices = valsToIndices pi0 <$> chains
         transitionPairs = concat [zip inds (tail inds) | inds <- indices]
         n = length allVals
-        smooth' = smooth / fromIntegral n  -- total smoothing in each row equals the smooth parameter
-        addSmooth = \(key, val) -> (key, val + smooth')
+        addSmooth = \(key, val) -> (key, val + smooth)
         trans = LA.assoc (n, n) smooth (addSmooth <$> (M.toList $ count transitionPairs))
 
 -- samples a Markov model (infinitely)
@@ -102,12 +98,8 @@ instance (b ~ [a]) => Simulable (MarkovModel v) a b where
 -- TERMINATING MARKOV CHAINS --
 
 -- type for values in a Markov chain
-data Token a = Start | Token a | Stop
+data Token a = Token a | Stop
     deriving (Eq, Ord, Show)
-
-isStart :: Token a -> Bool
-isStart Start = True
-isStart _     = False
 
 isToken :: Token a -> Bool
 isToken (Token _) = True
@@ -126,16 +118,10 @@ trainTerminatingMarkovModel :: (Ord a, Show a) => Maybe [a] -> Double -> [[a]] -
 trainTerminatingMarkovModel vals smooth chains = trainMarkovModel (map Token <$> vals) smooth (terminate <$> chains)
 
 instance {-# OVERLAPPING #-} (b ~ [a]) => Simulable (MarkovModel v) (Token a) b where
-    -- override behavior so sampling skips over Start and terminates upon reaching Stop
-    sample = fmap (map fromToken . takeWhile isToken . dropWhile isStart) . markovSample
+    -- override behavior so sampling terminates upon reaching Stop
+    sample = fmap (map fromToken . takeWhile isToken) . markovSample
 
--- POLYGRAPHIC MODELS --
-
-newtype Polygraph a = Poly { getPoly :: [a] }
-    deriving (Eq, Ord, Show)
-
--- newtype NgramModel a = NgramModel { getMarkov :: MarkovModel Integer (Polygraph (Token a)) }
---     deriving (Eq, Show)
+-- N-GRAM MODELS --
 
 -- computes n-grams from a list of items
 ngrams :: Int -> [a] -> [[a]]
@@ -143,43 +129,65 @@ ngrams n xs
     | (n <= length xs) = take n xs : ngrams n (drop 1 xs)
     | otherwise = []
 
-
--- stores n, initial distribution on alphabet, and transition probability matrices for each Markovity level
-data NgramModel a = Ngrams Int (DiscreteDist a) [LA.Matrix Prob]
+-- stores n, mapping from alphabet to indices, and transition probability matrices for each Markovity level
+data NgramModel v a = Ngrams Int (IndexMap (Token a)) [MultiArray Prob]
     deriving (Eq, Show)
 
+instance (Enum v, Num v, Ord v, Ord a, Show a) => JointDiscreteDistribution NgramModel v a where
+    getVars :: NgramModel v a -> [v]
+    getVars _ = [0..]
+    getJointProbEvent :: NgramModel v a -> [[a]] -> Prob
+    getJointProbEvent dist valss = exp $ getJointLogProbEvent dist valss
+    getJointLogProb :: NgramModel v a -> [a] -> Double
+    getJointLogProb (Ngrams n tokIdx mats) vals = sum logprobs
+        where
+            toks = terminate vals
+            indices = (tokIdx M.!) <$> toks
+            idxGrams = [take i indices | i <- [1..(n - 1)]] ++ ngrams n indices
+            matSeq = init mats ++ repeat (last mats)
+            logprobs = log <$> zipWith (^!^) matSeq idxGrams
+    marginalizeIndices = undefined
+    marginals = undefined
+    conditionOn = undefined
+    forgetJoint = undefined
 
--- construct a MarkovModel from an initial distribution and a transition matrix (entry i, j is probability of transition from i to j, so that the matrix is row-stochastic)
-markov :: DiscreteDist v a -> [V.Vector Prob] -> MarkovModel v a
--- markov dist rows
---     | length rows /= n               = error $ "transition matrix must have " ++ show n ++ " rows"
---     | any (/= n) $ V.length <$> rows = error $ "all rows of transition matrix must have length " ++ show n
---     | otherwise                      = Markov {pi0 = dist, trans = mat}
---     where
---         n = length $ vals dist
---         mat
---             | (minimum $ V.sum <$> rows) <= 0.0 = error "row sums must be positive"
---             | otherwise                       = LA.fromRows $ normalizeVec <$> rows
-
--- trainNgramModel :: (Ord a, Show a) => Int -> Maybe [a] -> Double -> [[a]] -> NgramModel a
--- trainNgramModel n alphabet smooth chains = NgramModel mkov
---     where
---         alphabet' = case alphabet of
---             Just alph -> alph
---             Nothing   -> sort $ nub $ concat chains
---         alphabetTokens = [Start, Stop] ++ (Token <$> alphabet')
---         allNgrams = Poly <$> cartesianProduct (replicate n alphabetTokens)
---         fixChain :: [a] -> [Token a]
---         fixChain chain = (replicate (n - 1) Start) ++ (Token <$> chain) ++ [Stop]
---         observedNgrams = (map Poly . ngrams n . fixChain) <$> chains
---         mkov = trainMarkovModel (Just allNgrams) smooth observedNgrams
-
--- instance (b ~ [a]) => Simulable NgramModel a b where
---     sample (NgramModel markov) = do
---         samp <- sample markov
---         let toks = takeWhile isToken $ dropWhile isStart $ head . getPoly <$> samp
---         return $ fromToken <$> toks
+trainNgramModel :: (Ord a, Show a) => Int -> Maybe [a] -> Double -> [[a]] -> NgramModel Integer a
+trainNgramModel n alphabet smooth chains = Ngrams n tokIdx transArrs
+    where
+        alphabet' = case alphabet of
+            Just alph -> alph
+            Nothing   -> sort $ nub $ concat chains
+        alphabetTokens = [Stop] ++ (Token <$> alphabet')
+        m = length alphabetTokens
+        tokIdx = M.fromList $ zip alphabetTokens [0..]  -- mapping from alphabet values to indices
+        stoppedChains = terminate <$> chains
+        idxChains = map (tokIdx M.!) <$> stoppedChains
+        getTransitions :: Int -> MultiArray Prob
+        getTransitions k = multiarray (replicate k m) (concat rows)
+            where
+                pairs = concat $ (map (splitAt (k - 1)) . ngrams k) <$> idxChains
+                cumProds = (m ^) <$> [(k - 2)..0]
+                transitionPairs = [(sum $ zipWith (*) cumProds fromInds, head toInds) | (fromInds, toInds) <- pairs]
+                addSmooth = \(key, val) -> (key, val + smooth)
+                trans = LA.assoc (m ^ (k - 1), m) smooth (addSmooth <$> (M.toList $ count transitionPairs))
+                rows = V.toList . normalizeVec <$> LA.toRows trans
+        transArrs = getTransitions <$> [1..n]
 
 
 
-testMarkov = trainTerminatingMarkovModel Nothing 0.01 (["the quick brown fox jumps over the lazy dog", "i like pizza", "this is english", "beef curd stew", "to be or not to be that is the question", "fourscore and seven years ago", "give me fuel give me fire give me that which i desire"])
+
+
+-- instance (b ~ [a]) => Simulable (NgramModel v) a b where
+--     sample (Ngrams n tokIdx mats) = do
+        -- samp <- sample markov
+        -- let toks = takeWhile isToken $ dropWhile isStart $ head . getPoly <$> samp
+        -- return $ fromToken <$> toks
+
+    --         getJointLogProb :: NgramModel v a -> [a] -> Double
+    -- getJointLogProb (Ngrams n tokIdx mats) vals = sum logprobs
+
+
+testText = ["the quick brown fox jumps over the lazy dog", "i like pizza", "this is english", "beef curd stew", "to be or not to be that is the question", "fourscore and seven years ago", "give me fuel give me fire give me that which i desire"]
+testMarkov = trainTerminatingMarkovModel Nothing 0.01 testText
+test1gram = trainNgramModel 1 Nothing 0 ["abccc"]
+test2gram = trainNgramModel 2 Nothing 0 ["abccc"]

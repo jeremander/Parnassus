@@ -177,7 +177,7 @@ trainDiscrete var vals smooth xs = discreteDist var vals' counts
         freqs = count xs
         observedVals = sort $ M.keys freqs
         vals' = case vals of
-            Just vs -> sort $ nub vs
+            Just vs -> nub vs
             Nothing -> observedVals
         counts = [(fromIntegral $ M.findWithDefault 0 val freqs) + smooth | val <- vals']
 
@@ -321,8 +321,8 @@ trainJointDiscrete vars vals smooth xs = jointDiscrete vars vals' countArr
         observedVals = (sort . nub) <$> (transpose $ M.keys freqs)
         vals' = case vals of
             Just vs -> vs'
-                where vs' | (length vs == numVars) = (sort . nub) <$> vs
-                            | otherwise              = error $ show numVars ++ " value lists required, " ++ show (length vs) ++ " given"
+                where vs' | (length vs == numVars) = nub <$> vs
+                          | otherwise              = error $ show numVars ++ " value lists required, " ++ show (length vs) ++ " given"
             Nothing -> observedVals
         valProduct = cartesianProduct vals'
         counts = [fromIntegral $ M.findWithDefault 0 val freqs + smooth | val <- valProduct]
