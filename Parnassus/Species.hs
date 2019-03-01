@@ -5,43 +5,58 @@
 
 module Parnassus.Species where
 
+import Algorithm.Search
 import Control.Exception.Base (assert)
+import Control.Monad (join)
 import Data.Char (isDigit, ord)
 import Data.List (inits, zip4)
 import Data.List.Split (splitOn)
 import qualified Data.Map as M
-import Data.Maybe (fromMaybe, isJust)
-import Data.Range.Range (Range (SpanRange), inRange)
+import Data.Maybe (fromJust, fromMaybe, isJust)
+import Data.Range.Range (Range (SpanRange), fromRanges, inRange)
 import Data.Ratio ((%))
-import qualified Data.Vector.Unboxed as V
+import qualified Data.Vector as V
 
 import Euterpea (AbsPitch, Control (..), InstrumentName (..), Mode (..), Pitch, PitchClass (..), absPitch, pitch)
 
+import Parnassus.Dist (DiscreteDist, getJointLogProb, getLogProb, trainDiscrete)
 import Parnassus.MusicBase (Key, MusicT (..), Pitched (getPitch), (/=/))
 import Parnassus.MusicD (MusicD (MusicD), Tied (..), extractTied, isTied)
-import Parnassus.Markov (ngrams)
+import Parnassus.Markov (MarkovModel, ngrams, trainMarkovModel)
 
 
 -- HELPER FUNCTIONS --
+
+maybePair :: (Maybe a, Maybe b) -> Maybe (a, b)
+maybePair (Just x, Just y) = Just (x, y)
+maybePair _                = Nothing
 
 -- gets windows of a list
 -- n is the amount to the left and right of the current element
 getWindows :: Int -> [a] -> [[a]]
 getWindows n xs = (drop (n + 1) $ take (2 * n + 1) $ inits xs) ++ ngrams (2 * n + 1) xs ++ reverse (reverse <$> (drop (n + 1) $ take (2 * n + 1) $ inits $ reverse xs))
 
--- TODO: improve normalization from [Tied a] to [a] (make it perfectly reversible)
--- given a list of Tied a, returns a list of (a, count) pairs, where count counts the number of successive tied items
--- rests are not permitted
-foldTied :: [Tied a] -> [(a, Int)]
-foldTied xs = reverse $ foldTied' $ reverse xs
+-- folds a list of Tied a into a list of a and some bookkeeping that will allow us to reconstruct the original list
+-- (loses all Control information)
+foldTied :: [Tied a] -> ([a], [(Bool, Int)])
+foldTied xs = (reverse items, reverse pairs)
     where
-        foldTied' [] = []
-        foldTied' ((Untied _ x):xs) = (x, 1) : foldTied' xs
-        foldTied' ((Tied x):xs)     = (x, n + 1) : tail ys
+        foldTied' []                = ([], [])
+        foldTied' ((Untied _ x):xs) = ((x:ys), (True, 1):pairs)
+            where (ys, pairs) = foldTied' xs
+        foldTied' ((Tied x):xs)     = (ys, (True, n + 1):(tail pairs))
             where
-                ys = foldTied' xs
-                (y, n) = head ys
-        foldTied' (Rest:xs)         = error "Rest is invalid"
+                (ys, pairs) = foldTied' xs
+                (_, n) = head pairs
+        foldTied' (Rest:xs)         = (ys, (False, 1):pairs)
+            where (ys, pairs) = foldTied' xs
+        (items, pairs) = foldTied' $ reverse xs
+
+-- given folded representation of [Tied a], converts back to the original representation
+unfoldTied :: ([a], [(Bool, Int)]) -> [Tied a]
+unfoldTied (_, [])                = []
+unfoldTied (xs, (False, n):pairs) = replicate n Rest ++ unfoldTied (xs, pairs)
+unfoldTied (x:xs, (True, n):pairs) = Untied [] x : (replicate (n - 1) (Tied x) ++ unfoldTied (xs, pairs))
 
 -- given a list of items, returns a list of (a, count) pairs, where count counts the number of successive identical items
 foldRepeats :: (Eq a) => [a] -> [(a, Int)]
@@ -107,20 +122,19 @@ firstDegree (pc, mode) = shiftPitch pc i
             otherwise  -> 0
 
 -- gets the pitch class scale for a given key
-scaleForKey :: Key -> [PitchClass]
-scaleForKey (pc, mode) = take 7 [shiftPitch pc' j | j <- drop i (cycle majorScale)]
+-- extra boolean flag indicating whether to include "extra" nodes (e.g. leading tone) sometimes permitted in the scale
+scaleForKey :: Key -> Bool -> [PitchClass]
+scaleForKey (pc, mode) extra = [shiftPitch pc j | j <- scale]
     where
-        majorScale = [0, 2, 4, 5, 7, 9, 11]
-        i = case mode of
-            Dorian -> 1
-            Phrygian -> 2
-            Lydian -> 3
-            Mixolydian -> 4
-            Aeolian -> 5
-            Minor -> 5
-            Locrian -> 6
-            otherwise -> 0
-        pc' = shiftPitch pc (-(majorScale !! i))
+        scale = case mode of
+            Dorian -> if extra then [0, 2, 3, 5, 7, 9, 10, 11] else [0, 2, 3, 5, 7, 9, 10]
+            Phrygian -> [0, 1, 3, 5, 7, 8, 10]
+            Lydian -> if extra then [0, 2, 4, 5, 6, 7, 9, 11] else [0, 2, 4, 6, 7, 9, 11]
+            Mixolydian -> if extra then [0, 2, 4, 5, 7, 9, 10, 11] else [0, 2, 4, 5, 7, 9, 10]
+            Aeolian -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
+            Minor -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
+            Locrian -> [0, 1, 3, 5, 6, 8, 10]
+            otherwise -> [0, 2, 4, 5, 7, 9, 11]
 
 -- INTERVALS --
 
@@ -236,9 +250,9 @@ firstSpecies (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
         validateNote _ Rest             = False
         cf = parseLine cfStr
         cpt = parseLine cptStr
-        cfPitches  = fst <$> foldTied cf
+        (cfPitches, _) = foldTied cf
         cadencePitchClass = fst $ cfPitches !! (length cfPitches - 2)
-        scale = scaleForKey key'
+        scale = scaleForKey key' False
         doCheck :: String -> Bool -> RuleCheck
         doCheck _ True = Passed
         doCheck s False = Failed s
@@ -302,6 +316,10 @@ checkFirstSpeciesRule (FirstSpecRule {s1RuleCheck, s1RuleDescr}) context@(FirstS
         result = case passed of
             True  -> Passed
             False -> Failed $ "Bar " ++ show s1Index ++ ": " ++ s1RuleDescr
+
+-- given a list of rules, returns True if the given context passes all the rules
+passesFirstSpeciesRules :: [FirstSpeciesRule] -> FirstSpeciesContext -> Bool
+passesFirstSpeciesRules rules context = all (== Passed) [checkFirstSpeciesRule rule context | rule <- rules]
 
 -- FIRST SPECIES RULES --
 
@@ -546,12 +564,14 @@ firstSpeciesRules =
 
 firstSpeciesEssentialRules = filter s1RuleIsEssential firstSpeciesRules
 
+-- VALIDITY CHECKING --
+
 -- gets the sequence of intervals for first species (eliminating ties)
 firstSpeciesIntervals :: FirstSpecies -> [Interval]
 firstSpeciesIntervals (FirstSpecies {cantusFirmus, counterpoint}) = intervals
     where
-        cfPitches  = fst <$> foldTied (snd cantusFirmus)
-        cptPitches = fst <$> foldTied (snd counterpoint)
+        (cfPitches, _) = foldTied (snd cantusFirmus)
+        (cptPitches, _) = foldTied (snd counterpoint)
         intervals
             | length cfPitches == length cptPitches = zip cfPitches cptPitches
             | otherwise                             = error "mismatch between number of notes in C.F. and counterpoint"
@@ -580,9 +600,88 @@ checkFirstSpecies rules fs = result
             (x:_)     -> x       -- first failure
             otherwise -> Passed  -- no failures, so we've passed
 
--- Generation --
+-- MODELING --
 
-type FirstSpeciesState = (V.Vector (Maybe Pitch), V.Vector (Maybe Pitch))
+data FirstSpeciesModel = FirstSpecModel {
+    harmonicModel :: DiscreteDist String Int, -- distribution on harmonic displacements (cpt vs. c.f.)
+    melodicModel :: MarkovModel Integer Int  -- Markov model on melodic displacements
+}
+    deriving (Eq, Show)
+
+-- trains a FirstSpeciesModel given a list of first species counterpoints
+trainFirstSpeciesModel :: [FirstSpecies] -> Double -> FirstSpeciesModel
+trainFirstSpeciesModel fss smooth = FirstSpecModel {harmonicModel = harmonicModel, melodicModel = melodicModel}
+    where
+        intervalss = firstSpeciesIntervals <$> fss
+        vertDisplacements = concatMap (map intervalDisplacement) intervalss
+        vRange = [(minimum vertDisplacements)..(maximum vertDisplacements)]
+        harmonicModel = trainDiscrete "harmonic displacement" (Just vRange) smooth vertDisplacements
+        (cfs, cpts) = unzip (unzip <$> intervalss)
+        melodies = cfs ++ cpts  -- just combine
+        bigramDisplacement (p1:p2:_) = intervalDisplacement (p1, p2)
+        horizDisplacements = (map bigramDisplacement) . ngrams 2 <$> melodies
+        allHorizDisplacements = concat horizDisplacements
+        hRange = [(minimum allHorizDisplacements)..(maximum allHorizDisplacements)]
+        melodicModel = trainMarkovModel (Just hRange) smooth horizDisplacements
+
+-- gets log2 probability of the FirstSpecies under the model
+-- model is: P(cpt_i | cpt_{i-1}, cpt_{i-2}, cf_{i})
+-- that is, scores only the counterpoint, conditioned on the cantus firmus
+scoreFirstSpecies :: FirstSpeciesModel -> FirstSpecies -> Double
+scoreFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) fs = harmonicScore + melodicScore
+    where
+        -- just get the notes
+        intervals = firstSpeciesIntervals fs
+        (_, cpt) = unzip intervals
+        cpt' = absPitch <$> cpt
+        melodicDisplacements = zipWith (-) (tail cpt') cpt'
+        harmonicScore = sum $ getLogProb harmonicModel . intervalDisplacement <$> intervals
+        melodicScore = getJointLogProb melodicModel melodicDisplacements
+
+
+-- GENERATION --
+
+type FirstSpeciesState = (Int, V.Vector (Maybe Pitch))
+
+-- workhorse for first species counterpoint generation
+generateFirstSpecies' :: Key -> VoiceLine -> Voice -> Maybe FirstSpecies
+generateFirstSpecies' key (cfVoice, cf) cptVoice = result
+    where
+        scale = scaleForKey key True  -- scale with leading tones
+        validPitches = [(pc, n) | (pc, n) <- pitch <$> fromRanges [voiceRange cptVoice], pc `elem` scale]
+        voiceOrdering = cfVoice <= cptVoice
+        (cfPitches, cfBook) = foldTied cf
+        cfPitchVec = V.fromList cfPitches
+        n = V.length cfPitchVec
+        startState = (-1, V.replicate n Nothing)
+        consts = FirstSpecConsts {s1Length = n, s1Key = key, s1Ordering = voiceOrdering}
+        -- given current state, gets the context
+        getContext :: FirstSpeciesState -> FirstSpeciesContext
+        getContext (i, cpt) = FirstSpecContext {s1Constants = consts, s1Index = i, s1Interval = interval, s1IntervalWindow = window, s1Motions = motions}
+            where
+                interval = (cfPitchVec V.! i, fromJust $ cpt V.! i)
+                start = max 0 (i - 3)
+                len = min 7 (n - start)
+                window = maybePair <$> V.toList (V.zip (V.map Just $ V.slice start len cfPitchVec) cpt)
+                leftInterval = (\x -> (cfPitchVec V.! (i - 1), x)) <$> join (cpt V.!? (i - 1))
+                rightInterval = (\x -> (cfPitchVec V.! (i + 1), x)) <$> join (cpt V.!? (i + 1))
+                motions = [(\x -> (x, interval)) <$> leftInterval, (\x -> (interval, x)) <$> rightInterval]
+        -- proceed left to right
+        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules
+        neighborStates :: FirstSpeciesState -> [FirstSpeciesState]
+        neighborStates (i, cpt) = neighbors
+            where
+                states = case (cpt V.! (i + 1)) of
+                    Just p  -> [(i + 1, cpt)]
+                    Nothing -> [(i + 1, cpt V.// [(i + 1, Just p)]) | p <- validPitches]
+                neighbors = filter (passesEssentialRules . getContext) states
+        solutionFound :: FirstSpeciesState -> Bool
+        solutionFound (i, _) = i >= n - 1
+        result = do
+            states <- dfs neighborStates solutionFound startState
+            let (_, cptPitches) = last states
+            let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
+            return $ FirstSpecies {key = key, cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
 
 
 -- Fux --
@@ -604,3 +703,7 @@ fig23 = firstSpecies (A, Aeolian) (Alto, "A3 C4 B3 D4 C4 E4 F4 E4 D4 C4 B3 A3 ~A
 
 fuxFirstSpeciesBad = [fig6Bad, fig12Bad, fig15Bad, fig15Bad']
 fuxFirstSpeciesGood = [fig5, fig6Good, fig11, fig12Good, fig13, fig14, fig15Good, fig21, fig22, fig23]
+fuxFirstSpeciesModelNoSmooth = trainFirstSpeciesModel fuxFirstSpeciesGood 0.0
+
+testVoiceLine = cantusFirmus fig5
+testFsGen = fromJust $ generateFirstSpecies' (D, Dorian) testVoiceLine Soprano
