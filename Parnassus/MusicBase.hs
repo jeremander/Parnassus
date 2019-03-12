@@ -132,7 +132,9 @@ toLilypond' = mFold f combineSeq combinePar g
             where
                 (p, oct) = getPitch x
                 (p', acc) = fromJust $ Data.Map.lookup p noteMapping
-        f (Rest d) = LP.Rest (Just (LP.Duration d)) []
+        f (Rest d)
+            | d == 0    = LP.Sequential []
+            | otherwise = LP.Rest (Just (LP.Duration d)) []
         combineSeq :: LP.Music -> LP.Music -> LP.Music
         combineSeq m1 m2 = LP.Sequential [m1, m2]
         combinePar :: LP.Music -> LP.Music -> LP.Music
@@ -147,7 +149,7 @@ toLilypond' = mFold f combineSeq combinePar g
             where
                 (p, oct) = pitch (absPitch (C, 4) + d)
                 (p', acc) = fromJust $ Data.Map.lookup p noteMapping
-        g (Instrument inst) m = LP.Set "Staff.instrumentName" (LP.toValue $ show inst)
+        g (Instrument inst) m = LP.Sequential [LP.Set "Staff.instrumentName" (LP.toValue $ show inst), m]
         g (KeySig p mode) m   = LP.Sequential [key, m]
             where key = modeToMajMin (p, mode)
         g _ m                 = m  -- TODO: PhraseAttribute

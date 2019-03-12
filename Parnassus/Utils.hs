@@ -70,6 +70,11 @@ rationalGCD x y = (gcd a c) % (lcm b d)
         (a, b) = (numerator x, denominator x)
         (c, d) = (numerator y, denominator y)
 
+-- computes n-grams from a list of items
+ngrams :: Int -> [a] -> [[a]]
+ngrams n xs 
+    | (n <= length xs) = take n xs : ngrams n (drop 1 xs)
+    | otherwise = []
 
 -- QUANTIZATION --
 

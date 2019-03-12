@@ -18,6 +18,7 @@ import qualified Data.Vector as VB
 import qualified Data.Vector.Storable as V
 import qualified Numeric.LinearAlgebra as LA
 
+import Parnassus.Utils (ngrams)
 import Parnassus.Dist
 
 import System.IO.Unsafe
@@ -127,6 +128,15 @@ instance (b ~ [a]) => Simulable (MarkovModel v) a b where
     sample :: (RandomGen g) => MarkovModel v a -> Rand g [a]
     sample = markovSample
 
+-- given a distribution on integers steps, creates a MarkovModel representing the random walk on the i.i.d. steps
+-- must be bounded within a finite range
+boundedIntegerRandomWalk :: DiscreteDist v Int -> (Int, Int) -> MarkovModel Integer Int
+boundedIntegerRandomWalk dist (low, high) = markov pi0 rows
+    where
+        n = high - low + 1
+        pi0 = trainDiscrete 0 (Just [low..high]) 0.0 [0]
+        rows = [V.generate n (\j -> getProb dist (j + low - i)) | i <- [low..high]]
+
 -- TERMINATING MARKOV MODEL --
 
 -- type for values in a terminating Markov chain
@@ -155,12 +165,6 @@ instance {-# OVERLAPPING #-} (b ~ [a]) => Simulable (MarkovModel v) (Token a) b 
     sample = fmap (map fromToken . takeWhile isToken) . markovSample
 
 -- N-GRAM MODELS --
-
--- computes n-grams from a list of items
-ngrams :: Int -> [a] -> [[a]]
-ngrams n xs 
-    | (n <= length xs) = take n xs : ngrams n (drop 1 xs)
-    | otherwise = []
 
 -- stores n, alphabet, mapping from alphabet to indices, and transition probability matrices for each Markovity level
 data NgramModel v a = Ngrams Int (VB.Vector a) (IndexMap a) [MultiArray Prob]

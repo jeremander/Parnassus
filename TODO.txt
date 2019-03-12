@@ -1,4 +1,7 @@
 TODO
 ----
+- prevent order from being violated in first & last notes
+- generation order
+- random generation
 - make things more efficient
 - map function for MusicD to manipulate all the leaf notes.

@@ -196,7 +196,8 @@ valsToIndices (Discrete {vals}) = map f
 getProb :: (Ord a, Show a) => DiscreteDist v a -> a -> Prob
 getProb (Discrete {vals, probs}) val = case i of
     Just i' -> probs V.! i'
-    Nothing -> error $ "invalid value " ++ show val
+    --Nothing -> error $ "invalid value " ++ show val
+    Nothing -> 0.0  -- silently return 0 probability
     where i = vecElemIndex val vals
 
 -- gets the probability of an event (a set of particular outcomes)
