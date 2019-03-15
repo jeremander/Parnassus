@@ -290,7 +290,7 @@ checkRules (f:fs) x = case f x of
 data FirstSpeciesConstants = FirstSpecConsts {
     s1Length :: Int,    -- number of bars (ignoring ties)
     s1Key :: Key,       -- key (fundamental)
-    s1Ordering :: Bool  -- False if CF <= CPT, True if CF > CPT
+    s1Ordering :: Bool  -- True if CF <= CPT, False if CF > CPT
 }
     deriving (Eq, Show)
 
@@ -567,9 +567,20 @@ fsRule18 = FirstSpecRule {
     s1RuleIsEssential = True
 }
 
+fsRuleCheck19 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Ordering}, s1Index, s1Interval = (p1, p2)}) =
+    ((s1Index /= 0) && (s1Index /= s1Length - 1)) ||
+    (s1Ordering && (absPitch p1 <= absPitch p2)) ||
+    ((not s1Ordering) && (absPitch p1 >= absPitch p2))
+
+fsRule19 = FirstSpecRule {
+    s1RuleCheck = fsRuleCheck19,
+    s1RuleDescr = "Voice crossover cannot occur in the first or last note.",
+    s1RuleIsEssential = True
+}
+
 firstSpeciesRules =
     [fsRule12] ++  -- uses current interval
-    [fsRule0, fsRule1, fsRule3, fsRule4, fsRule7, fsRule18] ++  -- uses current index & interval
+    [fsRule0, fsRule1, fsRule3, fsRule4, fsRule7, fsRule18, fsRule19] ++  -- uses current index & interval
     [fsRule2, fsRule5, fsRule6, fsRule8, fsRule9, fsRule10, fsRule11, fsRule13, fsRule14, fsRule15] ++  -- uses motions
     [fsRule16, fsRule17]  -- uses 7-long interval window
 
