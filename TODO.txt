@@ -1,7 +1,8 @@
 TODO
 ----
-- prevent order from being violated in first & last notes
+- debug to show sequence of choices
+- DFS choosing *last*??
+- out of bounds when using non-smoothed model
 - generation order
-- random generation
 - make things more efficient
 - map function for MusicD to manipulate all the leaf notes.

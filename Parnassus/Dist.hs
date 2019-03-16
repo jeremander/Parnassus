@@ -154,6 +154,7 @@ instance Functor (DiscreteDist v) where
 -- main constructor for DiscreteDist
 discreteDist :: (Ord a) => v -> [a] -> [Prob] -> DiscreteDist v a
 discreteDist var vals probs
+    | length probs == 0           = error "cannot have empty distribution"
     | length probs /= length vals = error "mismatch between number of vals and probs"
     | V.minimum probVec < 0.0     = error "minimum prob must be >= 0"
     | otherwise                   = Discrete {var = var, vals = VB.fromList vals', probs = pmf, cdf = cdf}
@@ -180,6 +181,13 @@ trainDiscrete var vals smooth xs = discreteDist var vals' counts
             Just vs -> nub vs
             Nothing -> observedVals
         counts = [(fromIntegral $ M.findWithDefault 0 val freqs) + smooth | val <- vals']
+
+uniformDiscreteDist :: (Ord a) => v -> [a] -> DiscreteDist v a
+uniformDiscreteDist var vals = discreteDist var vals' (replicate n p)
+    where
+        vals' = nub vals
+        n = length vals'
+        p = 1 / fromIntegral n
 
 -- accessors --
 
@@ -212,7 +220,7 @@ getLogProb dist val = log $ getProb dist val
 getLogProbEvent :: (Ord a, Show a) => DiscreteDist v a -> [a] -> Double
 getLogProbEvent dist@(Discrete {probs}) vals = log $ getProbEvent dist vals
 
--- -- simulation --
+-- simulation --
 
 class Simulable s a b where
     -- computes a single random sample from a distribution
@@ -222,15 +230,33 @@ class Simulable s a b where
     samples :: (RandomGen g) => s a -> Rand g [b]
     samples = sequence . repeat . interleave . sample
 
-
 instance (b ~ a) => Simulable (DiscreteDist v) a b where
     samples :: (RandomGen g) => DiscreteDist v a -> Rand g [a]
     samples (Discrete {vals, cdf}) = do
         rs <- getRandoms
         return [vals VB.! (bisect r cdf) | r <- rs]
 
+-- sample a DiscreteDist without replacement (producing a permutation of the elements)
+samplesWithoutReplacement :: (RandomGen g, Eq a) => DiscreteDist v a -> Rand g [a]
+samplesWithoutReplacement dist@(Discrete {var, vals, probs})
+    | totalProb == 0 = return []
+    | otherwise = do
+        val <- sample dist
+        let (vals', probs') = unzip $ filter ((/= val) . fst) (zipWith (,) (VB.toList vals) (V.toList probs))
+        let positiveSum = sum probs' > 0.0
+        rest <- case (vals', positiveSum) of
+            ((x:_), True) -> samplesWithoutReplacement dist'
+                where
+                    vals'' = VB.fromList vals'
+                    probs'' = normalizeVec $ V.fromList probs'
+                    cdf'' = V.scanl' (+) 0.0 probs''
+                    dist' = Discrete {var = var, vals = vals'', probs = probs'', cdf = cdf''}
+            otherwise     -> return []
+        return (val : rest)
+        where totalProb = V.sum probs
 
--- -- JOINT DISCRETE DISTRIBUTION --
+
+-- JOINT DISCRETE DISTRIBUTION --
 
 class (Eq v, Ord v) => JointDiscreteDistribution d v a where
     -- gets the list of variables associated with the joint distribution

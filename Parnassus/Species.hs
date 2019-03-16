@@ -1,5 +1,6 @@
 -- Species Counterpoint --
 
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -8,6 +9,7 @@ module Parnassus.Species where
 import Algorithm.Search
 import Control.Exception.Base (assert)
 import Control.Monad (join)
+import Control.Monad.Random (evalRandIO, Rand)
 import Data.Char (isDigit, ord)
 import Data.List (inits, zip4)
 import Data.List.Split (splitOn)
@@ -16,11 +18,12 @@ import Data.Maybe (fromJust, fromMaybe, isJust, listToMaybe)
 import Data.Range.Range (Range (SpanRange), fromRanges, inRange)
 import Data.Ratio ((%))
 import qualified Data.Vector as V
+import System.Random (RandomGen)
 
 import Euterpea (AbsPitch, Control (..), InstrumentName (..), Mode (..), Pitch, PitchClass (..), absPitch, pitch)
 
 import Parnassus.Utils (ngrams)
-import Parnassus.Dist (DiscreteDist, getLogProb, trainDiscrete)
+import Parnassus.Dist (discreteDist, DiscreteDist, getLogProb, samplesWithoutReplacement, trainDiscrete)
 import Parnassus.Markov (boundedIntegerRandomWalk, markovConditionOn)
 import Parnassus.MusicBase (Key, MusicT (..), Pitched (getPitch), (/=/))
 import Parnassus.MusicD (MusicD (MusicD), Tied (..), extractTied, isTied)
@@ -667,11 +670,12 @@ scoreFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) fs = harmonicSc
 
 -- GENERATION --
 
+-- position and vector of counterpoint pitches (some yet unfilled)
 type FirstSpeciesState = (Int, V.Vector (Maybe Pitch))
 
 -- workhorse for first species counterpoint generation
-generateFirstSpecies' :: FirstSpeciesModel -> Key -> VoiceLine -> Voice -> Maybe FirstSpecies
-generateFirstSpecies' (FirstSpecModel {harmonicModel, melodicModel}) key (cfVoice, cf) cptVoice = result
+generateFirstSpecies :: (RandomGen g) => FirstSpeciesModel -> Key -> VoiceLine -> Voice -> Rand g (Maybe FirstSpecies)
+generateFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) key (cfVoice, cf) cptVoice = result
     where
         scale = scaleForKey key True  -- scale with leading tones
         validPitches = [(pc, n) | (pc, n) <- pitch <$> fromRanges [voiceRange cptVoice], pc `elem` scale]
@@ -693,19 +697,10 @@ generateFirstSpecies' (FirstSpecModel {harmonicModel, melodicModel}) key (cfVoic
                 leftInterval = (\x -> (cfPitchVec V.! (i - 1), x)) <$> join (cpt V.!? (i - 1))
                 rightInterval = (\x -> (cfPitchVec V.! (i + 1), x)) <$> join (cpt V.!? (i + 1))
                 motions = [(\x -> (x, interval)) <$> leftInterval, (\x -> (interval, x)) <$> rightInterval]
-        -- proceed left to right
-        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules
-        neighborStates :: FirstSpeciesState -> [FirstSpeciesState]
-        neighborStates (i, cpt) = neighbors
-            where
-                states = case (cpt V.! (i + 1)) of
-                    Just p  -> [(i + 1, cpt)]
-                    Nothing -> [(i + 1, cpt V.// [(i + 1, Just p)]) | p <- validPitches]
-                neighbors = filter (passesEssentialRules . getContext) states
         melodicRandomWalk = boundedIntegerRandomWalk melodicModel (-32, 32)
         -- cost (-log prob) of transitioning from one state to another
         neighborCost :: FirstSpeciesState -> FirstSpeciesState -> Double
-        neighborCost (i1, cpt1) (i2, cpt2) = cost --harmonicCost + melodicCost
+        neighborCost (i1, cpt1) (i2, cpt2) = cost
             where
                 cptNote = fromJust $ cpt2 V.! i2
                 cptNoteDist = absPitch cptNote - medianValidPitch
@@ -721,17 +716,33 @@ generateFirstSpecies' (FirstSpecModel {harmonicModel, melodicModel}) key (cfVoic
                     (Nothing, Nothing) -> 0.0  -- indifferent to the first pitch chosen
                     otherwise          -> -(getLogProb condDist cptNoteDist)
                 cost = harmonicCost + melodicCost
-                --cost = traceShow (harmonicCost, melodicCost) (harmonicCost + melodicCost)
-        solutionFound :: FirstSpeciesState -> Bool
-        solutionFound (i, _) = i >= n - 1
+        -- proceed left to right
+        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules
+        neighborStates state@(i, cpt) = do
+            neighborPerm' <- neighborPerm
+            let neighborCosts' = neighborCost state <$> neighborPerm'
+            --let neighborPerm'' = reverse neighborPerm'
+            let neighborPerm'' = trace ((unlines $ show <$> zip neighborCosts' neighborPerm') ++ "--------------------") (reverse neighborPerm')
+            return neighborPerm''
+            where
+                states = case (cpt V.! (i + 1)) of
+                    Just p  -> [(i + 1, cpt)]
+                    Nothing -> [(i + 1, cpt V.// [(i + 1, Just p)]) | p <- validPitches]
+                neighbors = filter (passesEssentialRules . getContext) states
+                probs = [exp $ -(neighborCost state neighbor) | neighbor <- neighbors]
+                neighborDist = discreteDist () neighbors probs 
+                neighborPerm = case neighbors of
+                    []        -> return []
+                    otherwise -> samplesWithoutReplacement neighborDist
+        solutionFound :: FirstSpeciesState -> Rand g Bool
+        solutionFound (i, _) = return $ i >= n - 1
         result = do
-            (_, states) <- dijkstra neighborStates neighborCost solutionFound startState
-            --states <- dfs neighborStates solutionFound startState
-            let (_, cptPitches) = last states
-            let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
-            return $ FirstSpecies {key = key, cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
-        
-
+            maybeStates <- dfsM neighborStates solutionFound startState
+            return $ do
+                states <- maybeStates
+                let (_, cptPitches) = last states
+                let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
+                return $ FirstSpecies {key = key, cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
 
 -- Fux --
 
@@ -766,3 +777,5 @@ fig11Dijkstra = FirstSpecies {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [
 fig12Dijkstra = FirstSpecies {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Tenor,[Untied [] (E,4),Untied [] (E,4),Untied [] (F,4),Untied [] (G,4),Untied [] (A,4),Untied [] (F,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Tied (E,4)])}
 
 fig13Dijkstra = FirstSpecies {key = (F,Lydian), cantusFirmus = (Tenor,[Untied [] (F,3),Untied [] (G,3),Untied [] (A,3),Untied [] (F,3),Untied [] (D,3),Untied [] (E,3),Untied [] (F,3),Untied [] (C,4),Untied [] (A,3),Untied [] (F,3),Untied [] (G,3),Untied [] (F,3),Tied (F,3)]), counterpoint = (Alto,[Untied [] (F,4),Untied [] (D,4),Untied [] (C,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (A,3),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Untied [] (F,4),Tied (F,4)])}
+
+fig15Dijkstra = FirstSpecies {key = (G,Mixolydian), cantusFirmus = (Alto,[Untied [] (G,3),Untied [] (C,4),Untied [] (B,3),Untied [] (G,3),Untied [] (C,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (G,3),Tied (G,3)]), counterpoint = (Soprano,[Untied [] (D,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (B,4),Untied [] (C,5),Untied [] (A,4),Untied [] (G,4),Untied [] (Fs,4),Untied [] (G,4),Tied (G,4)])}
