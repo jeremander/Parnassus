@@ -130,7 +130,7 @@ beamSearchM width neighborGen costFunc found initial = results
         done (Beam {queue}, _) = S.length queue == 0
         results = do
             (_, doneBeamFinal) <- iterateUntilM done step (activeBeam0, doneBeam0)
-            return $ toList $ queue doneBeamFinal
+            return $ reverse $ toList $ queue doneBeamFinal
 
 beamSearch :: forall c s . (Num c, Ord c) => Int -> NeighborGen s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> [(c, [s])]
 beamSearch width neighborGen costFunc found initial = runIdentity $ beamSearchM width (return . neighborGen) costFunc found initial

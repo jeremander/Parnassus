@@ -23,11 +23,11 @@ import System.Random (RandomGen)
 import Euterpea (AbsPitch, Control (..), InstrumentName (..), Mode (..), Pitch, PitchClass (..), absPitch, pitch)
 
 import Parnassus.Utils (ngrams)
-import Parnassus.Dist (discreteDist, DiscreteDist, getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
+import Parnassus.Dist (discreteDist, DiscreteDist (..), getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
 import Parnassus.Markov (boundedIntegerRandomWalk, markovConditionOn)
 import Parnassus.MusicBase (Key, MusicT (..), Pitched (getPitch), (/=/))
 import Parnassus.MusicD (MusicD (MusicD), Tied (..), extractTied, isTied)
-import Parnassus.Search (dfsM, greedySearchM, NeighborGenM)
+import Parnassus.Search (beamSearchM, dfsM, greedySearchM, NeighborGenM)
 
 import Debug.Trace
 
@@ -721,7 +721,7 @@ firstSpeciesNeighborCost (FirstSpeciesSetup {fsModel = FirstSpecModel {harmonicM
             (Nothing, Nothing) -> 0.0  -- indifferent to the first pitch chosen
             otherwise          -> -(getLogProb condDist cptNoteDist)
         --cost = harmonicCost + melodicCost
-        cost = trace (show (i2, cptNote, harmonicCost, melodicCost, harmonicCost + melodicCost)) $ harmonicCost + melodicCost
+        cost = trace (show (i2, cptNote, (extract <$> pair1, extract <$> pair2), harmonicCost, melodicCost, harmonicCost + melodicCost)) $ harmonicCost + melodicCost
 
 firstSpeciesNeighbors :: RandomGen g => FirstSpeciesSetup -> FirstSpeciesState -> Rand g [FirstSpeciesState]
 firstSpeciesNeighbors (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice, genPolicy}) state@(i, cpt) = do
@@ -813,6 +813,14 @@ greedyFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searc
         costFunc = firstSpeciesNeighborCost setup
         neighborGen = firstSpeciesNeighbors setup
         searcher nbrGen costFn solutionFound startState = fmap snd <$> greedySearchM nbrGen costFn solutionFound startState
+
+beamSearchFirstSpecies :: RandomGen g => Int -> FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+beamSearchFirstSpecies width setup = generateFirstSpecies setup neighborGen costFunc searcher
+    where
+        costFunc = firstSpeciesNeighborCost setup
+        neighborGen = firstSpeciesNeighbors setup
+        searcher nbrGen costFn solutionFound startState = fmap snd . listToMaybe <$> beam
+            where beam = beamSearchM width nbrGen costFn solutionFound startState
 
 dijkstraFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
 dijkstraFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher

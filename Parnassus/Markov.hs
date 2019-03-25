@@ -272,8 +272,6 @@ trainCharNgramModel n params text = trainTerminatingNgramModel n (charAlphabet p
             Nothing       -> lines'
 
 
-
-
 -- TESTS --
 
 testMarkovSimple = trainTerminatingMarkovModel Nothing 0 ["cababacabbbcabccbacccccccccc"]
