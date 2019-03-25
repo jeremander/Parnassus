@@ -6,12 +6,12 @@
 
 module Parnassus.Species where
 
-import Algorithm.Search
+import Algorithm.Search (dijkstraM)
 import Control.Exception.Base (assert)
 import Control.Monad (join)
 import Control.Monad.Random (evalRandIO, Rand)
 import Data.Char (isDigit, ord)
-import Data.List (inits, zip4)
+import Data.List (inits, sortOn, zip4)
 import Data.List.Split (splitOn)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, fromMaybe, isJust, listToMaybe)
@@ -23,10 +23,11 @@ import System.Random (RandomGen)
 import Euterpea (AbsPitch, Control (..), InstrumentName (..), Mode (..), Pitch, PitchClass (..), absPitch, pitch)
 
 import Parnassus.Utils (ngrams)
-import Parnassus.Dist (discreteDist, DiscreteDist, getLogProb, samplesWithoutReplacement, trainDiscrete)
+import Parnassus.Dist (discreteDist, DiscreteDist, getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
 import Parnassus.Markov (boundedIntegerRandomWalk, markovConditionOn)
 import Parnassus.MusicBase (Key, MusicT (..), Pitched (getPitch), (/=/))
 import Parnassus.MusicD (MusicD (MusicD), Tied (..), extractTied, isTied)
+import Parnassus.Search (dfsM, greedySearchM, NeighborGenM)
 
 import Debug.Trace
 
@@ -193,7 +194,7 @@ intervalNumber :: Interval -> Int
 intervalNumber (p1, p2) = if (diff >= 0) then (diff + 1) else (diff - 1)
     where diff = diatonicPosition p2 - diatonicPosition p1
 
--- a pair of adjacent intervals
+-- a pair of adjacent harmonic intervals
 type PairwiseMotion = (Interval, Interval)
 
 data MotionType = Parallel | Contrary | Oblique
@@ -479,13 +480,18 @@ fsRule11 = FirstSpecRule {
     s1RuleIsEssential = True
 }
 
-fsRuleCheck12 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Interval}) =
+fsRuleCheck12 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Interval, s1Motions}) =
     (intervalDistance s1Interval <= 16) &&
+    all (fromMaybe True . fmap check) s1Motions &&
     (harmonicIntervalType pc s1Interval /= Dissonance)
+    where
+        check :: PairwiseMotion -> Bool
+        check pm = (intervalDistance motion1 <= 16) && (intervalDistance motion2 <= 16)
+            where (motion1, motion2) = motionTranspose pm
 
 fsRule12 = FirstSpecRule {
     s1RuleCheck = fsRuleCheck12,
-    s1RuleDescr = "Intervals must be consonant, and no larger than a major 10th.",
+    s1RuleDescr = "Harmonic intervals must be consonant, and both harmonic and melodic intervals must be no larger than a major 10th.",
     s1RuleIsEssential = True
 }
 
@@ -562,11 +568,14 @@ fsRule17 = FirstSpecRule {
     s1RuleIsEssential = True
 }
 
-fsRuleCheck18 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Key = (pc, _)}, s1Index, s1Interval = (_, (pc', _))}) = (s1Index == s1Length - 2) || (not $ equivPitchClass pc (shiftPitch pc' 1))
+fsRuleCheck18 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Key = (pc, mode)}, s1Index, s1Interval = (_, (pc', _))}) =
+    (s1Index == s1Length - 2) ||
+    (not $ equivPitchClass pc (shiftPitch pc' 1)) ||
+    (mode `elem` [Ionian, Major, Lydian])
 
 fsRule18 = FirstSpecRule {
     s1RuleCheck = fsRuleCheck18,
-    s1RuleDescr = "A leading tone cannot occur in the counterpoint, except in the cadence.",
+    s1RuleDescr = "An accidental leading tone cannot occur in the counterpoint, except in the cadence.",
     s1RuleIsEssential = True
 }
 
@@ -583,8 +592,8 @@ fsRule19 = FirstSpecRule {
 
 firstSpeciesRules =
     [fsRule12] ++  -- uses current interval
-    [fsRule0, fsRule1, fsRule3, fsRule4, fsRule7, fsRule18, fsRule19] ++  -- uses current index & interval
-    [fsRule2, fsRule5, fsRule6, fsRule8, fsRule9, fsRule10, fsRule11, fsRule13, fsRule14, fsRule15] ++  -- uses motions
+    [fsRule0, fsRule1, fsRule3, fsRule4, fsRule7, fsRule19, fsRule18] ++  -- uses current index & interval
+    [fsRule2, fsRule5, fsRule6, fsRule8, fsRule9, fsRule10, fsRule11, fsRule12, fsRule13, fsRule14, fsRule15] ++  -- uses motions
     [fsRule16, fsRule17]  -- uses 7-long interval window
 
 firstSpeciesEssentialRules = filter s1RuleIsEssential firstSpeciesRules
@@ -672,20 +681,67 @@ scoreFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) fs = harmonicSc
 
 -- position and vector of counterpoint pitches (some yet unfilled)
 type FirstSpeciesState = (Int, V.Vector (Maybe Pitch))
+type TransitionCostFunc a = a -> a -> Double
+type FirstSpeciesTransitionCostFunc = TransitionCostFunc FirstSpeciesState
+-- order of note generation (forward, backward, random)
+data GenerationPolicy = ForwardPolicy | BackwardPolicy | RandomPolicy
+    deriving (Eq, Show)
 
--- workhorse for first species counterpoint generation
-generateFirstSpecies :: (RandomGen g) => FirstSpeciesModel -> Key -> VoiceLine -> Voice -> Rand g (Maybe FirstSpecies)
-generateFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) key (cfVoice, cf) cptVoice = result
+data FirstSpeciesSetup = FirstSpeciesSetup {
+    fsModel :: FirstSpeciesModel,
+    fsKey :: Key,
+    fsCf :: VoiceLine,
+    fsCptVoice :: Voice,
+    genPolicy :: GenerationPolicy
+}
+    deriving Show
+
+-- cost (-log prob) of transitioning from one state to another
+firstSpeciesNeighborCost :: FirstSpeciesSetup -> FirstSpeciesTransitionCostFunc
+firstSpeciesNeighborCost (FirstSpeciesSetup {fsModel = FirstSpecModel {harmonicModel, melodicModel}, fsKey, fsCf = (_, cf), fsCptVoice}) _ (i2, cpt2) = cost
     where
-        scale = scaleForKey key True  -- scale with leading tones
-        validPitches = [(pc, n) | (pc, n) <- pitch <$> fromRanges [voiceRange cptVoice], pc `elem` scale]
+        scale = scaleForKey fsKey True  -- scale with leading tones
+        validPitches = [(pc, n) | (pc, n) <- pitch <$> fromRanges [voiceRange fsCptVoice], pc `elem` scale]
         medianValidPitch = absPitch $ validPitches !! (length validPitches `quot` 2)
-        voiceOrdering = cfVoice <= cptVoice
+        (cfPitches, _) = foldTied cf
+        cfPitchVec = V.fromList cfPitches
+        n = V.length cfPitchVec
+        cptNote = fromJust $ cpt2 V.! i2
+        cptNoteDist = absPitch cptNote - medianValidPitch
+        interval = (cfPitchVec V.! i2, cptNote)
+        harmonicCost = -(getLogProb harmonicModel $ intervalDisplacement interval)
+        -- distances from median pitch for voice
+        distances = V.map (fmap ((\p -> p - medianValidPitch) . absPitch)) cpt2
+        pair1 = listToMaybe $ filter (isJust . snd) $ zip [(1::Int)..] (reverse $ V.toList $ V.slice 0 i2 distances)
+        pair2 = listToMaybe $ filter (isJust . snd) $ zip [(1::Int)..] (V.toList $ V.slice (i2 + 1) (n - i2 - 1) distances)
+        extract (j, d) = (j, fromJust d)
+        melodicRandomWalk = boundedIntegerRandomWalk melodicModel (-32, 32)
+        condDist = markovConditionOn melodicRandomWalk (toInteger i2) (extract <$> pair1, extract <$> pair2)
+        melodicCost = case (pair1, pair2) of
+            (Nothing, Nothing) -> 0.0  -- indifferent to the first pitch chosen
+            otherwise          -> -(getLogProb condDist cptNoteDist)
+        --cost = harmonicCost + melodicCost
+        cost = trace (show (i2, cptNote, harmonicCost, melodicCost, harmonicCost + melodicCost)) $ harmonicCost + melodicCost
+
+firstSpeciesNeighbors :: RandomGen g => FirstSpeciesSetup -> FirstSpeciesState -> Rand g [FirstSpeciesState]
+firstSpeciesNeighbors (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice, genPolicy}) state@(i, cpt) = do
+    i' <- case genPolicy of
+        ForwardPolicy  -> return (i + 1)
+        BackwardPolicy -> return (i - 1)
+        RandomPolicy   -> error "RandomPolicy not yet supported"
+    let states = case (cpt V.! i') of
+                    Just p  -> [(i', cpt)]  -- no nontrivial neighbors
+                    Nothing -> [(i', cpt V.// [(i', Just p)]) | p <- validPitches]
+    let neighbors = filter (passesEssentialRules . getContext) states
+    return neighbors   
+    where
+        scale = scaleForKey fsKey True  -- scale with leading tones
+        validPitches = [(pc, n) | (pc, n) <- pitch <$> fromRanges [voiceRange fsCptVoice], pc `elem` scale]
+        voiceOrdering = cfVoice <= fsCptVoice
         (cfPitches, cfBook) = foldTied cf
         cfPitchVec = V.fromList cfPitches
         n = V.length cfPitchVec
-        startState = (-1, V.replicate n Nothing)
-        consts = FirstSpecConsts {s1Length = n, s1Key = key, s1Ordering = voiceOrdering}
+        consts = FirstSpecConsts {s1Length = n, s1Key = fsKey, s1Ordering = voiceOrdering}
         -- given current state, gets the context
         getContext :: FirstSpeciesState -> FirstSpeciesContext
         getContext (i, cpt) = FirstSpecContext {s1Constants = consts, s1Index = i, s1Interval = interval, s1IntervalWindow = window, s1Motions = motions}
@@ -697,52 +753,80 @@ generateFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) key (cfVoice
                 leftInterval = (\x -> (cfPitchVec V.! (i - 1), x)) <$> join (cpt V.!? (i - 1))
                 rightInterval = (\x -> (cfPitchVec V.! (i + 1), x)) <$> join (cpt V.!? (i + 1))
                 motions = [(\x -> (x, interval)) <$> leftInterval, (\x -> (interval, x)) <$> rightInterval]
-        melodicRandomWalk = boundedIntegerRandomWalk melodicModel (-32, 32)
-        -- cost (-log prob) of transitioning from one state to another
-        neighborCost :: FirstSpeciesState -> FirstSpeciesState -> Double
-        neighborCost (i1, cpt1) (i2, cpt2) = cost
+        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules  
+
+-- returns probability distribution on neighbor states (Nothing if the set is empty)
+firstSpeciesNeighborDist :: RandomGen g => FirstSpeciesSetup -> FirstSpeciesState -> FirstSpeciesTransitionCostFunc -> Rand g (Maybe (DiscreteDist () FirstSpeciesState))
+firstSpeciesNeighborDist setup state costFunc = do
+    neighbors <- firstSpeciesNeighbors setup state
+    let costs = costFunc state <$> neighbors
+    let pairs = sortOn fst (zip costs neighbors)
+    let (costs', neighbors') = unzip $ trace ((unlines $ show <$> pairs) ++ "-----------------------") pairs
+    --let (costs', neighbors') = unzip pairs
+    let probs = exp . negate <$> costs'
+    let neighborDist = case neighbors of
+                            []        -> Nothing
+                            otherwise -> Just $ discreteDist () neighbors' probs
+    return neighborDist
+
+-- generates list of random neighbors via sampling without replacement
+firstSpeciesRandomNeighborStates :: (RandomGen g) => FirstSpeciesSetup -> FirstSpeciesTransitionCostFunc -> NeighborGenM (Rand g) FirstSpeciesState
+firstSpeciesRandomNeighborStates setup costFunc state = do
+    neighborDist <- firstSpeciesNeighborDist setup state costFunc
+    case neighborDist of
+        Nothing   -> return []
+        Just dist -> samplesWithoutReplacement dist
+
+type MonadicSearcher m s c = NeighborGenM m s -> (s -> s -> c) -> (s -> Bool) -> s -> m (Maybe [s])
+
+-- workhorse for first species counterpoint generation
+generateFirstSpecies :: RandomGen g => FirstSpeciesSetup -> NeighborGenM (Rand g) FirstSpeciesState -> FirstSpeciesTransitionCostFunc -> MonadicSearcher (Rand g) FirstSpeciesState Double -> Rand g (Maybe FirstSpecies)
+generateFirstSpecies (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice, genPolicy}) neighborGen costFunc searcher = do
+    startIdx <- case genPolicy of
+                    ForwardPolicy  -> return $ -1
+                    BackwardPolicy -> return n
+                    RandomPolicy   -> sample idxDist
+    let startState = (startIdx, V.replicate n Nothing)
+    maybeStates <- searcher neighborGen costFunc solutionFound startState
+    return $ do
+        states <- maybeStates
+        let (_, cptPitches) = head states
+        let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
+        return $ FirstSpecies {key = fsKey, cantusFirmus = (cfVoice, cf), counterpoint = (fsCptVoice, cpt)}
+    where
+        (cfPitches, cfBook) = foldTied cf
+        n = length cfPitches
+        idxDist = uniformDiscreteDist () [0..(n-1)]
+        solutionFound :: FirstSpeciesState -> Bool
+        solutionFound (_, cpt) = all isJust $ V.toList cpt
+
+randomFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+randomFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher
+    where
+        costFunc = firstSpeciesNeighborCost setup
+        neighborGen = firstSpeciesRandomNeighborStates setup costFunc
+        searcher nbrGen _ solutionFound startState = dfsM nbrGen solutionFound startState
+
+greedyFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+greedyFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher
+    where
+        costFunc = firstSpeciesNeighborCost setup
+        neighborGen = firstSpeciesNeighbors setup
+        searcher nbrGen costFn solutionFound startState = fmap snd <$> greedySearchM nbrGen costFn solutionFound startState
+
+dijkstraFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+dijkstraFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher
+    where
+        costFunc = firstSpeciesNeighborCost setup
+        neighborGen = firstSpeciesNeighbors setup
+        searcher nbrGen costFn solutionFound startState = fmap (reverse . snd) <$> dijkstraM nbrGen costFn' (return . solutionFound) startState
             where
-                cptNote = fromJust $ cpt2 V.! i2
-                cptNoteDist = absPitch cptNote - medianValidPitch
-                interval = (cfPitchVec V.! i2, cptNote)
-                harmonicCost = -(getLogProb harmonicModel $ intervalDisplacement interval)
-                -- distances from median pitch for voice
-                distances = V.map (fmap ((\p -> p - medianValidPitch) . absPitch)) cpt2
-                pair1 = listToMaybe $ filter (isJust . snd) $ zip [(1::Int)..] (reverse $ V.toList $ V.slice 0 i2 distances)
-                pair2 = listToMaybe $ filter (isJust . snd) $ zip [(1::Int)..] (V.toList $ V.slice (i2 + 1) (n - i2 - 1) distances)
-                extract (j, d) = (j, fromJust d)
-                condDist = markovConditionOn melodicRandomWalk (toInteger i2) (extract <$> pair1, extract <$> pair2)
-                melodicCost = case (pair1, pair2) of
-                    (Nothing, Nothing) -> 0.0  -- indifferent to the first pitch chosen
-                    otherwise          -> -(getLogProb condDist cptNoteDist)
-                cost = harmonicCost + melodicCost
-        -- proceed left to right
-        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules
-        neighborStates state@(i, cpt) = do
-            neighborPerm' <- neighborPerm
-            let neighborCosts' = neighborCost state <$> neighborPerm'
-            --let neighborPerm'' = reverse neighborPerm'
-            let neighborPerm'' = trace ((unlines $ show <$> zip neighborCosts' neighborPerm') ++ "--------------------") (reverse neighborPerm')
-            return neighborPerm''
-            where
-                states = case (cpt V.! (i + 1)) of
-                    Just p  -> [(i + 1, cpt)]
-                    Nothing -> [(i + 1, cpt V.// [(i + 1, Just p)]) | p <- validPitches]
-                neighbors = filter (passesEssentialRules . getContext) states
-                probs = [exp $ -(neighborCost state neighbor) | neighbor <- neighbors]
-                neighborDist = discreteDist () neighbors probs 
-                neighborPerm = case neighbors of
-                    []        -> return []
-                    otherwise -> samplesWithoutReplacement neighborDist
-        solutionFound :: FirstSpeciesState -> Rand g Bool
-        solutionFound (i, _) = return $ i >= n - 1
-        result = do
-            maybeStates <- dfsM neighborStates solutionFound startState
-            return $ do
-                states <- maybeStates
-                let (_, cptPitches) = last states
-                let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
-                return $ FirstSpecies {key = key, cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
+                costFn' state1 state2 = return $ costFn state1 state2
+
+-- extracts setup information from an existing FirstSpecies
+getFirstSpeciesSetup :: FirstSpeciesModel -> GenerationPolicy -> FirstSpecies -> FirstSpeciesSetup
+getFirstSpeciesSetup model policy (FirstSpecies {key, cantusFirmus, counterpoint = (cptVoice, _)}) = FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
+
 
 -- Fux --
 
@@ -779,3 +863,7 @@ fig12Dijkstra = FirstSpecies {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [
 fig13Dijkstra = FirstSpecies {key = (F,Lydian), cantusFirmus = (Tenor,[Untied [] (F,3),Untied [] (G,3),Untied [] (A,3),Untied [] (F,3),Untied [] (D,3),Untied [] (E,3),Untied [] (F,3),Untied [] (C,4),Untied [] (A,3),Untied [] (F,3),Untied [] (G,3),Untied [] (F,3),Tied (F,3)]), counterpoint = (Alto,[Untied [] (F,4),Untied [] (D,4),Untied [] (C,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (A,3),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Untied [] (F,4),Tied (F,4)])}
 
 fig15Dijkstra = FirstSpecies {key = (G,Mixolydian), cantusFirmus = (Alto,[Untied [] (G,3),Untied [] (C,4),Untied [] (B,3),Untied [] (G,3),Untied [] (C,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (G,3),Tied (G,3)]), counterpoint = (Soprano,[Untied [] (D,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (B,4),Untied [] (C,5),Untied [] (A,4),Untied [] (G,4),Untied [] (Fs,4),Untied [] (G,4),Tied (G,4)])}
+
+
+
+twinkle = firstSpecies (C, Ionian) (Alto, "C4 C4 G4 G4 A4 A4 G4 ~G4 F4 F4 E4 E4 D4 D4 C4 ~C4") (Soprano, "C4 C4 G4 G4 A4 A4 G4 ~G4 F4 F4 E4 E4 D4 D4 C4 ~C4")

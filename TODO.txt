@@ -1,8 +1,8 @@
 TODO
 ----
-- debug to show sequence of choices
-- DFS choosing *last*??
-- out of bounds when using non-smoothed model
+- break *all* the rules
+- generalized stochastic DFS (if limit to one sample, can get stuck)
+- simulated annealing
 - generation order
 - make things more efficient
 - map function for MusicD to manipulate all the leaf notes.
