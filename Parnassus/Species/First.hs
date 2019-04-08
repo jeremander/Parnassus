@@ -1,249 +1,30 @@
--- Species Counterpoint --
-
-{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Parnassus.Species where
+module Parnassus.Species.First where
 
 import Algorithm.Search (dijkstraM)
-import Control.Exception.Base (assert)
 import Control.Monad (join)
 import Control.Monad.Random (evalRandIO, Rand)
-import Data.Char (isDigit, ord)
-import Data.List (inits, sortOn, zip4)
-import Data.List.Split (splitOn)
-import qualified Data.Map as M
+import Data.List (sortOn, zip4)
 import Data.Maybe (fromJust, fromMaybe, isJust, listToMaybe)
-import Data.Range.Range (Range (SpanRange), fromRanges, inRange)
-import Data.Ratio ((%))
+import Data.Range.Range (fromRanges)
 import qualified Data.Vector as V
 import System.Random (RandomGen)
 
-import Euterpea (AbsPitch, Control (..), InstrumentName (..), Mode (..), Pitch, PitchClass (..), absPitch, pitch)
-
+import Euterpea (absPitch, Control (..), InstrumentName (..), Mode (..), pitch, Pitch, PitchClass (..))
 import Parnassus.Utils (ngrams)
 import Parnassus.Dist (discreteDist, DiscreteDist (..), getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
 import Parnassus.Markov (boundedIntegerRandomWalk, markovConditionOn)
-import Parnassus.MusicBase (Key, MusicT (..), Pitched (getPitch), (/=/))
-import Parnassus.MusicD (MusicD (MusicD), Tied (..), extractTied, isTied)
+import Parnassus.MusicBase (Key, modify, play, (/=/))
+import Parnassus.MusicD (extractTied, MusicD (..), Tied (..))
 import Parnassus.Search (beamSearchM, dfsM, greedySearchM, NeighborGenM)
+import Parnassus.Species.Base
 
 import Debug.Trace
 
 
--- HELPER FUNCTIONS --
-
-maybePair :: (Maybe a, Maybe b) -> Maybe (a, b)
-maybePair (Just x, Just y) = Just (x, y)
-maybePair _                = Nothing
-
--- gets windows of a list
--- n is the amount to the left and right of the current element
-getWindows :: Int -> [a] -> [[a]]
-getWindows n xs = (drop (n + 1) $ take (2 * n + 1) $ inits xs) ++ ngrams (2 * n + 1) xs ++ reverse (reverse <$> (drop (n + 1) $ take (2 * n + 1) $ inits $ reverse xs))
-
--- folds a list of Tied a into a list of a and some bookkeeping that will allow us to reconstruct the original list
--- (loses all Control information)
-foldTied :: [Tied a] -> ([a], [(Bool, Int)])
-foldTied xs = (reverse items, reverse pairs)
-    where
-        foldTied' []                = ([], [])
-        foldTied' ((Untied _ x):xs) = ((x:ys), (True, 1):pairs)
-            where (ys, pairs) = foldTied' xs
-        foldTied' ((Tied x):xs)     = (ys, (True, n + 1):(tail pairs))
-            where
-                (ys, pairs) = foldTied' xs
-                (_, n) = head pairs
-        foldTied' (Rest:xs)         = (ys, (False, 1):pairs)
-            where (ys, pairs) = foldTied' xs
-        (items, pairs) = foldTied' $ reverse xs
-
--- given folded representation of [Tied a], converts back to the original representation
-unfoldTied :: ([a], [(Bool, Int)]) -> [Tied a]
-unfoldTied (_, [])                = []
-unfoldTied (xs, (False, n):pairs) = replicate n Rest ++ unfoldTied (xs, pairs)
-unfoldTied (x:xs, (True, n):pairs) = Untied [] x : (replicate (n - 1) (Tied x) ++ unfoldTied (xs, pairs))
-
--- given a list of items, returns a list of (a, count) pairs, where count counts the number of successive identical items
-foldRepeats :: (Eq a) => [a] -> [(a, Int)]
-foldRepeats xs = reverse $ foldRepeats' $ reverse xs
-    where
-        foldRepeats' [] = []
-        foldRepeats' [x] = [(x, 1)]
-        foldRepeats' (x:xs) = if (x == head xs) then ((x, n + 1) : tail ys) else ((x, 1) : foldRepeats' xs)
-            where
-                ys = foldRepeats' xs
-                (_, n) = head ys
-
--- gets the max number of repeated elements in a list (that are not Nothing) and the element itself
-maxRepeats :: (Eq a) => [Maybe a] -> Int
-maxRepeats xs = maximum $ [0] ++ (snd <$> filter (isJust . fst) (foldRepeats xs))
-
-
--- VOICES --
-
-data Voice = Bass | Tenor | Alto | Soprano
-    deriving (Eq, Ord, Show)
-
--- vocal range for each voice part
-voiceRange :: Voice -> Range AbsPitch
-voiceRange Bass    = SpanRange (absPitch (E, 2)) (absPitch (E, 4))
-voiceRange Tenor   = SpanRange (absPitch (C, 3)) (absPitch (A, 4))
-voiceRange Alto    = SpanRange (absPitch (F, 3)) (absPitch (F, 5))
-voiceRange Soprano = SpanRange (absPitch (C, 4)) (absPitch (A, 5))
-
--- returns True if the voice can sing the note
-voiceCanSing :: Voice -> Pitch -> Bool
-voiceCanSing voice p = inRange (voiceRange voice) (absPitch p)
-
--- SCALES & MODES --
-
--- only church modes are acceptable for species counterpoint
-convertMode :: Mode -> Mode
-convertMode Major = Ionian
-convertMode Minor = Aeolian
-convertMode Locrian = error "Locrian is an invalid mode for species counterpoint"
-convertMode (CustomMode _) = error "CustomMode is an invalid mode for species counterpoint"
-convertMode mode = mode
-
--- returns True if two pitch classes are equivalent
-equivPitchClass :: PitchClass -> PitchClass -> Bool
-equivPitchClass pc1 pc2 = (absPitch (pc1, 4)) == (absPitch (pc2, 4))
-
--- transposes a pitch class by some number of semitones
-shiftPitch :: PitchClass -> Int -> PitchClass
-shiftPitch pc shift = fst $ pitch $ absPitch (pc, 4) + shift
-
--- gets the first degree of the key
-firstDegree :: Key -> PitchClass
-firstDegree (pc, mode) = shiftPitch pc i
-    where i = case mode of
-            Dorian     -> 10
-            Phrygian   -> 8
-            Lydian     -> 7
-            Mixolydian -> 5
-            Aeolian    -> 3
-            Minor      -> 3
-            Locrian    -> 1
-            otherwise  -> 0
-
--- gets the pitch class scale for a given key
--- extra boolean flag indicating whether to include "extra" nodes (e.g. leading tone) sometimes permitted in the scale
-scaleForKey :: Key -> Bool -> [PitchClass]
-scaleForKey (pc, mode) extra = [shiftPitch pc j | j <- scale]
-    where
-        scale = case mode of
-            Dorian -> if extra then [0, 2, 3, 5, 7, 9, 10, 11] else [0, 2, 3, 5, 7, 9, 10]
-            Phrygian -> [0, 1, 3, 5, 7, 8, 10]
-            Lydian -> if extra then [0, 2, 4, 5, 6, 7, 9, 11] else [0, 2, 4, 6, 7, 9, 11]
-            Mixolydian -> if extra then [0, 2, 4, 5, 7, 9, 10, 11] else [0, 2, 4, 5, 7, 9, 10]
-            Aeolian -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
-            Minor -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
-            Locrian -> [0, 1, 3, 5, 6, 8, 10]
-            otherwise -> [0, 2, 4, 5, 7, 9, 11]
-
--- INTERVALS --
-
-type Interval = (Pitch, Pitch) -- a pair of notes
-
--- (signed) number of semitones between the two pitches
-intervalDisplacement :: Interval -> Int
-intervalDisplacement (p1, p2) = absPitch p2 - absPitch p1
-
--- (unsigned) number of semitones between the two pitches
-intervalDistance :: Interval -> Int
-intervalDistance = abs . intervalDisplacement
-
--- returns the ordering of the two pitches
-intervalOrdering :: Interval -> Ordering
-intervalOrdering (p1, p2) = compare p1 p2
-
--- three broad categories of intervals, according to Fux
-data IntervalType = PerfectConsonance | ImperfectConsonance | Dissonance
-    deriving (Eq, Show)
-
--- gets the type of interval for two adjacent notes
-melodicIntervalType :: PitchClass -> Interval -> IntervalType
-melodicIntervalType root interval
-    | (dist `elem` [0, 7])                             = PerfectConsonance
-    | (dist `elem` [3, 4, 5])                          = ImperfectConsonance
-    | (dist == 8) && (intervalOrdering interval /= LT) = ImperfectConsonance  -- descent by a minor 6th is consonant
-    | otherwise                                        = Dissonance
-    where dist = intervalDistance interval `mod` 12
-
--- gets the type of interval for two notes in parallel (main voice is the first note, harmony the second)
-harmonicIntervalType :: PitchClass -> Interval -> IntervalType
-harmonicIntervalType root interval@(p1, p2)
-    | (dist `elem` [0, 7])                           = PerfectConsonance
-    | (dist `elem` [3, 4, 8, 9])                     = ImperfectConsonance
-    -- Fux calls the fourth a consonance if the top note is the fundamental
-    | (dist == 5) && ((fst $ snd interval') == root) = ImperfectConsonance
-    | otherwise                                      = Dissonance
-    where
-        dist = intervalDistance interval `mod` 12
-        interval' = if (intervalOrdering interval == GT) then (p2, p1) else (p1, p2)
-
--- gets the position of a Pitch in the diatonic staff (i.e. mod 7)
-diatonicPosition :: Pitch -> Int
-diatonicPosition (pc, oct) = 7 * oct + (posTable M.! (head $ show pc))
-    where posTable = M.fromList $ zip "CDEFGAB" [0..]
-
--- gets the (signed) interval number (staff distance) of an interval, e.g. "first", "third", etc.
-intervalNumber :: Interval -> Int
-intervalNumber (p1, p2) = if (diff >= 0) then (diff + 1) else (diff - 1)
-    where diff = diatonicPosition p2 - diatonicPosition p1
-
--- a pair of adjacent harmonic intervals
-type PairwiseMotion = (Interval, Interval)
-
-data MotionType = Parallel | Contrary | Oblique
-    deriving (Eq, Show)
-
--- gets the type of motion for a pair of intervals
-motionType :: PairwiseMotion -> MotionType
-motionType ((p1, p2), (p1', p2'))
-    | (n1 == n1') || (n2 == n2') = Oblique
-    | (n1 < n1') && (n2 > n2')   = Contrary
-    | (n1 > n1') && (n2 < n2')   = Contrary
-    | otherwise                  = Parallel
-    where [n1, n2, n1', n2'] = absPitch <$> [p1, p2, p1', p2']
-
--- converts PairwiseMotion from adjacent harmonies to concurrent motions
-motionTranspose :: PairwiseMotion -> (Interval, Interval)
-motionTranspose ((p1, p2), (p1', p2')) = ((p1, p1'), (p2, p2'))
-        
--- PARSING --
-
--- parses a note from a string: starts with the pitch, followed by an octave, followed by ~ if it is tied; a rest is simply a *
-parseNote :: String -> Tied Pitch
-parseNote "*" = Rest
-parseNote s   = tp
-    where
-        (tie, s') = span (== '~') s
-        (pc, s'') = span (not . isDigit) s'
-        (oct, _) = span isDigit s''
-        tp = case tie of
-            ""        -> Untied [] (read pc, read oct)
-            "~"       -> Tied (read pc, read oct)
-            otherwise -> error "parse error"
-
-parseLine :: String -> [Tied Pitch]
-parseLine s = parseNote <$> filter (not . null) (splitOn " " s)
-
--- SPECIES --
-
-data RuleCheck = Failed String | Passed
-    deriving (Eq, Show)
-
-class Species a where
-    toMusicD :: a -> MusicD Pitch
-
--- First Species --
-
-type VoiceLine = (Voice, [Tied Pitch])
-
-data FirstSpecies = FirstSpecies { key :: Key, cantusFirmus :: VoiceLine, counterpoint :: VoiceLine}
+data FirstSpecies = First { key :: Key, cantusFirmus :: VoiceLine, counterpoint :: VoiceLine}
     deriving (Show)
 
 -- convenience constructor from strings
@@ -274,21 +55,12 @@ firstSpecies (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
         firstFailed = dropWhile (== Passed) checks
         spec = case firstFailed of
             (x:_)     -> error s where (Failed s) = x
-            otherwise -> FirstSpecies {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
+            otherwise -> First {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
 
 instance Species FirstSpecies where
     toMusicD :: FirstSpecies -> MusicD Pitch
-    toMusicD FirstSpecies {cantusFirmus = (_, cf), counterpoint = (_, cpt)} = modify (Tempo 3) $ (MusicD 1 [Instrument VoiceOohs] (pure <$> cf)) /=/ (MusicD 1 [Instrument VoiceOohs] (pure <$> cpt))
+    toMusicD First {cantusFirmus = (_, cf), counterpoint = (_, cpt)} = modify (Tempo 3) $ (MusicD 1 [Instrument VoiceOohs] (pure <$> cf)) /=/ (MusicD 1 [Instrument VoiceOohs] (pure <$> cpt))
 
--- COUNTERPOINT RULES --
-
--- applies a sequence of rules to something, short-circuiting as soon as the first rule fails
--- for efficiency, it is best to put the filters in order of decreasing cheapness
-checkRules :: [a -> RuleCheck] -> a -> RuleCheck
-checkRules [] x     = Passed
-checkRules (f:fs) x = case f x of
-    fx@(Failed _) -> fx
-    otherwise     -> checkRules fs x
 
 -- global data for first species
 data FirstSpeciesConstants = FirstSpecConsts {
@@ -602,7 +374,7 @@ firstSpeciesEssentialRules = filter s1RuleIsEssential firstSpeciesRules
 
 -- gets the sequence of intervals for first species (eliminating ties)
 firstSpeciesIntervals :: FirstSpecies -> [Interval]
-firstSpeciesIntervals (FirstSpecies {cantusFirmus, counterpoint}) = intervals
+firstSpeciesIntervals (First {cantusFirmus, counterpoint}) = intervals
     where
         (cfPitches, _) = foldTied (snd cantusFirmus)
         (cptPitches, _) = foldTied (snd counterpoint)
@@ -612,7 +384,7 @@ firstSpeciesIntervals (FirstSpecies {cantusFirmus, counterpoint}) = intervals
 
 -- converts a FirstSpecies into a list of contexts for evaluating rules
 firstSpeciesContexts :: FirstSpecies -> [FirstSpeciesContext]
-firstSpeciesContexts firstSpec@(FirstSpecies {key, cantusFirmus, counterpoint}) = contexts
+firstSpeciesContexts firstSpec@(First {key, cantusFirmus, counterpoint}) = contexts
     where
         intervals = firstSpeciesIntervals firstSpec
         voiceOrdering = (fst cantusFirmus <= fst counterpoint)
@@ -712,23 +484,33 @@ firstSpeciesNeighborCost (FirstSpeciesSetup {fsModel = FirstSpecModel {harmonicM
         harmonicCost = -(getLogProb harmonicModel $ intervalDisplacement interval)
         -- distances from median pitch for voice
         distances = V.map (fmap ((\p -> p - medianValidPitch) . absPitch)) cpt2
-        pair1 = listToMaybe $ filter (isJust . snd) $ zip [(1::Int)..] (reverse $ V.toList $ V.slice 0 i2 distances)
-        pair2 = listToMaybe $ filter (isJust . snd) $ zip [(1::Int)..] (V.toList $ V.slice (i2 + 1) (n - i2 - 1) distances)
         extract (j, d) = (j, fromJust d)
+        pair1 = listToMaybe $ extract <$> (filter (isJust . snd) $ zip [(1::Int)..] (reverse $ V.toList $ V.slice 0 i2 distances))
+        pair2 = listToMaybe $ extract <$> (filter (isJust . snd) $ zip [(1::Int)..] (V.toList $ V.slice (i2 + 1) (n - i2 - 1) distances))
         melodicRandomWalk = boundedIntegerRandomWalk melodicModel (-32, 32)
-        condDist = markovConditionOn melodicRandomWalk (toInteger i2) (extract <$> pair1, extract <$> pair2)
+        revMelodicModel = negate <$> melodicModel
+        revMelodicRandomWalk = boundedIntegerRandomWalk revMelodicModel (-32, 32)
+        (i, rwalk, pair1', pair2') = case (pair1, pair2) of
+            -- backward transition
+            (Nothing, Just (j, d)) -> (n - i2, revMelodicRandomWalk, Just (j, d), Nothing)
+            -- forward transition
+            otherwise              -> (i2, melodicRandomWalk, pair1, pair2)
+        condDist =  markovConditionOn rwalk (toInteger i) (pair1', pair2')
         melodicCost = case (pair1, pair2) of
             (Nothing, Nothing) -> 0.0  -- indifferent to the first pitch chosen
             otherwise          -> -(getLogProb condDist cptNoteDist)
-        --cost = harmonicCost + melodicCost
-        cost = trace (show (i2, cptNote, (extract <$> pair1, extract <$> pair2), harmonicCost, melodicCost, harmonicCost + melodicCost)) $ harmonicCost + melodicCost
+        cost = harmonicCost + melodicCost
+        --cost = (trace (show (i, cptNoteDist, pair1', pair2') ++ "\n" ++ (show condDist) ++ "\n" ++ show (harmonicCost, melodicCost, harmonicCost + melodicCost))) $ harmonicCost + melodicCost
 
 firstSpeciesNeighbors :: RandomGen g => FirstSpeciesSetup -> FirstSpeciesState -> Rand g [FirstSpeciesState]
 firstSpeciesNeighbors (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice, genPolicy}) state@(i, cpt) = do
     i' <- case genPolicy of
         ForwardPolicy  -> return (i + 1)
         BackwardPolicy -> return (i - 1)
-        RandomPolicy   -> error "RandomPolicy not yet supported"
+        RandomPolicy   -> sample idxDist
+            where
+                validIndices = fst <$> filter (not . isJust . snd) (zip [0..] (V.toList cpt))
+                idxDist = uniformDiscreteDist () validIndices
     let states = case (cpt V.! i') of
                     Just p  -> [(i', cpt)]  -- no nontrivial neighbors
                     Nothing -> [(i', cpt V.// [(i', Just p)]) | p <- validPitches]
@@ -792,7 +574,7 @@ generateFirstSpecies (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice
         states <- maybeStates
         let (_, cptPitches) = head states
         let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
-        return $ FirstSpecies {key = fsKey, cantusFirmus = (cfVoice, cf), counterpoint = (fsCptVoice, cpt)}
+        return $ First {key = fsKey, cantusFirmus = (cfVoice, cf), counterpoint = (fsCptVoice, cpt)}
     where
         (cfPitches, cfBook) = foldTied cf
         n = length cfPitches
@@ -833,7 +615,7 @@ dijkstraFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc sea
 
 -- extracts setup information from an existing FirstSpecies
 getFirstSpeciesSetup :: FirstSpeciesModel -> GenerationPolicy -> FirstSpecies -> FirstSpeciesSetup
-getFirstSpeciesSetup model policy (FirstSpecies {key, cantusFirmus, counterpoint = (cptVoice, _)}) = FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
+getFirstSpeciesSetup model policy (First {key, cantusFirmus, counterpoint = (cptVoice, _)}) = FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
 
 
 -- Fux --
@@ -860,18 +642,24 @@ fuxFirstSpeciesModelSmooth = trainFirstSpeciesModel fuxFirstSpeciesGood 1.0
 
 --testFsGen = fromJust $ generateFirstSpecies' fuxFirstSpeciesModelSmooth (D, Dorian) (cantusFirmus fig5) Soprano
 
-fig5Dijkstra = FirstSpecies {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Soprano,[Untied [] (D,5),Untied [] (C,5),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (C,5),Untied [] (B,4),Untied [] (C,5),Untied [] (Cs,5),Untied [] (D,5),Tied (D,5)])}
+fig5Dijkstra = First {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Soprano,[Untied [] (D,5),Untied [] (C,5),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (C,5),Untied [] (B,4),Untied [] (C,5),Untied [] (Cs,5),Untied [] (D,5),Tied (D,5)])}
 
-fig6Dijkstra = FirstSpecies {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Tenor,[Untied [] (D,4),Untied [] (D,4),Untied [] (C,4),Untied [] (B,3),Untied [] (E,4),Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (Cs,4),Untied [] (D,4),Tied (D,4)])}
+fig6Dijkstra = First {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Tenor,[Untied [] (D,4),Untied [] (D,4),Untied [] (C,4),Untied [] (B,3),Untied [] (E,4),Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (Cs,4),Untied [] (D,4),Tied (D,4)])}
 
-fig11Dijkstra = FirstSpecies {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Soprano,[Untied [] (B,4),Untied [] (A,4),Untied [] (B,4),Untied [] (A,4),Untied [] (A,4),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (E,5),Tied (E,5)])}
+fig11Dijkstra = First {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Soprano,[Untied [] (B,4),Untied [] (A,4),Untied [] (B,4),Untied [] (A,4),Untied [] (A,4),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (E,5),Tied (E,5)])}
 
-fig12Dijkstra = FirstSpecies {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Tenor,[Untied [] (E,4),Untied [] (E,4),Untied [] (F,4),Untied [] (G,4),Untied [] (A,4),Untied [] (F,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Tied (E,4)])}
+fig12Dijkstra = First {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Tenor,[Untied [] (E,4),Untied [] (E,4),Untied [] (F,4),Untied [] (G,4),Untied [] (A,4),Untied [] (F,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Tied (E,4)])}
 
-fig13Dijkstra = FirstSpecies {key = (F,Lydian), cantusFirmus = (Tenor,[Untied [] (F,3),Untied [] (G,3),Untied [] (A,3),Untied [] (F,3),Untied [] (D,3),Untied [] (E,3),Untied [] (F,3),Untied [] (C,4),Untied [] (A,3),Untied [] (F,3),Untied [] (G,3),Untied [] (F,3),Tied (F,3)]), counterpoint = (Alto,[Untied [] (F,4),Untied [] (D,4),Untied [] (C,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (A,3),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Untied [] (F,4),Tied (F,4)])}
+fig13Dijkstra = First {key = (F,Lydian), cantusFirmus = (Tenor,[Untied [] (F,3),Untied [] (G,3),Untied [] (A,3),Untied [] (F,3),Untied [] (D,3),Untied [] (E,3),Untied [] (F,3),Untied [] (C,4),Untied [] (A,3),Untied [] (F,3),Untied [] (G,3),Untied [] (F,3),Tied (F,3)]), counterpoint = (Alto,[Untied [] (F,4),Untied [] (D,4),Untied [] (C,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (A,3),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Untied [] (F,4),Tied (F,4)])}
 
-fig15Dijkstra = FirstSpecies {key = (G,Mixolydian), cantusFirmus = (Alto,[Untied [] (G,3),Untied [] (C,4),Untied [] (B,3),Untied [] (G,3),Untied [] (C,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (G,3),Tied (G,3)]), counterpoint = (Soprano,[Untied [] (D,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (B,4),Untied [] (C,5),Untied [] (A,4),Untied [] (G,4),Untied [] (Fs,4),Untied [] (G,4),Tied (G,4)])}
+fig15Dijkstra = First {key = (G,Mixolydian), cantusFirmus = (Alto,[Untied [] (G,3),Untied [] (C,4),Untied [] (B,3),Untied [] (G,3),Untied [] (C,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (G,3),Tied (G,3)]), counterpoint = (Soprano,[Untied [] (D,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (B,4),Untied [] (C,5),Untied [] (A,4),Untied [] (G,4),Untied [] (Fs,4),Untied [] (G,4),Tied (G,4)])}
 
 
 
-twinkle = firstSpecies (C, Ionian) (Alto, "C4 C4 G4 G4 A4 A4 G4 ~G4 F4 F4 E4 E4 D4 D4 C4 ~C4") (Soprano, "C4 C4 G4 G4 A4 A4 G4 ~G4 F4 F4 E4 E4 D4 D4 C4 ~C4")
+
+--FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
+twinkleSetup policy cptVoice = FirstSpeciesSetup {fsModel = fuxFirstSpeciesModelSmooth, fsKey = (C, Ionian), fsCf = (Alto, parseLine "C4 C4 G4 G4 A4 A4 G4 ~G4 F4 F4 E4 E4 D4 D4 C4 ~C4"), fsCptVoice = cptVoice, genPolicy = policy}
+
+macdonaldSetup policy cptVoice = FirstSpeciesSetup {fsModel = fuxFirstSpeciesModelSmooth, fsKey = (G, Ionian), fsCf = (Alto, parseLine "G4 G4 G4 D4 E4 E4 D4 ~D4 B4 B4 A4 A4 G4 ~G4 ~G4 ~G4"), fsCptVoice = cptVoice, genPolicy = policy}
+
+castlevaniaSetup policy cptVoice = FirstSpeciesSetup {fsModel = fuxFirstSpeciesModelSmooth, fsKey = (Bf, Aeolian), fsCf = (Soprano, parseLine "Bf4 F5 Ef5 Df5 C5 Df5 C5 Bf4 C5 Df5 Ef5 Df5 C5 Af4 C5 Bf4 ~Bf4"), fsCptVoice = cptVoice, genPolicy = policy}

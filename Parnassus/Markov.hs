@@ -96,7 +96,6 @@ markovConditionOn (Markov {pi0, trans}) t pair = Discrete {var = t, vals = vals'
         pmf' = normalizeVec pmf
         cdf' = V.scanl' (+) 0.0 pmf'
 
-
 -- trains a Markov model from data
 -- smoothing constant is how much to add to each entry of transition matrix, and to each entry of initial vector
 trainMarkovModel :: (Ord a, Show a) => Maybe [a] -> Double -> [[a]] -> MarkovModel Integer a
@@ -136,6 +135,10 @@ boundedIntegerRandomWalk dist (low, high) = markov pi0 rows
         n = high - low + 1
         pi0 = trainDiscrete 0 (Just [low..high]) 0.0 [0]
         rows = [V.generate n (\j -> getProb dist (j + low - i)) | i <- [low..high]]
+
+-- gets backward transition probabilities P(X_n = i | X_{n+1} = j)
+backwardTransitions :: MarkovModel v a -> [V.Vector Prob]
+backwardTransitions (Markov {trans}) = normalizeVec <$> (LA.toRows $ LA.tr trans)
 
 -- TERMINATING MARKOV MODEL --
 
