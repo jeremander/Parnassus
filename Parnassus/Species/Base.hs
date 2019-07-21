@@ -1,19 +1,20 @@
--- Species Counterpoint --
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
+{-# LANGUAGE NamedFieldPuns #-}
 
 module Parnassus.Species.Base where
 
 import Data.Char (isDigit)
 import qualified Data.Map as M
-import Data.Maybe (isJust)
+import Data.Maybe (fromJust, isJust)
 import Data.Range.Range (inRange, Range (SpanRange))
 import Data.List (inits)
 import Data.List.Split (splitOn)
 
-import Euterpea (absPitch, AbsPitch, Mode (..), pitch, Pitch, PitchClass (..))
-
-import Parnassus.Utils (ngrams)
-import Parnassus.MusicBase (Key)
-import Parnassus.MusicD (MusicD (MusicD), Tied (..))
+import Euterpea (absPitch, AbsPitch, Control (..), InstrumentName (..), Mode (..), pitch, Pitch, PitchClass (..))
+import Parnassus.Utils (justOrError, ngrams, safeHead)
+import Parnassus.MusicBase (Key, modify, (/=/))
+import Parnassus.MusicD (extractTied, MusicD (MusicD), Tied (..), ToMusicD (..))
 
 
 -- HELPER FUNCTIONS --
@@ -68,7 +69,7 @@ maxRepeats xs = maximum $ [0] ++ (snd <$> filter (isJust . fst) (foldRepeats xs)
 -- VOICES --
 
 data Voice = Bass | Tenor | Alto | Soprano
-    deriving (Eq, Ord, Show)
+    deriving (Enum, Eq, Ord, Show)
 
 -- vocal range for each voice part
 voiceRange :: Voice -> Range AbsPitch
@@ -217,17 +218,33 @@ parseLine s = parseNote <$> filter (not . null) (splitOn " " s)
 
 -- SPECIES --
 
+type VoiceLineT a = (Voice, [Tied a])
+type VoiceLine = VoiceLineT Pitch
+
 data RuleCheck = Failed String | Passed
     deriving (Eq, Show)
 
-class Species a where
-    toMusicD :: a -> MusicD Pitch
+data SpeciesT a = Species { key :: Key, cantusFirmus :: VoiceLineT a, counterpoint :: VoiceLineT a}
+    deriving (Show)
 
--- First Species --
+type Species = SpeciesT Pitch
 
-type VoiceLine = (Voice, [Tied Pitch])
-
--- COUNTERPOINT RULES --
+-- convert Species to/from MusicD Pitch
+instance ToMusicD SpeciesT Pitch where
+    toMusicD Species {cantusFirmus = (_, cf), counterpoint = (_, cpt)} = modify (Tempo 3) $ (MusicD 1 [Instrument VoiceOohs] (pure <$> cf)) /=/ (MusicD 1 [Instrument VoiceOohs] (pure <$> cpt))
+    fromMusicD (MusicD _ _ (cf:cpt:[])) = Species {key = key, cantusFirmus = (getVoice cfPitches, cf), counterpoint = (getVoice cptPitches, cpt)}
+        where
+            (cfPitches, _) = foldTied cf
+            (cptPitches, _) = foldTied cpt
+            getVoice :: [Pitch] -> Voice
+            getVoice pitches = justOrError voice ("no voice can sing vocal line: " ++ show pitches)
+                where voice = safeHead $ filter (\voice -> all (voiceCanSing voice) pitches) [(Bass)..(Soprano)]
+            (pc, _) = fromJust $ extractTied $ head cf  -- first pitch of C.F. is the key
+            validKeys = [(pc, mode) | mode <- [Ionian, Dorian, Phrygian, Lydian, Mixolydian, Aeolian]]
+            pitchesFitKey :: Key -> [Pitch] -> Bool
+            pitchesFitKey key = all (\(pc, _) -> pc `elem` scaleForKey key True)
+            key = justOrError (safeHead $ filter (\k -> pitchesFitKey k (cfPitches ++ cptPitches)) validKeys) "no key could be found to accommodate all the notes"
+    fromMusicD _ = error "input MusicD must consist of two voice lines"
 
 -- applies a sequence of rules to something, short-circuiting as soon as the first rule fails
 -- for efficiency, it is best to put the filters in order of decreasing cheapness
@@ -236,3 +253,82 @@ checkRules [] x     = Passed
 checkRules (f:fs) x = case f x of
     fx@(Failed _) -> fx
     otherwise     -> checkRules fs x
+
+-- convenience constructor from strings
+species :: Key -> (Voice, String) -> (Voice, String) -> Species
+species (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
+    where
+        key' = (pc, convertMode mode)
+        validateNote :: Voice -> Tied Pitch -> Bool
+        validateNote voice (Untied _ p) = voiceCanSing voice p
+        validateNote voice (Tied p)     = voiceCanSing voice p
+        validateNote _ Rest             = False
+        cf = parseLine cfStr
+        cpt = parseLine cptStr
+        (cfPitches, _) = foldTied cf
+        cadencePitchClass = fst $ cfPitches !! (length cfPitches - 2)
+        scale = scaleForKey key' False
+        doCheck :: String -> Bool -> RuleCheck
+        doCheck _ True = Passed
+        doCheck s False = Failed s
+        checks = [
+            doCheck "length of C.F. must be >= 3 notes" (length cfPitches >= 3),
+            doCheck "note out of vocal range in C.F." (all (validateNote cfVoice) cf),
+            doCheck "note out of vocal range in counterpoint" (all (validateNote cptVoice) cpt),
+            doCheck "length mismatch between C.F. and counterpoint" (length cf == length cpt),
+            doCheck "C.F. must start with the tonic" ((fst <$> extractTied (head cf)) == Just pc),
+            doCheck "C.F. must end with the tonic" ((fst <$> extractTied (last cf)) == Just pc),
+            doCheck "penultimate note of C.F. must be the second note of the scale" (equivPitchClass (scale !! 1) cadencePitchClass)]
+        firstFailed = dropWhile (== Passed) checks
+        spec = case firstFailed of
+            (x:_)     -> error s where (Failed s) = x
+            otherwise -> Species {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
+
+-- global data for first species
+data SpeciesConstants = SpecConsts {
+    specLength :: Int,    -- number of bars
+    specKey :: Key,       -- key (fundamental)
+    specOrdering :: Bool  -- True if CF <= CPT, False if CF > CPT
+}
+    deriving (Eq, Show)
+
+-- local context of a note in a species
+-- this is the minimal data needed to determine if a violation is present locally
+data SpeciesContext = SpecContext {
+    specConsts :: SpeciesConstants,
+    specIndex :: Int,                        -- index of the present note
+    specInterval :: Interval,                -- the present (vertical) interval
+    specIntervalWindow :: [Maybe Interval],  -- up to 7-long window of surrounding intervals
+    specMotions :: [Maybe PairwiseMotion]    -- 2-long list containing motion into present interval & into next interval
+}
+    deriving (Eq, Show)
+
+data SpeciesRule = SpecRule {
+    specRuleCheck :: SpeciesContext -> Bool,  -- returns True if the rule is satisfied
+    specRuleDescr :: String,                  -- description of the rule
+    specRuleIsEssential :: Bool               -- flag indicating whether the rule is "essential" (crucial)
+}
+
+-- given a rule and a context, checks the rule
+checkSpeciesRule :: SpeciesRule -> SpeciesContext -> RuleCheck
+checkSpeciesRule (SpecRule {specRuleCheck, specRuleDescr}) context@(SpecContext {specIndex}) = result
+    where
+        passed = specRuleCheck context
+        result = case passed of
+            True  -> Passed
+            False -> Failed $ "Bar " ++ show specIndex ++ ": " ++ specRuleDescr
+
+-- given a list of rules, returns True if the given context passes all the rules
+passesFirstSpeciesRules :: [SpeciesRule] -> SpeciesContext -> Bool
+passesFirstSpeciesRules rules context = all (== Passed) [checkSpeciesRule rule context | rule <- rules]
+
+-- checks all of the given rules against all the given contexts
+-- returns either Passed or Failed (with the first violation encountered)
+checkSpeciesContexts :: [SpeciesRule] -> [SpeciesContext] -> RuleCheck
+checkSpeciesContexts rules contexts = result
+    where
+        results = (checkSpeciesRule <$> rules) <*> contexts  -- nested for loop (rules are outer loop)
+        firstFailed = dropWhile (== Passed) results
+        result = case firstFailed of
+            (x:_)     -> x       -- first failure
+            otherwise -> Passed  -- no failures, so we've passed

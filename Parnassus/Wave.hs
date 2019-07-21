@@ -2,12 +2,19 @@
 
 module Parnassus.Wave where
 
+import Data.Array.Unboxed as UA
 import qualified Data.List (transpose)
-import Euterpea
+import Data.WAVE (getWAVEFile, sampleToDouble, waveSamples)
+import Euterpea hiding (toMusic1)
+import System.IO.Unsafe (unsafePerformIO)
+
+import Parnassus.MusicBase (MusicT (..))
+import Parnassus.Music
+import Parnassus.MusicU
 
 
 -- signals with 44100 Hz sample rate
-type AudSig a = AudSF () a
+type AudSig = AudSF () Double
 
 -- audio signal represented as a sequence of sample values
 type Sig = [Double]
@@ -16,38 +23,59 @@ type Sig = [Double]
 audRate :: Int
 audRate = 44100
 
-
 -- Euterpea to wav --
 
 -- removes clicking that results from sudden phase shift
-asrEnvelope :: Double -> AudSig Double
+asrEnvelope :: Double -> AudSig
 asrEnvelope dur = envASR (0.1 * dur) (1.0 * dur) (0.1 * dur)
 
--- named sine instrument
-sineInstrName :: InstrumentName
-sineInstrName = CustomInstrument "Sine"
+-- converts a wave table to an instrument for playing to a wav file
+waveTableToInstr :: Table -> Instr AudSig
+waveTableToInstr tab = instr
+    where
+        instr dur ap vol _ =
+            let env = asrEnvelope $ fromRational dur
+                freq = apToHz ap
+                v = fromIntegral vol / 127   -- normalize volume as amplitude factor
+            in proc _ -> do
+                aud <- osc tab 0 -< freq  -- sample with appropriate frequency
+                amp <- env -< ()          -- envelope magnitude
+                outA -< amp * v * aud
 
--- instrument for playing Music to a .wav file
-sineInstr :: Instr (AudSig Double)
-sineInstr dur ap vol _ =
-    let env = asrEnvelope $ fromRational dur
-        freq = apToHz ap
-        v = fromIntegral vol / 127   -- normalize volume as amplitude factor
-    in proc () -> do
-        aud <- (oscFixed freq) -< ()  -- a sine wave
-        amp <- env -< ()              -- envelope magnitude
-        outA -< amp * v * aud
+-- loads a single-channel normalized wave cycle into a Table
+loadCycle :: FilePath -> Table
+loadCycle path = tab
+    where
+        waveData = unsafePerformIO $ getWAVEFile path
+        samples = (sampleToDouble <$> head <$> waveSamples waveData) ++ [head samples]
+        numSamples = length samples
+        tab = Table numSamples (UA.listArray (0, numSamples) samples) True
 
--- maps sine instrument name to the instrument itself
-sineInstrMap :: InstrMap (AudSig Double)
-sineInstrMap = [(sineInstrName, sineInstr)]
+-- constructs an InstrMap from a name and Table
+instrMap :: String -> Table -> InstrMap AudSig
+instrMap name tab = [(CustomInstrument name, waveTableToInstr tab)]
+
+-- simple sine wave instrument
+sineInstrMap :: InstrMap AudSig
+sineInstrMap = instrMap "Sine" (tableSinesN 4096 [1])
+
+loadWaveInstrMap :: String -> FilePath -> InstrMap AudSig
+loadWaveInstrMap name path = instrMap name (loadCycle path)
+
+musicToWav :: (MusicT m a, ToMusic1 a) => FilePath -> InstrMap AudSig -> m a -> IO ()
+musicToWav path instrMap music = writeWavNorm path instrMap music1
+    where
+        (instrName, _) = head instrMap
+        music1 = instrument instrName $ toMusic1 music
+
+testInstrMap :: InstrMap AudSig
+testInstrMap = loadWaveInstrMap "test" "/Users/jeremander/Programming/Music/AKWF/AKWF_piano/AKWF_piano_0004.wav"
+
+
 
 -- saves music to a wav file via the sine instrument
-musicToWav :: FilePath -> Music1 -> IO ()
-musicToWav path music = outFile path d sf
-    where 
-        music' = instrument sineInstrName music
-        (d, sf) = renderSF music' sineInstrMap
+-- musicToWav :: FilePath -> Music1 -> IO ()
+-- musicToWav path music = writeWavNorm path sineInstrMap (instrument sineInstrName music)
 
 
 -- Direct signal approach --

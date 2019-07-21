@@ -12,149 +12,73 @@ import Data.Range.Range (fromRanges)
 import qualified Data.Vector as V
 import System.Random (RandomGen)
 
-import Euterpea (absPitch, Control (..), InstrumentName (..), Mode (..), pitch, Pitch, PitchClass (..))
+import Euterpea (absPitch, Mode (..), pitch, Pitch, PitchClass (..))
 import Parnassus.Utils (ngrams)
 import Parnassus.Dist (discreteDist, DiscreteDist (..), getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
 import Parnassus.Markov (boundedIntegerRandomWalk, markovConditionOn)
-import Parnassus.MusicBase (Key, modify, play, (/=/))
-import Parnassus.MusicD (extractTied, MusicD (..), Tied (..))
+import Parnassus.MusicBase (Key, modify, play)
+import Parnassus.MusicD (extractTied, MusicD (..), Tied (..), ToMusicD (..))
 import Parnassus.Search (beamSearchM, dfsM, greedySearchM, NeighborGenM)
 import Parnassus.Species.Base
 
 import Debug.Trace
 
 
-data FirstSpecies = First { key :: Key, cantusFirmus :: VoiceLine, counterpoint :: VoiceLine}
-    deriving (Show)
-
--- convenience constructor from strings
-firstSpecies :: Key -> (Voice, String) -> (Voice, String) -> FirstSpecies
-firstSpecies (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
-    where
-        key' = (pc, convertMode mode)
-        validateNote :: Voice -> Tied Pitch -> Bool
-        validateNote voice (Untied _ p) = voiceCanSing voice p
-        validateNote voice (Tied p)     = voiceCanSing voice p
-        validateNote _ Rest             = False
-        cf = parseLine cfStr
-        cpt = parseLine cptStr
-        (cfPitches, _) = foldTied cf
-        cadencePitchClass = fst $ cfPitches !! (length cfPitches - 2)
-        scale = scaleForKey key' False
-        doCheck :: String -> Bool -> RuleCheck
-        doCheck _ True = Passed
-        doCheck s False = Failed s
-        checks = [
-            doCheck "length of C.F. must be >= 3 notes" (length cfPitches >= 3),
-            doCheck "note out of vocal range in C.F." (all (validateNote cfVoice) cf),
-            doCheck "note out of vocal range in counterpoint" (all (validateNote cptVoice) cpt),
-            doCheck "length mismatch between C.F. and counterpoint" (length cf == length cpt),
-            doCheck "C.F. must start with the tonic" ((fst <$> extractTied (head cf)) == Just pc),
-            doCheck "C.F. must end with the tonic" ((fst <$> extractTied (last cf)) == Just pc),
-            doCheck "penultimate note of C.F. must be the second note of the scale" (equivPitchClass (scale !! 1) cadencePitchClass)]
-        firstFailed = dropWhile (== Passed) checks
-        spec = case firstFailed of
-            (x:_)     -> error s where (Failed s) = x
-            otherwise -> First {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
-
-instance Species FirstSpecies where
-    toMusicD :: FirstSpecies -> MusicD Pitch
-    toMusicD First {cantusFirmus = (_, cf), counterpoint = (_, cpt)} = modify (Tempo 3) $ (MusicD 1 [Instrument VoiceOohs] (pure <$> cf)) /=/ (MusicD 1 [Instrument VoiceOohs] (pure <$> cpt))
-
-
--- global data for first species
-data FirstSpeciesConstants = FirstSpecConsts {
-    s1Length :: Int,    -- number of bars (ignoring ties)
-    s1Key :: Key,       -- key (fundamental)
-    s1Ordering :: Bool  -- True if CF <= CPT, False if CF > CPT
-}
-    deriving (Eq, Show)
-
--- local context of a note in first species
--- this is the minimal data needed to determine if a violation is present locally
-data FirstSpeciesContext = FirstSpecContext {
-    s1Constants :: FirstSpeciesConstants,
-    s1Index :: Int,                        -- index of the present note
-    s1Interval :: Interval,                -- the present (vertical) interval
-    s1IntervalWindow :: [Maybe Interval],  -- up to 7-long window of surrounding intervals
-    s1Motions :: [Maybe PairwiseMotion]    -- 2-long list containing motion into present interval & into next interval
-}
-    deriving (Eq, Show)
-
-data FirstSpeciesRule = FirstSpecRule {
-    s1RuleCheck :: FirstSpeciesContext -> Bool,     -- returns True if the rule is satisfied
-    s1RuleDescr :: String,                          -- description of the rule
-    s1RuleIsEssential :: Bool                       -- flag indicating whether the rule is "essential" (crucial)
-}
-
--- given a rule and a context, checks the rule
-checkFirstSpeciesRule :: FirstSpeciesRule -> FirstSpeciesContext -> RuleCheck
-checkFirstSpeciesRule (FirstSpecRule {s1RuleCheck, s1RuleDescr}) context@(FirstSpecContext {s1Index}) = result
-    where
-        passed = s1RuleCheck context
-        result = case passed of
-            True  -> Passed
-            False -> Failed $ "Bar " ++ show s1Index ++ ": " ++ s1RuleDescr
-
--- given a list of rules, returns True if the given context passes all the rules
-passesFirstSpeciesRules :: [FirstSpeciesRule] -> FirstSpeciesContext -> Bool
-passesFirstSpeciesRules rules context = all (== Passed) [checkFirstSpeciesRule rule context | rule <- rules]
-
 -- FIRST SPECIES RULES --
 
-fsRuleCheck0 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Index, s1Interval}) =
-    (s1Index /= 0) || 
-    (harmonicIntervalType pc s1Interval == PerfectConsonance)
+fsRuleCheck0 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specIndex, specInterval}) =
+    (specIndex /= 0) || 
+    (harmonicIntervalType pc specInterval == PerfectConsonance)
 
-fsRule0 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck0,
-    s1RuleDescr = "First interval is a perfect consonance.",
-    s1RuleIsEssential = True
+fsRule0 = SpecRule {
+    specRuleCheck = fsRuleCheck0,
+    specRuleDescr = "First interval is a perfect consonance.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck1 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Key = (pc, _)}, s1Index, s1Interval}) =
-    (s1Index /= s1Length - 1) || 
-    (harmonicIntervalType pc s1Interval == PerfectConsonance)
+fsRuleCheck1 (SpecContext {specConsts = SpecConsts {specLength, specKey = (pc, _)}, specIndex, specInterval}) =
+    (specIndex /= specLength - 1) || 
+    (harmonicIntervalType pc specInterval == PerfectConsonance)
 
-fsRule1 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck1,
-    s1RuleDescr = "Last interval is a perfect consonance.",
-    s1RuleIsEssential = True
+fsRule1 = SpecRule {
+    specRuleCheck = fsRuleCheck1,
+    specRuleDescr = "Last interval is a perfect consonance.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck2 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck2 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check motion = (motionType motion /= Parallel) || (harmonicIntervalType pc (snd motion) /= PerfectConsonance)
 
-fsRule2 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck2,
-    s1RuleDescr = "No parallel motion into a perfect consonance.",
-    s1RuleIsEssential = True
+fsRule2 = SpecRule {
+    specRuleCheck = fsRuleCheck2,
+    specRuleDescr = "No parallel motion into a perfect consonance.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck3 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Ordering}, s1Index, s1Interval}) =
-    (s1Index /= s1Length - 2) || 
-    (s1Ordering && intervalDisplacement s1Interval == 9) ||
-    (not s1Ordering && intervalDisplacement s1Interval == -3)
+fsRuleCheck3 (SpecContext {specConsts = SpecConsts {specLength, specOrdering}, specIndex, specInterval}) =
+    (specIndex /= specLength - 2) || 
+    (specOrdering && intervalDisplacement specInterval == 9) ||
+    (not specOrdering && intervalDisplacement specInterval == -3)
 
-fsRule3 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck3,
-    s1RuleDescr = "The cadence interval must be a major sixth (if C.F. is the lower part) or a minor third (if C.F. is the higher part)",
-    s1RuleIsEssential = True
+fsRule3 = SpecRule {
+    specRuleCheck = fsRuleCheck3,
+    specRuleDescr = "The cadence interval must be a major sixth (if C.F. is the lower part) or a minor third (if C.F. is the higher part)",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck4 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Index, s1Interval = ((pc1, oct1), (pc2, oct2))}) = (s1Index /= 0) || (equivPitchClass pc' pc)
+fsRuleCheck4 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specIndex, specInterval = ((pc1, oct1), (pc2, oct2))}) = (specIndex /= 0) || (equivPitchClass pc' pc)
     where pc' = if (absPitch (pc1, oct1) <= absPitch (pc2, oct2)) then pc1 else pc2                      
 
-fsRule4 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck4,
-    s1RuleDescr = "The bottom note of the first interval must be the tonic.",
-    s1RuleIsEssential = True
+fsRule4 = SpecRule {
+    specRuleCheck = fsRuleCheck4,
+    specRuleDescr = "The bottom note of the first interval must be the tonic.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck5 (FirstSpecContext {s1Motions}) = all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck5 (SpecContext {specMotions}) = all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -162,13 +86,13 @@ fsRuleCheck5 (FirstSpecContext {s1Motions}) = all (fromMaybe True . fmap check) 
             (abs (intervalNumber motion1) == 2) && (abs (intervalNumber motion2) == 2)
             where (motion1, motion2) = motionTranspose (interval1, interval2)
 
-fsRule5 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck5,
-    s1RuleDescr = "A tenth cannot proceed into an octave via stepwise contrary motion (battuta).",
-    s1RuleIsEssential = False
+fsRule5 = SpecRule {
+    specRuleCheck = fsRuleCheck5,
+    specRuleDescr = "A tenth cannot proceed into an octave via stepwise contrary motion (battuta).",
+    specRuleIsEssential = False
 }
 
-fsRuleCheck6 (FirstSpecContext {s1Motions}) = all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck6 (SpecContext {specMotions}) = all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -176,23 +100,23 @@ fsRuleCheck6 (FirstSpecContext {s1Motions}) = all (fromMaybe True . fmap check) 
             ((abs (intervalNumber motion1) > 2) || (abs (intervalNumber motion2) > 2))
             where (motion1, motion2) = motionTranspose (interval1, interval2)
 
-fsRule6 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck6,
-    s1RuleDescr = "An interval greater than an octave cannot proceed into an octave by a skip.",
-    s1RuleIsEssential = True
+fsRule6 = SpecRule {
+    specRuleCheck = fsRuleCheck6,
+    specRuleDescr = "An interval greater than an octave cannot proceed into an octave by a skip.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck7 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length}, s1Index, s1Interval}) =
-    (s1Index == 0) || (s1Index == s1Length - 1) ||
-    (intervalDisplacement s1Interval /= 0)
+fsRuleCheck7 (SpecContext {specConsts = SpecConsts {specLength}, specIndex, specInterval}) =
+    (specIndex == 0) || (specIndex == specLength - 1) ||
+    (intervalDisplacement specInterval /= 0)
 
-fsRule7 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck7,
-    s1RuleDescr = "A unison may only occur as the first or last interval.",
-    s1RuleIsEssential = True
+fsRule7 = SpecRule {
+    specRuleCheck = fsRuleCheck7,
+    specRuleDescr = "A unison may only occur as the first or last interval.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck8 (FirstSpecContext {s1Motions}) = all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck8 (SpecContext {specMotions}) = all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -200,14 +124,14 @@ fsRuleCheck8 (FirstSpecContext {s1Motions}) = all (fromMaybe True . fmap check) 
             ((abs (intervalNumber motion1) > 2) || (abs (intervalNumber motion2) > 2))
             where (motion1, motion2) = motionTranspose (interval1, interval2)
 
-fsRule8 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck8,
-    s1RuleDescr = "A unison interval cannot be entered via a skip.",
-    s1RuleIsEssential = True
+fsRule8 = SpecRule {
+    specRuleCheck = fsRuleCheck8,
+    specRuleDescr = "A unison interval cannot be entered via a skip.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck9 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck9 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -216,14 +140,14 @@ fsRuleCheck9 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)},
             (abs (intervalNumber motion2) > 2)                    -- counterpoint motion is a skip
             where (_, motion2) = motionTranspose (interval1, interval2)
 
-fsRule9 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck9,
-    s1RuleDescr = "A unison interval cannot progress into another consonance with the counterpoint moving by a skip.",
-    s1RuleIsEssential = True
+fsRule9 = SpecRule {
+    specRuleCheck = fsRuleCheck9,
+    specRuleDescr = "A unison interval cannot progress into another consonance with the counterpoint moving by a skip.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck10 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck10 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check pm = not $
@@ -231,14 +155,14 @@ fsRuleCheck10 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}
             (melodicIntervalType pc motion1 == Dissonance)
             where (motion1, _) = motionTranspose pm
 
-fsRule10 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck10,
-    s1RuleDescr = "C.F. should not proceed with a skip that is a dissonant interval.",
-    s1RuleIsEssential = False
+fsRule10 = SpecRule {
+    specRuleCheck = fsRuleCheck10,
+    specRuleDescr = "C.F. should not proceed with a skip that is a dissonant interval.",
+    specRuleIsEssential = False
 }
 
-fsRuleCheck11 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck11 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check pm = not $
@@ -246,29 +170,29 @@ fsRuleCheck11 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}
             (melodicIntervalType pc motion2 == Dissonance)
             where (_, motion2) = motionTranspose pm
 
-fsRule11 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck11,
-    s1RuleDescr = "Counterpoint should not proceed with a skip that is a dissonant interval.",
-    s1RuleIsEssential = True
+fsRule11 = SpecRule {
+    specRuleCheck = fsRuleCheck11,
+    specRuleDescr = "Counterpoint should not proceed with a skip that is a dissonant interval.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck12 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, _)}, s1Interval, s1Motions}) =
-    (intervalDistance s1Interval <= 16) &&
-    all (fromMaybe True . fmap check) s1Motions &&
-    (harmonicIntervalType pc s1Interval /= Dissonance)
+fsRuleCheck12 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specInterval, specMotions}) =
+    (intervalDistance specInterval <= 16) &&
+    all (fromMaybe True . fmap check) specMotions &&
+    (harmonicIntervalType pc specInterval /= Dissonance)
     where
         check :: PairwiseMotion -> Bool
         check pm = (intervalDistance motion1 <= 16) && (intervalDistance motion2 <= 16)
             where (motion1, motion2) = motionTranspose pm
 
-fsRule12 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck12,
-    s1RuleDescr = "Harmonic intervals must be consonant, and both harmonic and melodic intervals must be no larger than a major 10th.",
-    s1RuleIsEssential = True
+fsRule12 = SpecRule {
+    specRuleCheck = fsRuleCheck12,
+    specRuleDescr = "Harmonic intervals must be consonant, and both harmonic and melodic intervals must be no larger than a major 10th.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck13 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, mode)}, s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck13 (SpecContext {specConsts = SpecConsts {specKey = (pc, mode)}, specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         fa = shiftPitch (firstDegree (pc, mode)) 5
         checkMotion :: Interval -> Bool
@@ -280,14 +204,14 @@ fsRuleCheck13 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, mod
             where (motion1, motion2) = motionTranspose pm
 
 -- NB: this seems to be violated often
-fsRule13 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck13,
-    s1RuleDescr = "Undesirable to progress upward by a step from the 'fa' scale degree.",
-    s1RuleIsEssential = False
+fsRule13 = SpecRule {
+    specRuleCheck = fsRuleCheck13,
+    specRuleDescr = "Undesirable to progress upward by a step from the 'fa' scale degree.",
+    specRuleIsEssential = False
 }
 
-fsRuleCheck14 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, mode)}, s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck14 (SpecContext {specConsts = SpecConsts {specKey = (pc, mode)}, specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         mi = shiftPitch (firstDegree (pc, mode)) 4
         checkMotion :: Interval -> Bool
@@ -299,82 +223,84 @@ fsRuleCheck14 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Key = (pc, mod
             where (motion1, motion2) = motionTranspose pm
 
 -- NB: this seems to be violated often
-fsRule14 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck13,
-    s1RuleDescr = "Undesirable to progress downward by a step from the 'mi' scale degree.",
-    s1RuleIsEssential = False
+fsRule14 = SpecRule {
+    specRuleCheck = fsRuleCheck13,
+    specRuleDescr = "Undesirable to progress downward by a step from the 'mi' scale degree.",
+    specRuleIsEssential = False
 }
 
-fsRuleCheck15 (FirstSpecContext {s1Motions}) =
-    all (fromMaybe True . fmap check) s1Motions
+fsRuleCheck15 (SpecContext {specMotions}) =
+    all (fromMaybe True . fmap check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check pm = (intervalDisplacement motion1 /= 0) || (intervalDisplacement motion2 /= 0)
             where (motion1, motion2) = motionTranspose pm
 
-fsRule15 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck15,
-    s1RuleDescr = "Intervals should not be repeated consecutively.",
-    s1RuleIsEssential = True
+fsRule15 = SpecRule {
+    specRuleCheck = fsRuleCheck15,
+    specRuleDescr = "Intervals should not be repeated consecutively.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck16 (FirstSpecContext {s1IntervalWindow}) = maxRpt <= 3
+fsRuleCheck16 (SpecContext {specIntervalWindow}) = maxRpt <= 3
     where
-        counterpoint = fmap (absPitch . snd) <$> s1IntervalWindow
+        counterpoint = fmap (absPitch . snd) <$> specIntervalWindow
         maxRpt = maxRepeats counterpoint
 
-fsRule16 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck16,
-    s1RuleDescr = "Counterpoint cannot have four consecutive repeated notes.",
-    s1RuleIsEssential = True
+fsRule16 = SpecRule {
+    specRuleCheck = fsRuleCheck16,
+    specRuleDescr = "Counterpoint cannot have four consecutive repeated notes.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck17 (FirstSpecContext {s1IntervalWindow}) = maxRpt <= 3
+fsRuleCheck17 (SpecContext {specIntervalWindow}) = maxRpt <= 3
     where
-        numbers = fmap intervalNumber <$> s1IntervalWindow
+        numbers = fmap intervalNumber <$> specIntervalWindow
         maxRpt = maxRepeats numbers
 
-fsRule17 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck17,
-    s1RuleDescr = "Cannot have four consecutive intervals of the same number.",
-    s1RuleIsEssential = True
+fsRule17 = SpecRule {
+    specRuleCheck = fsRuleCheck17,
+    specRuleDescr = "Cannot have four consecutive intervals of the same number.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck18 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Key = (pc, mode)}, s1Index, s1Interval = (_, (pc', _))}) =
-    (s1Index == s1Length - 2) ||
-    (not $ equivPitchClass pc (shiftPitch pc' 1)) ||
-    (mode `elem` [Ionian, Major, Lydian])
+fsRuleCheck18 (SpecContext {specConsts = SpecConsts {specLength, specOrdering}, specIndex, specInterval = (p1, p2)}) =
+    ((specIndex /= 0) && (specIndex /= specLength - 1)) ||
+    (specOrdering && (absPitch p1 <= absPitch p2)) ||
+    ((not specOrdering) && (absPitch p1 >= absPitch p2))
 
-fsRule18 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck18,
-    s1RuleDescr = "An accidental leading tone cannot occur in the counterpoint, except in the cadence.",
-    s1RuleIsEssential = True
+fsRule18 = SpecRule {
+    specRuleCheck = fsRuleCheck18,
+    specRuleDescr = "Voice crossover cannot occur in the first or last note.",
+    specRuleIsEssential = True
 }
 
-fsRuleCheck19 (FirstSpecContext {s1Constants = FirstSpecConsts {s1Length, s1Ordering}, s1Index, s1Interval = (p1, p2)}) =
-    ((s1Index /= 0) && (s1Index /= s1Length - 1)) ||
-    (s1Ordering && (absPitch p1 <= absPitch p2)) ||
-    ((not s1Ordering) && (absPitch p1 >= absPitch p2))
+-- fsRuleCheck19 (SpecContext {specConsts = SpecConsts {specLength, specKey = (pc, mode)}, specIndex, specInterval = (_, (pc', _))}) =
+--     (specIndex == specLength - 2) ||
+--     (not $ equivPitchClass pc (shiftPitch pc' 1)) ||
+--     (mode `elem` [Ionian, Major, Lydian])
 
-fsRule19 = FirstSpecRule {
-    s1RuleCheck = fsRuleCheck19,
-    s1RuleDescr = "Voice crossover cannot occur in the first or last note.",
-    s1RuleIsEssential = True
-}
+-- -- NB: This is not a valid rule (need to consider musica ficta, "mi leads up, fa leads down")
+-- fsRule19 = SpecRule {
+--     specRuleCheck = fsRuleCheck19,
+--     specRuleDescr = "An accidental leading tone cannot occur in the counterpoint, except in the cadence.",
+--     specRuleIsEssential = False
+-- }
 
 firstSpeciesRules =
     [fsRule12] ++  -- uses current interval
-    [fsRule0, fsRule1, fsRule3, fsRule4, fsRule7, fsRule19, fsRule18] ++  -- uses current index & interval
+    [fsRule0, fsRule1, fsRule3, fsRule4, fsRule7, fsRule18] ++  -- uses current index & interval
     [fsRule2, fsRule5, fsRule6, fsRule8, fsRule9, fsRule10, fsRule11, fsRule12, fsRule13, fsRule14, fsRule15] ++  -- uses motions
     [fsRule16, fsRule17]  -- uses 7-long interval window
 
-firstSpeciesEssentialRules = filter s1RuleIsEssential firstSpeciesRules
+firstSpeciesEssentialRules = filter specRuleIsEssential firstSpeciesRules
 
 -- VALIDITY CHECKING --
 
--- gets the sequence of intervals for first species (eliminating ties)
-firstSpeciesIntervals :: FirstSpecies -> [Interval]
-firstSpeciesIntervals (First {cantusFirmus, counterpoint}) = intervals
+-- gets the sequence of intervals for first species
+-- eliminates all ties to reduce both lines to durationless pitch sequences
+firstSpeciesIntervals :: Species -> [Interval]
+firstSpeciesIntervals (Species {cantusFirmus, counterpoint}) = intervals
     where
         (cfPitches, _) = foldTied (snd cantusFirmus)
         (cptPitches, _) = foldTied (snd counterpoint)
@@ -382,29 +308,23 @@ firstSpeciesIntervals (First {cantusFirmus, counterpoint}) = intervals
             | length cfPitches == length cptPitches = zip cfPitches cptPitches
             | otherwise                             = error "mismatch between number of notes in C.F. and counterpoint"
 
--- converts a FirstSpecies into a list of contexts for evaluating rules
-firstSpeciesContexts :: FirstSpecies -> [FirstSpeciesContext]
-firstSpeciesContexts firstSpec@(First {key, cantusFirmus, counterpoint}) = contexts
+-- converts a Species into a list of contexts for evaluating rules in the first species
+firstSpeciesContexts :: Species -> [SpeciesContext]
+firstSpeciesContexts firstSpec@(Species {key, cantusFirmus, counterpoint}) = contexts
     where
         intervals = firstSpeciesIntervals firstSpec
         voiceOrdering = (fst cantusFirmus <= fst counterpoint)
-        consts = FirstSpecConsts {s1Length = length intervals, s1Key = key, s1Ordering = voiceOrdering}
+        consts = SpecConsts {specLength = length intervals, specKey = key, specOrdering = voiceOrdering}
         windows = map Just <$> getWindows 3 intervals
         listToPair (x:y:_) = (x, y)
         motionss = (ngrams 2 $ [Nothing] ++ (Just <$> (listToPair <$> ngrams 2 intervals)) ++ [Nothing])
-        contexts = [FirstSpecContext {s1Constants = consts, s1Index = i, s1Interval = interval, s1IntervalWindow = window, s1Motions = motions} | (i, interval, window, motions) <- zip4 [0..] intervals windows motionss]
+        contexts = [SpecContext {specConsts = consts, specIndex = i, specInterval = interval, specIntervalWindow = window, specMotions = motions} | (i, interval, window, motions) <- zip4 [0..] intervals windows motionss]
 
 -- checks all the rules against the first species
 -- returns either Passed or Failed (with the first violation encountered)
-checkFirstSpecies :: [FirstSpeciesRule] -> FirstSpecies -> RuleCheck
-checkFirstSpecies rules fs = result
-    where
-        contexts = firstSpeciesContexts fs
-        results = (checkFirstSpeciesRule <$> rules) <*> contexts  -- nested for loop (rules are outer loop)
-        firstFailed = dropWhile (== Passed) results
-        result = case firstFailed of
-            (x:_)     -> x       -- first failure
-            otherwise -> Passed  -- no failures, so we've passed
+checkFirstSpecies :: [SpeciesRule] -> Species -> RuleCheck
+checkFirstSpecies rules fs = checkSpeciesContexts rules (firstSpeciesContexts fs)
+
 
 -- MODELING --
 
@@ -415,7 +335,7 @@ data FirstSpeciesModel = FirstSpecModel {
     deriving (Eq, Show)
 
 -- trains a FirstSpeciesModel given a list of first species counterpoints
-trainFirstSpeciesModel :: [FirstSpecies] -> Double -> FirstSpeciesModel
+trainFirstSpeciesModel :: [Species] -> Double -> FirstSpeciesModel
 trainFirstSpeciesModel fss smooth = FirstSpecModel {harmonicModel = harmonicModel, melodicModel = melodicModel}
     where
         intervalss = firstSpeciesIntervals <$> fss
@@ -434,10 +354,10 @@ trainFirstSpeciesModel fss smooth = FirstSpecModel {harmonicModel = harmonicMode
         hRange = [hmin..hmax]
         melodicModel = trainDiscrete "melodic displacement" (Just hRange) smooth allHorizDisplacements
 
--- gets log2 probability of the FirstSpecies under the model
+-- gets log2 probability of the Species under the model
 -- model is: P(cpt_i | cpt_{i-1},cf_{i})
 -- that is, scores only the counterpoint, conditioned on the cantus firmus
-scoreFirstSpecies :: FirstSpeciesModel -> FirstSpecies -> Double
+scoreFirstSpecies :: FirstSpeciesModel -> Species -> Double
 scoreFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) fs = harmonicScore + melodicScore
     where
         -- just get the notes
@@ -447,7 +367,6 @@ scoreFirstSpecies (FirstSpecModel {harmonicModel, melodicModel}) fs = harmonicSc
         horizDisplacements = zipWith (-) (tail cpt') cpt'
         harmonicScore = sum $ getLogProb harmonicModel . intervalDisplacement <$> intervals
         melodicScore = sum $ getLogProb melodicModel <$> horizDisplacements
-
 
 -- GENERATION --
 
@@ -523,10 +442,10 @@ firstSpeciesNeighbors (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoic
         (cfPitches, cfBook) = foldTied cf
         cfPitchVec = V.fromList cfPitches
         n = V.length cfPitchVec
-        consts = FirstSpecConsts {s1Length = n, s1Key = fsKey, s1Ordering = voiceOrdering}
+        consts = SpecConsts {specLength = n, specKey = fsKey, specOrdering = voiceOrdering}
         -- given current state, gets the context
-        getContext :: FirstSpeciesState -> FirstSpeciesContext
-        getContext (i, cpt) = FirstSpecContext {s1Constants = consts, s1Index = i, s1Interval = interval, s1IntervalWindow = window, s1Motions = motions}
+        getContext :: FirstSpeciesState -> SpeciesContext
+        getContext (i, cpt) = SpecContext {specConsts = consts, specIndex = i, specInterval = interval, specIntervalWindow = window, specMotions = motions}
             where
                 interval = (cfPitchVec V.! i, fromJust $ cpt V.! i)
                 start = max 0 (i - 3)
@@ -562,7 +481,7 @@ firstSpeciesRandomNeighborStates setup costFunc state = do
 type MonadicSearcher m s c = NeighborGenM m s -> (s -> s -> c) -> (s -> Bool) -> s -> m (Maybe [s])
 
 -- workhorse for first species counterpoint generation
-generateFirstSpecies :: RandomGen g => FirstSpeciesSetup -> NeighborGenM (Rand g) FirstSpeciesState -> FirstSpeciesTransitionCostFunc -> MonadicSearcher (Rand g) FirstSpeciesState Double -> Rand g (Maybe FirstSpecies)
+generateFirstSpecies :: RandomGen g => FirstSpeciesSetup -> NeighborGenM (Rand g) FirstSpeciesState -> FirstSpeciesTransitionCostFunc -> MonadicSearcher (Rand g) FirstSpeciesState Double -> Rand g (Maybe Species)
 generateFirstSpecies (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice, genPolicy}) neighborGen costFunc searcher = do
     startIdx <- case genPolicy of
                     ForwardPolicy  -> return $ -1
@@ -574,7 +493,7 @@ generateFirstSpecies (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice
         states <- maybeStates
         let (_, cptPitches) = head states
         let cpt = unfoldTied (fromJust <$> V.toList cptPitches, cfBook)
-        return $ First {key = fsKey, cantusFirmus = (cfVoice, cf), counterpoint = (fsCptVoice, cpt)}
+        return $ Species {key = fsKey, cantusFirmus = (cfVoice, cf), counterpoint = (fsCptVoice, cpt)}
     where
         (cfPitches, cfBook) = foldTied cf
         n = length cfPitches
@@ -582,21 +501,21 @@ generateFirstSpecies (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoice
         solutionFound :: FirstSpeciesState -> Bool
         solutionFound (_, cpt) = all isJust $ V.toList cpt
 
-randomFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+randomFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe Species)
 randomFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher
     where
         costFunc = firstSpeciesNeighborCost setup
         neighborGen = firstSpeciesRandomNeighborStates setup costFunc
         searcher nbrGen _ solutionFound startState = dfsM nbrGen solutionFound startState
 
-greedyFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+greedyFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe Species)
 greedyFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher
     where
         costFunc = firstSpeciesNeighborCost setup
         neighborGen = firstSpeciesNeighbors setup
         searcher nbrGen costFn solutionFound startState = fmap snd <$> greedySearchM nbrGen costFn solutionFound startState
 
-beamSearchFirstSpecies :: RandomGen g => Int -> FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+beamSearchFirstSpecies :: RandomGen g => Int -> FirstSpeciesSetup -> Rand g (Maybe Species)
 beamSearchFirstSpecies width setup = generateFirstSpecies setup neighborGen costFunc searcher
     where
         costFunc = firstSpeciesNeighborCost setup
@@ -604,7 +523,7 @@ beamSearchFirstSpecies width setup = generateFirstSpecies setup neighborGen cost
         searcher nbrGen costFn solutionFound startState = fmap snd . listToMaybe <$> beam
             where beam = beamSearchM width nbrGen costFn solutionFound startState
 
-dijkstraFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe FirstSpecies)
+dijkstraFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe Species)
 dijkstraFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher
     where
         costFunc = firstSpeciesNeighborCost setup
@@ -613,51 +532,47 @@ dijkstraFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc sea
             where
                 costFn' state1 state2 = return $ costFn state1 state2
 
--- extracts setup information from an existing FirstSpecies
-getFirstSpeciesSetup :: FirstSpeciesModel -> GenerationPolicy -> FirstSpecies -> FirstSpeciesSetup
-getFirstSpeciesSetup model policy (First {key, cantusFirmus, counterpoint = (cptVoice, _)}) = FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
+-- extracts setup information from an existing Species
+getFirstSpeciesSetup :: FirstSpeciesModel -> GenerationPolicy -> Species -> FirstSpeciesSetup
+getFirstSpeciesSetup model policy (Species {key, cantusFirmus, counterpoint = (cptVoice, _)}) = FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
 
 
 -- Fux --
 
-fig5 = firstSpecies (D, Dorian) (Alto, "D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4 ~D4") (Soprano, "A4 A4 G4 A4 B4 C5 C5 B4 D5 Cs5 D5 ~D5")
-fig6Bad = firstSpecies (D, Dorian) (Alto, "D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4 ~D4") (Tenor, "G3 D4 A3 F3 E3 D3 F3 C4 D4 Cs4 D4 ~D4")
-fig6Good = firstSpecies (D, Dorian) (Alto, "D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4 ~D4") (Tenor, "D3 D3 A3 F3 E3 D3 F3 C4 D4 Cs4 D4 ~D4")
-fig11 = firstSpecies (E, Phrygian) (Alto, "E4 C4 D4 C4 A3 A4 G4 E4 F4 E4 ~E4") (Soprano, "B4 C5 F4 G4 A4 C5 B4 E5 D5 E5 ~E5")
-fig12Bad = firstSpecies (E, Phrygian) (Alto, "E4 C4 D4 C4 A3 A4 G4 E4 F4 E4 ~E4") (Tenor, "E3 A3 D3 E3 F3 F3 B3 C4 D4 E4 ~E4")
-fig12Good = firstSpecies (E, Phrygian) (Alto, "E4 C4 D4 C4 A3 A4 G4 E4 F4 E4 ~E4") (Tenor, "E3 A3 D3 E3 F3 F3 C4 C4 D4 E4 ~E4")
-fig13 = firstSpecies (F, Lydian) (Tenor, "F3 G3 A3 F3 D3 E3 F3 C4 A3 F3 G3 F3 ~F3") (Alto, "F4 E4 C4 F4 F4 G4 A4 G4 C4 F4 E4 F4 ~F4")
-fig14 = firstSpecies (F, Lydian) (Tenor, "F3 G3 A3 F3 D3 E3 F3 C4 A3 F3 G3 F3 ~F3") (Bass, "F3 E3 F3 A3 Bf3 G3 A3 E3 F3 D3 E3 F3 ~F3")
-fig15Bad = firstSpecies (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Soprano, "G4 E4 D4 G4 G4 G4 A4 B4 G4 E5 D5 G4 Fs4 G4 ~G4")
-fig15Bad' = firstSpecies (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Soprano, "G4 E4 D4 G4 G4 G4 A4 B4 G4 F5 D5 G4 Fs4 G4 ~G4")
-fig15Good = firstSpecies (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Soprano, "G4 E4 D4 G4 G4 G4 A4 B4 G4 C5 A4 G4 Fs4 G4 ~G4")
-fig21 = firstSpecies (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Tenor, "G3 A3 G3 E3 E3 C3 G3 B3 C4 A3 Fs3 G3 Fs3 G3 ~G3")
-fig22 = firstSpecies (A, Aeolian) (Alto, "A3 C4 B3 D4 C4 E4 F4 E4 D4 C4 B3 A3 ~A3") (Soprano, "A4 E4 G4 F4 E4 C5 A4 B4 B4 A4 Gs4 A4 ~A4")
-fig23 = firstSpecies (A, Aeolian) (Alto, "A3 C4 B3 D4 C4 E4 F4 E4 D4 C4 B3 A3 ~A3") (Tenor, "A3 A3 G3 F3 E3 E3 D3 C3 G3 A3 Gs3 A3 ~A3")
+fig5 = species (D, Dorian) (Alto, "D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4 ~D4") (Soprano, "A4 A4 G4 A4 B4 C5 C5 B4 D5 Cs5 D5 ~D5")
+fig6Bad = species (D, Dorian) (Alto, "D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4 ~D4") (Tenor, "G3 D4 A3 F3 E3 D3 F3 C4 D4 Cs4 D4 ~D4")
+fig6Good = species (D, Dorian) (Alto, "D4 F4 E4 D4 G4 F4 A4 G4 F4 E4 D4 ~D4") (Tenor, "D3 D3 A3 F3 E3 D3 F3 C4 D4 Cs4 D4 ~D4")
+fig11 = species (E, Phrygian) (Alto, "E4 C4 D4 C4 A3 A4 G4 E4 F4 E4 ~E4") (Soprano, "B4 C5 F4 G4 A4 C5 B4 E5 D5 E5 ~E5")
+fig12Bad = species (E, Phrygian) (Alto, "E4 C4 D4 C4 A3 A4 G4 E4 F4 E4 ~E4") (Tenor, "E3 A3 D3 E3 F3 F3 B3 C4 D4 E4 ~E4")
+fig12Good = species (E, Phrygian) (Alto, "E4 C4 D4 C4 A3 A4 G4 E4 F4 E4 ~E4") (Tenor, "E3 A3 D3 E3 F3 F3 C4 C4 D4 E4 ~E4")
+fig13 = species (F, Lydian) (Tenor, "F3 G3 A3 F3 D3 E3 F3 C4 A3 F3 G3 F3 ~F3") (Alto, "F4 E4 C4 F4 F4 G4 A4 G4 C4 F4 E4 F4 ~F4")
+fig14 = species (F, Lydian) (Tenor, "F3 G3 A3 F3 D3 E3 F3 C4 A3 F3 G3 F3 ~F3") (Bass, "F3 E3 F3 A3 Bf3 G3 A3 E3 F3 D3 E3 F3 ~F3")
+fig15Bad = species (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Soprano, "G4 E4 D4 G4 G4 G4 A4 B4 G4 E5 D5 G4 Fs4 G4 ~G4")
+fig15Bad' = species (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Soprano, "G4 E4 D4 G4 G4 G4 A4 B4 G4 F5 D5 G4 Fs4 G4 ~G4")
+fig15Good = species (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Soprano, "G4 E4 D4 G4 G4 G4 A4 B4 G4 C5 A4 G4 Fs4 G4 ~G4")
+fig21 = species (G, Mixolydian) (Alto, "G3 C4 B3 G3 C4 E4 D4 G4 E4 C4 D4 B3 A3 G3 ~G3") (Tenor, "G3 A3 G3 E3 E3 C3 G3 B3 C4 A3 Fs3 G3 Fs3 G3 ~G3")
+fig22 = species (A, Aeolian) (Alto, "A3 C4 B3 D4 C4 E4 F4 E4 D4 C4 B3 A3 ~A3") (Soprano, "A4 E4 G4 F4 E4 C5 A4 B4 B4 A4 Gs4 A4 ~A4")
+fig23 = species (A, Aeolian) (Alto, "A3 C4 B3 D4 C4 E4 F4 E4 D4 C4 B3 A3 ~A3") (Tenor, "A3 A3 G3 F3 E3 E3 D3 C3 G3 A3 Gs3 A3 ~A3")
 
 fuxFirstSpeciesBad = [fig6Bad, fig12Bad, fig15Bad, fig15Bad']
 fuxFirstSpeciesGood = [fig5, fig6Good, fig11, fig12Good, fig13, fig14, fig15Good, fig21, fig22, fig23]
 fuxFirstSpeciesModelNoSmooth = trainFirstSpeciesModel fuxFirstSpeciesGood 0.0
 fuxFirstSpeciesModelSmooth = trainFirstSpeciesModel fuxFirstSpeciesGood 1.0
 
---testFsGen = fromJust $ generateFirstSpecies' fuxFirstSpeciesModelSmooth (D, Dorian) (cantusFirmus fig5) Soprano
+fig5Dijkstra = Species {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Soprano,[Untied [] (D,5),Untied [] (C,5),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (C,5),Untied [] (B,4),Untied [] (C,5),Untied [] (Cs,5),Untied [] (D,5),Tied (D,5)])}
 
-fig5Dijkstra = First {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Soprano,[Untied [] (D,5),Untied [] (C,5),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (C,5),Untied [] (B,4),Untied [] (C,5),Untied [] (Cs,5),Untied [] (D,5),Tied (D,5)])}
+fig6Dijkstra = Species {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Tenor,[Untied [] (D,4),Untied [] (D,4),Untied [] (C,4),Untied [] (B,3),Untied [] (E,4),Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (Cs,4),Untied [] (D,4),Tied (D,4)])}
 
-fig6Dijkstra = First {key = (D,Dorian), cantusFirmus = (Alto,[Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (F,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Tied (D,4)]), counterpoint = (Tenor,[Untied [] (D,4),Untied [] (D,4),Untied [] (C,4),Untied [] (B,3),Untied [] (E,4),Untied [] (D,4),Untied [] (F,4),Untied [] (E,4),Untied [] (D,4),Untied [] (Cs,4),Untied [] (D,4),Tied (D,4)])}
+fig11Dijkstra = Species {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Soprano,[Untied [] (B,4),Untied [] (A,4),Untied [] (B,4),Untied [] (A,4),Untied [] (A,4),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (E,5),Tied (E,5)])}
 
-fig11Dijkstra = First {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Soprano,[Untied [] (B,4),Untied [] (A,4),Untied [] (B,4),Untied [] (A,4),Untied [] (A,4),Untied [] (C,5),Untied [] (D,5),Untied [] (E,5),Untied [] (D,5),Untied [] (E,5),Tied (E,5)])}
+fig12Dijkstra = Species {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Tenor,[Untied [] (E,4),Untied [] (E,4),Untied [] (F,4),Untied [] (G,4),Untied [] (A,4),Untied [] (F,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Tied (E,4)])}
 
-fig12Dijkstra = First {key = (E,Phrygian), cantusFirmus = (Alto,[Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (C,4),Untied [] (A,3),Untied [] (A,4),Untied [] (G,4),Untied [] (E,4),Untied [] (F,4),Untied [] (E,4),Tied (E,4)]), counterpoint = (Tenor,[Untied [] (E,4),Untied [] (E,4),Untied [] (F,4),Untied [] (G,4),Untied [] (A,4),Untied [] (F,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Tied (E,4)])}
+fig13Dijkstra = Species {key = (F,Lydian), cantusFirmus = (Tenor,[Untied [] (F,3),Untied [] (G,3),Untied [] (A,3),Untied [] (F,3),Untied [] (D,3),Untied [] (E,3),Untied [] (F,3),Untied [] (C,4),Untied [] (A,3),Untied [] (F,3),Untied [] (G,3),Untied [] (F,3),Tied (F,3)]), counterpoint = (Alto,[Untied [] (F,4),Untied [] (D,4),Untied [] (C,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (A,3),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Untied [] (F,4),Tied (F,4)])}
 
-fig13Dijkstra = First {key = (F,Lydian), cantusFirmus = (Tenor,[Untied [] (F,3),Untied [] (G,3),Untied [] (A,3),Untied [] (F,3),Untied [] (D,3),Untied [] (E,3),Untied [] (F,3),Untied [] (C,4),Untied [] (A,3),Untied [] (F,3),Untied [] (G,3),Untied [] (F,3),Tied (F,3)]), counterpoint = (Alto,[Untied [] (F,4),Untied [] (D,4),Untied [] (C,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (A,3),Untied [] (C,4),Untied [] (D,4),Untied [] (E,4),Untied [] (F,4),Tied (F,4)])}
-
-fig15Dijkstra = First {key = (G,Mixolydian), cantusFirmus = (Alto,[Untied [] (G,3),Untied [] (C,4),Untied [] (B,3),Untied [] (G,3),Untied [] (C,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (G,3),Tied (G,3)]), counterpoint = (Soprano,[Untied [] (D,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (B,4),Untied [] (C,5),Untied [] (A,4),Untied [] (G,4),Untied [] (Fs,4),Untied [] (G,4),Tied (G,4)])}
+fig15Dijkstra = Species {key = (G,Mixolydian), cantusFirmus = (Alto,[Untied [] (G,3),Untied [] (C,4),Untied [] (B,3),Untied [] (G,3),Untied [] (C,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (E,4),Untied [] (C,4),Untied [] (D,4),Untied [] (B,3),Untied [] (A,3),Untied [] (G,3),Tied (G,3)]), counterpoint = (Soprano,[Untied [] (D,4),Untied [] (E,4),Untied [] (D,4),Untied [] (G,4),Untied [] (A,4),Untied [] (G,4),Untied [] (F,4),Untied [] (E,4),Untied [] (B,4),Untied [] (C,5),Untied [] (A,4),Untied [] (G,4),Untied [] (Fs,4),Untied [] (G,4),Tied (G,4)])}
 
 
 
-
---FirstSpeciesSetup {fsModel = model, fsKey = key, fsCf = cantusFirmus, fsCptVoice = cptVoice, genPolicy = policy}
 twinkleSetup policy cptVoice = FirstSpeciesSetup {fsModel = fuxFirstSpeciesModelSmooth, fsKey = (C, Ionian), fsCf = (Alto, parseLine "C4 C4 G4 G4 A4 A4 G4 ~G4 F4 F4 E4 E4 D4 D4 C4 ~C4"), fsCptVoice = cptVoice, genPolicy = policy}
 
 macdonaldSetup policy cptVoice = FirstSpeciesSetup {fsModel = fuxFirstSpeciesModelSmooth, fsKey = (G, Ionian), fsCf = (Alto, parseLine "G4 G4 G4 D4 E4 E4 D4 ~D4 B4 B4 A4 A4 G4 ~G4 ~G4 ~G4"), fsCptVoice = cptVoice, genPolicy = policy}

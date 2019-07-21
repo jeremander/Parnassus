@@ -11,6 +11,8 @@ import Data.Maybe (fromJust)
 import qualified Data.Sequence as S
 import Data.Sort (sortOn)
 
+import Parnassus.Utils (safeHead)
+
 
 -- Priority Queue ("Beam") --
 
@@ -134,10 +136,6 @@ beamSearchM width neighborGen costFunc found initial = results
 
 beamSearch :: forall c s . (Num c, Ord c) => Int -> NeighborGen s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> [(c, [s])]
 beamSearch width neighborGen costFunc found initial = runIdentity $ beamSearchM width (return . neighborGen) costFunc found initial
-
-safeHead :: [a] -> Maybe a
-safeHead []     = Nothing
-safeHead (x:xs) = Just x
 
 -- a greedy search is just a beam search with a width of 1
 greedySearchM :: forall c s m . (Num c, Ord c, Monad m) => NeighborGenM m s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> m (Maybe (c, [s]))

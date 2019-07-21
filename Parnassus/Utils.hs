@@ -12,6 +12,15 @@ import Data.Tuple.Select
 
 -- MISC --
 
+safeHead :: [a] -> Maybe a
+safeHead []     = Nothing
+safeHead (x:xs) = Just x
+
+justOrError :: Maybe a -> String -> a
+justOrError mx err = case mx of
+    Just x  -> x
+    Nothing -> error err
+
 prod :: (Foldable f, Num a) => f a -> a
 prod = foldr (*) 1
 
