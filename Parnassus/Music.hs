@@ -19,6 +19,7 @@ import Parnassus.Utils (quantizeRational, quantizeRationals, quantizeTime, trans
 import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
 import Parnassus.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
 import Parnassus.MusicU (mFoldU, MusicU (..), ToMusicU (..))
+import Parnassus.Wave (AudSig, sineInstrMap)
 
 -- songs
 
@@ -111,5 +112,15 @@ instance (Ord a, Pitched a) => Quantizable Music a where
     split :: Rational -> Music a -> [Music a]
     split d = (fromMusicU <$>) . split d . toMusicU
 
--- toMusicD $ scaleDurations (4 % 5) $ ((split 1 $ quantize (1 % 8) twinkle) !! 0)
---quantize (1 % 8) $ toMusicD $ scaleDurations (4 % 5) $ ((split 1 $ quantize (1 % 8) twinkle) !! 0)
+
+-- WAV files --
+
+musicToWav :: (MusicT m a, ToMusic1 a) => FilePath -> InstrMap AudSig -> m a -> IO ()
+musicToWav path instrMap music = writeWavNorm path instrMap music1
+    where
+        (instrName, _) = head instrMap
+        music1 = instrument instrName $ toMusic1 music
+
+-- saves music to a wav file via the sine instrument
+musicToSineWav :: FilePath -> Music1 -> IO ()
+musicToSineWav path music = writeWavNorm path sineInstrMap music

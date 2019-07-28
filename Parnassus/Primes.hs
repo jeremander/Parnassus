@@ -2,13 +2,26 @@
 
 module Parnassus.Primes where
 
-import Data.Counter (Counter, count)
-import Data.List (unfoldr)
-import Data.Map (toList)
+import Data.List (foldl', unfoldr)
+import qualified Data.Map as M
 import Data.Maybe (listToMaybe)
 
 import Data.WAVE
 import Parnassus.Wave
+
+
+-- Counter --
+-- (NB: these are found in counter package, but it has an out-of-date dependency)
+type Counter k v = M.Map k v
+
+updateWith :: (Ord k, Num v) => k -> v -> Counter k v -> Counter k v
+updateWith = M.insertWith (+)
+
+update :: (Ord k, Num v) => k -> Counter k v -> Counter k v
+update k = updateWith k 1
+
+count :: (Ord k, Num v) => [k] -> Counter k v
+count = foldl' (flip update) M.empty
 
 -- Primes --
 
@@ -52,7 +65,7 @@ collatz a x0 = seq
 intToSig :: Double -> Double -> Integer -> Sig
 intToSig base d n = signalChord notes
     where
-        (primes, exponents) = unzip $ toList $ primeFactorCounts n
+        (primes, exponents) = unzip $ M.toList $ primeFactorCounts n
         freqs = ((* base) . fromIntegral) <$> primes
         tones = (envTone d 0.25) <$> freqs
         notes = [[fromIntegral vol * samp | samp <- tn] | vol <- exponents | tn <- tones]

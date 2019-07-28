@@ -8,10 +8,6 @@ import Data.WAVE (getWAVEFile, sampleToDouble, waveSamples)
 import Euterpea hiding (toMusic1)
 import System.IO.Unsafe (unsafePerformIO)
 
-import Parnassus.MusicBase (MusicT (..))
-import Parnassus.Music
-import Parnassus.MusicU
-
 
 -- signals with 44100 Hz sample rate
 type AudSig = AudSF () Double
@@ -62,20 +58,7 @@ sineInstrMap = instrMap "Sine" (tableSinesN 4096 [1])
 loadWaveInstrMap :: String -> FilePath -> InstrMap AudSig
 loadWaveInstrMap name path = instrMap name (loadCycle path)
 
-musicToWav :: (MusicT m a, ToMusic1 a) => FilePath -> InstrMap AudSig -> m a -> IO ()
-musicToWav path instrMap music = writeWavNorm path instrMap music1
-    where
-        (instrName, _) = head instrMap
-        music1 = instrument instrName $ toMusic1 music
 
-testInstrMap :: InstrMap AudSig
-testInstrMap = loadWaveInstrMap "test" "/Users/jeremander/Programming/Music/AKWF/AKWF_piano/AKWF_piano_0004.wav"
-
-
-
--- saves music to a wav file via the sine instrument
--- musicToWav :: FilePath -> Music1 -> IO ()
--- musicToWav path music = writeWavNorm path sineInstrMap (instrument sineInstrName music)
 
 
 -- Direct signal approach --

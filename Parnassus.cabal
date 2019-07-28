@@ -20,6 +20,6 @@ library
   exposed-modules:     Parnassus.Music, Parnassus.MusicD, Parnassus.MusicU, Parnassus.Primes
   -- other-modules:       
   other-extensions:    Arrows, NamedFieldPuns, ParallelListComp
-  build-depends:       base >=4.10 && <4.11, counter >=0.1 && <0.2, containers >=0.5 && <0.6, WAVE >=0.1 && <0.2, Euterpea >=2.0 && <2.1
+  build-depends:       base >=4.10 && <4.11, counter >=0.1 && <0.2, containers ==0.5.*, WAVE >=0.1 && <0.2, Euterpea >=2.0 && <2.1
   -- hs-source-dirs:   
   default-language:    Haskell2010
