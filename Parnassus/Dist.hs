@@ -22,7 +22,7 @@ import qualified Numeric.Log as L
 import System.Random
 import Test.QuickCheck hiding (sample)
 
-import Parnassus.Utils (merge, prod, selector)
+import Parnassus.Utils (merge, prod, safeDiv, selector)
 
 import Debug.Trace
 
@@ -40,11 +40,6 @@ logSumExp = L.ln . L.sum . map L.Exp
 -- gets the index of an element in a vector
 vecElemIndex :: (Eq a) => a -> VB.Vector a -> Maybe Int
 vecElemIndex x v = elemIndex x (VB.toList v)
-
--- division with rule that 0 / 0 = 0
-safeDiv :: Double -> Double -> Double
-safeDiv 0 0 = 0
-safeDiv x y = x / y
 
 -- normalizes a vector of nonnegative numbers so that they sum to 1
 normalizeVec :: V.Vector Double -> V.Vector Prob

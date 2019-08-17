@@ -2,26 +2,14 @@
 
 module Parnassus.Primes where
 
-import Data.List (foldl', unfoldr)
+import Data.Counter    
+import Data.List (unfoldr)
 import qualified Data.Map as M
 import Data.Maybe (listToMaybe)
 
 import Data.WAVE
 import Parnassus.Wave
 
-
--- Counter --
--- (NB: these are found in counter package, but it has an out-of-date dependency)
-type Counter k v = M.Map k v
-
-updateWith :: (Ord k, Num v) => k -> v -> Counter k v -> Counter k v
-updateWith = M.insertWith (+)
-
-update :: (Ord k, Num v) => k -> Counter k v -> Counter k v
-update k = updateWith k 1
-
-count :: (Ord k, Num v) => [k] -> Counter k v
-count = foldl' (flip update) M.empty
 
 -- Primes --
 

@@ -1,36 +1,93 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 module Parnassus.Utils where
 
 import Control.Arrow (second)
+import qualified Data.Array as A
 import qualified Data.List (transpose)
 import Data.List.Split (chunksOf)
-import qualified Data.Set
+import qualified Data.Set as S
 import Data.Ratio
+import qualified Data.Text as T
 import Data.Tuple.Select
+
+
+-- MATH --
+
+-- double coercion
+class ToDouble a where
+    toDouble :: a -> Double
+instance ToDouble Double where
+    toDouble = id
+instance ToDouble Rational where
+    toDouble = fromRational
+
+-- computes GCD of two rationals
+rationalGCD :: Rational -> Rational -> Rational
+rationalGCD x y = (gcd a c) % (lcm b d)
+    where
+        (a, b) = (numerator x, denominator x)
+        (c, d) = (numerator y, denominator y)
+
+argmax, argmin :: Ord a => [a] -> Int
+argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
+argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]        
+
+-- product of numbers        
+prod :: (Foldable f, Num a) => f a -> a
+prod = foldr (*) 1    
+
+-- cumulative sums
+cumsum :: (Num a) => [a] -> [a]
+cumsum = scanl (+) 0
+
+log2 :: Floating a => a -> a
+log2 x = log x / (log 2)
+
+pow2 :: Floating a => a -> a
+pow2 x = 2 ** x
+
+-- division with rule that 0 / 0 = 0
+safeDiv :: (Eq a, Fractional a) => a -> a -> a
+safeDiv 0 0 = 0
+safeDiv x y = x / y
 
 
 -- MISC --
 
+-- strips leading and trailing whitespace from a string
+strip :: String -> String
+strip = T.unpack . T.strip . T.pack
+
+-- takes successive pairs of a list
+pairwise :: [a] -> [(a, a)]
+pairwise xs = zip xs (tail xs)
+
+-- rotates a list left by some number
+rotateL :: Int -> [a] -> [a]
+rotateL n xs = drop n' xs ++ take n' xs
+    where n' = n `mod` (length xs)
+
+-- safe head function, returning Nothing if the list is empty    
 safeHead :: [a] -> Maybe a
 safeHead []     = Nothing
 safeHead (x:xs) = Just x
 
+-- extracts a Just value, emitting a specified error if it is Nothing
 justOrError :: Maybe a -> String -> a
 justOrError mx err = case mx of
     Just x  -> x
     Nothing -> error err
-
-prod :: (Foldable f, Num a) => f a -> a
-prod = foldr (*) 1
 
 -- given n, a list of sorted indices in [0, n), and a list of items, selects items from the list at the corresponding indices
 -- does no bounds checking
 selector :: Int -> [Int] -> [a] -> [a]
 selector n indices xs = fst <$> filter snd (zip xs indexIndicators)
     where
-        indexSet = Data.Set.fromList indices
-        indexIndicators = [Data.Set.member i indexSet | i <- [0..(n - 1)]]
+        indexSet = S.fromList indices
+        indexIndicators = [S.member i indexSet | i <- [0..(n - 1)]]
 
 -- merges two sorted lists, but terminates when the second list is exhausted
 -- f is the sort key
@@ -60,24 +117,16 @@ transposeWithDefault def xss = Data.List.transpose mat
         maxlen = maximum (length <$> xss)
         mat = padListWithDefault maxlen def <$> xss
 
-argmax, argmin :: Ord a => [a] -> Int
-argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
-argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]
-
 -- given [A1, A2, ..., An], let A be the intersection of these sets; returns (A, [A1 \ A, A2 \ A, ..., An \ A])
 unDistribute :: Ord a => [[a]] -> ([a], [[a]])
 unDistribute [] = ([], [])
-unDistribute xss = (Data.Set.toList xint, (Data.Set.toList . (`Data.Set.difference` xint)) <$> xsets)
+unDistribute xss = (S.toList xint, (S.toList . (`S.difference` xint)) <$> xsets)
     where
-        xsets = Data.Set.fromList <$> xss
-        xint = foldr1 Data.Set.intersection xsets
+        xsets = S.fromList <$> xss
+        xint = foldr1 S.intersection xsets
 
--- computes GCD of two rationals
-rationalGCD :: Rational -> Rational -> Rational
-rationalGCD x y = (gcd a c) % (lcm b d)
-    where
-        (a, b) = (numerator x, denominator x)
-        (c, d) = (numerator y, denominator y)
+mkArray :: (A.Ix i, Integral i) => [e] -> A.Array i e
+mkArray xs = A.listArray (0, fromIntegral $ length xs - 1) xs
 
 -- computes n-grams from a list of items
 ngrams :: Int -> [a] -> [[a]]

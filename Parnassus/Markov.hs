@@ -284,7 +284,7 @@ testMarkov = trainTerminatingMarkovModel Nothing 0.01 testText
 test1gram = trainTerminatingNgramModel 1 Nothing 0 ["abccc"]
 test2gram = trainTerminatingNgramModel 2 Nothing 0 ["abcccabcababbbabacbaccbaa"]
 
-alicePath = "data/alice.txt"
+alicePath = "test/alice.txt"
 alice = unsafePerformIO $ readFile alicePath
 alice1gram = trainCharNgramModel 1 defaultCharNgramParams alice
 alice2gram = trainCharNgramModel 2 defaultCharNgramParams alice

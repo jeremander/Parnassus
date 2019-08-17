@@ -136,9 +136,9 @@ extendScaleTuning pc tuning = freqs
         freqs = take 128 $ drop diff' $ [freq * (2 ** fromIntegral oct) | (freq, oct) <- zip baseFreqs octaves]
 
 -- extends a scale to a full tuning [0..127], given a base pitch & frequency        
-makeTuning :: Scale Double -> StdPitch -> Tuning        
+makeTuning :: (ToDouble a) => Scale a -> StdPitch -> Tuning        
 makeTuning scale (basePitch, baseFreq) = extendScaleTuning basePitch tuning
-    where tuning = (baseFreq *) <$> scale
+    where tuning = (baseFreq *) . toDouble <$> scale
 
 -- measures interval ratios between each pair of notes in a scale 
 -- always expresses ratio between a lower note and the higher note
@@ -240,7 +240,7 @@ pythagoreanScale :: Scale Rational
 pythagoreanScale = stackedFifthScale (3 % 2)
 
 pythagoreanTuning :: StdPitch -> Tuning
-pythagoreanTuning = makeTuning $ fromRational <$> pythagoreanScale
+pythagoreanTuning = makeTuning pythagoreanScale
 
 -- Meantone Tuning
 
@@ -280,6 +280,7 @@ kirnberger3Scale = constructScale $ zip (pairwise $ init circleOfFifths) [imp, i
 kirnberger3Tuning :: StdPitch -> Tuning
 kirnberger3Tuning = makeTuning kirnberger3Scale
 
+-- Wendy Carlos created this "super-just" scale
 harmonicScale :: Scale Rational
 harmonicScale = (% 16) <$> [16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28, 30, 32]
 
