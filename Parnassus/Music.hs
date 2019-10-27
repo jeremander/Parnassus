@@ -16,9 +16,9 @@ import Data.Ratio ((%))
 
 import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
 import Parnassus.Utils (quantizeRational, quantizeRationals, quantizeTime, transposeWithDefault)
-import Parnassus.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
-import Parnassus.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
-import Parnassus.MusicU (mFoldU, MusicU (..), ToMusicU (..))
+import Parnassus.Music.MusicBase (Pitched, MusicT (..), Quantizable (..), TimeSig, ToMidi (..), (/+/), (/=/), (/*/))
+import Parnassus.Music.MusicD (isRest, MusicD (..), primD, ToMusicD (..))
+import Parnassus.Music.MusicU (mFoldU, MusicU (..), ToMusicU (..))
 import Parnassus.Wave (AudSig, sineInstrMap)
 
 -- songs

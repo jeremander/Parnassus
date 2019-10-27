@@ -3,7 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Parnassus.MusicD where
+module Parnassus.Music.MusicD where
 
 import Control.Monad (join)
 import Data.Foldable (foldl')
@@ -13,10 +13,10 @@ import Data.Sort (sortOn)
 import Data.Tuple.Select
 import GHC.Exts (groupWith)
 
-import Euterpea hiding (line, Rest, scaleDurations)
+import Euterpea hiding (chord, line, play, Rest, scaleDurations)
 import qualified Euterpea
 import Parnassus.Utils
-import Parnassus.MusicBase 
+import Parnassus.Music.MusicBase
 
 import Debug.Trace
 
@@ -56,16 +56,16 @@ primD :: Dur -> Primitive a -> MusicD a
 primD q p
     | (q == 0)  = MusicD 0 [] []
     | otherwise = MusicD q [] m
-    where 
+    where
         m = case p of
             Euterpea.Rest d -> replicate (floor $ d / q) [Rest]
             Note d p        -> if (d < q)
                                     then [[]]
-                                    else [[Untied [] p]] ++ replicate ((floor $ d / q) - 1) [Tied p]
+                                    else [Untied [] p] : replicate ((floor $ d / q) - 1) [Tied p]
 
 -- pads a sequence of chords (lists of Tied a) of duration q with rests so that the total duration is d
 padArr :: Dur -> Dur -> ArrD a -> ArrD a
-padArr q d xs = padListWithDefault (floor $ d / q) [Rest] xs
+padArr q d = padListWithDefault (floor $ d / q) [Rest]
 
 -- gets the tempo from a Tempo Control, or 1 if the Control is not a Tempo
 getTempo :: Control -> Rational
@@ -82,12 +82,12 @@ isTempo _         = False
 resolveTies :: Dur -> [Tied a] -> [(Controls, Primitive a)]
 resolveTies q = reverse . (foldl' combine [])
     where
-        combine [] (Tied p)                            = [([], Note q p)]
-        combine ((_, Euterpea.Rest d1):ps) Rest        = ([], Euterpea.Rest (q + d1)) : ps
-        combine ((_, Euterpea.Rest _):_) (Tied _)      = error "cannot have tied note after rest"
-        combine ((ctl1, Note d1 p):ps) (Tied _)        = (ctl1, Note (q + d1) p) : ps
-        combine ps (Untied ctl2 p)                     = (ctl2, Note q p) : ps
-        combine ps Rest                                = ([], Euterpea.Rest q) : ps
+        combine [] (Tied p)                       = [([], Note q p)]
+        combine ((_, Euterpea.Rest d1):ps) Rest   = ([], Euterpea.Rest (q + d1)) : ps
+        combine ((_, Euterpea.Rest _):_) (Tied _) = error "cannot have tied note after rest"
+        combine ((ctl1, Note d1 p):ps) (Tied _)   = (ctl1, Note (q + d1) p) : ps
+        combine ps (Untied ctl2 p)                = (ctl2, Note q p) : ps
+        combine ps Rest                           = ([], Euterpea.Rest q) : ps
 
 -- applies controls note-wise to each Untied note in the array
 distributeControls :: Controls -> ArrD a -> ArrD a
@@ -126,9 +126,9 @@ greedyMatching f xs ys
         n1 = length xs
         n2 = length ys
         items = Data.List.sort [(f x y, (i, x), (j, y)) | (i, x) <- zip [0..] xs, (j, y) <- zip [0..] ys]
-        pred i j = \(_, (i', _), (j', _)) -> (i' /= i) && (j' /= j)
+        pred i j (_, (i', _), (j', _)) = (i' /= i) && (j' /= j)
         (s, (i, x), (j, y)) = head items
-        itemSeq = [([(s, (i, x), (j, y))], filter (pred i j) items)] ++ [((s', (i', x'), (j', y')) : chosen, filter (pred i' j') remaining) | (chosen, (s', (i', x'), (j', y')) : remaining) <- itemSeq]
+        itemSeq = ([(s, (i, x), (j, y))], filter (pred i j) items) : [((s', (i', x'), (j', y')) : chosen, filter (pred i' j') remaining) | (chosen, (s', (i', x'), (j', y')) : remaining) <- itemSeq]
         sortKey (_, (i, _), (_, _)) = -i
         select (_, (_, x), (_, y)) = (x, y)
         chosen = ((map select . sortOn sortKey . fst) <$> itemSeq) !! (n1 - 1)
@@ -139,7 +139,7 @@ greedyMatchSeq f []  = []
 greedyMatchSeq f xss = sortedSeqs
     where
         reorder f []            = []
-        reorder f (x0:[])       = [x0]
+        reorder f [x0]          = [x0]
         reorder f (x0:x1:xtail) = x0' : xtail'
             where
                 (x0', x1') = unzip $ greedyMatching f x0 x1
@@ -165,14 +165,14 @@ tiedNoteDistance n1 n2 = case (n1, n2) of
 
 instance (Ord a, Pitched a) => MusicT MusicD a where
     toMusic :: MusicD a -> Music a
-    toMusic (MusicD q ctl m) = ctlMod $ Euterpea.chord lines'
+    toMusic (MusicD q ctl m) = ctlMod $ chord lines'
         where
             ctlMod = composeFuncs (Modify <$> ctl)  -- compose the global controls into one modifier
             maxlen = max 1 (maximum $ length <$> m)
             m' = padListWithDefault maxlen Rest <$> m
             lines = resolveTies q <$> greedyMatchSeq tiedNoteDistance m'  -- simplify the lines by agglomerating rests & tied notes
-            f = \(ctl', p) -> composeFuncs (Modify <$> ctl') $ Prim p
-            lines' = [Euterpea.line $ f <$> ln | ln <- lines]
+            f (ctl', p) = composeFuncs (Modify <$> ctl') $ Prim p
+            lines' = [line $ f <$> ln | ln <- lines]
     fromMusic :: Music a -> MusicD a
     fromMusic mus = MusicD q ctl m''
         where
@@ -216,7 +216,7 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     -- NB: ignores tempo variations at the note level
     dur :: MusicD a -> Dur
     dur (MusicD q ctl m) = (q / tempoFactor) * (fromIntegral $ length m)
-        where tempoFactor = foldr (*) 1 (getTempo <$> ctl)
+        where tempoFactor = product (getTempo <$> ctl)
     durGCD :: MusicD a -> Rational
     durGCD (MusicD q _ _) = q
     scaleDurations :: Rational -> MusicD a -> MusicD a
@@ -224,7 +224,7 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     bisect :: Eq a => Dur -> MusicD a -> (MusicD a, MusicD a)
     bisect d (MusicD q ctl m) = (MusicD q ctl mhead, MusicD q ctl mtail)
         where
-            t = foldr (*) 1 (extractTempo <$> ctl)
+            t = product (extractTempo <$> ctl)
             d' = d / t  -- scale duration by the tempo
             (mhead, mtail) = splitAt (round (d' / q)) m
     pad :: Dur -> MusicD a -> MusicD a
@@ -237,7 +237,7 @@ instance (Ord a, Pitched a) => MusicT MusicD a where
     distributeTempos (MusicD q ctl m) = MusicD (q / scale) ctl' m
         where
             (tempos, ctl') = Data.List.partition isTempo ctl
-            scale = foldr (*) 1 (getTempo <$> tempos)
+            scale = product (getTempo <$> tempos)
     transpose :: AbsPitch -> MusicD a -> MusicD a
     transpose i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
 
@@ -253,9 +253,9 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                 -- simple case of refinement
                 n = truncate (q' / q)
                 chopNote :: Tied a -> [Tied a]
-                chopNote (Untied ctl p) = [Untied ctl p] ++ replicate (n - 1) (Tied p)
+                chopNote (Untied ctl p) = Untied ctl p : replicate (n - 1) (Tied p)
                 chopNote (Tied p)       = replicate n (Tied p)
-                chopNote Rest           = [Rest] ++ replicate (n - 1) Rest
+                chopNote Rest           = Rest : replicate (n - 1) Rest
                 chopChord :: [Tied a] -> [[Tied a]]
                 chopChord [] = replicate n []
                 chopChord chrds = Data.List.transpose $ chopNote <$> chrds
@@ -280,7 +280,7 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
                         p = case (p1, p2) of
                                 (Tied _, Tied _) -> p1
                                 (Untied _ _, _)  -> p1
-                                otherwise        -> p2
+                                _                -> p2
                         flag = (isTied p1 || flag1) && (isTied p2 || flag2)
                 groups3 :: [[(Rational, Rational, Tied a, Bool)]]
                 groups3 = (map $ foldr1 combine) . groupWith (extractTied . sel3) <$> groups2
@@ -339,5 +339,3 @@ instance (Ord a, Pitched a) => Quantizable MusicD a where
     split d mus@(MusicD q ctl m)
         | q `divides` d = [MusicD q ctl group | group <- chunkListWithDefault (truncate (d / q)) [Rest] m]
         | otherwise = split d (quantize (rationalGCD q d) mus)
-
-z = (MusicD (1 % 16) [] [[Untied [] (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Untied [] (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Tied (C,4)],[Untied [] (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)],[Untied [] (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)],[Tied (G,4)]])::(MusicD Pitch)

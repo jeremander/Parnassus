@@ -2,19 +2,19 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Parnassus.Optimize where
+module Parnassus.Math.Optimize where
 
 import Control.Monad.Identity (forM, runIdentity)
 import Data.Maybe (fromJust)
 import qualified Data.Vector as V
 import Debug.Trace
-import Parnassus.Search (dfsM, FinalStatePredicate)
+import Parnassus.Math.Search (dfsM, FinalStatePredicate)
 import Parnassus.Utils (safeDiv)
 
 
--- LINEAR ALGEBRA --    
+-- LINEAR ALGEBRA --
 
--- point in Euclidean space        
+-- point in Euclidean space
 type Point = V.Vector Double
 -- vector in Euclidean space
 type Vec = V.Vector Double
@@ -24,10 +24,10 @@ unitVec :: Vec -> Vec
 unitVec v = (`safeDiv` (norm v)) <$> v
 
 (^+^) :: (Real a) => V.Vector a -> V.Vector a -> V.Vector a
-(^+^) u v = V.zipWith (+) u v
+(^+^) = V.zipWith (+)
 
 (^-^) :: (Real a) => V.Vector a -> V.Vector a -> V.Vector a
-(^-^) u v = V.zipWith (-) u v
+(^-^) = V.zipWith (-)
 
 -- product of scalar with vector
 (*^) :: (Real a) => a -> V.Vector a -> V.Vector a
@@ -54,7 +54,7 @@ newtype Real' a = Real' a
 instance (Real a) => MetricSpace (Real' a) where
     norm (Real' x) = realToFrac $ abs x
     distance (Real' x) (Real' y) = norm $ Real' $ x - y
-    
+
 instance (Real a) => MetricSpace (V.Vector a) where
     norm x = sqrt $ V.sum $ (** 2) . realToFrac <$> x
     distance x y = norm $ x ^-^ y
@@ -66,10 +66,10 @@ data OptParams = OptParams {
     maxIter :: Int,   -- max number of iterations
     xtol :: Double,   -- absolute error in x
     ftol :: Double,   -- absolute error in f
-    debug :: Bool
+    verbosity :: Int  -- verbosity level
 }
 
-defaultOptParams = OptParams {maxIter = 100, xtol = 1e-8, ftol = 1e-8, debug = False}
+defaultOptParams = OptParams {maxIter = 100, xtol = 1e-8, ftol = 1e-8, verbosity = 2}
 
 -- function to optimize
 type ScalarFunc s = s -> Double
@@ -80,17 +80,20 @@ type OptState s = (Double, s)
 type OptStep s = (Int, OptState s, OptState s)
 
 isFinalStep :: (MetricSpace s, Show s) => OptParams -> FinalStatePredicate (OptStep s)
-isFinalStep (OptParams {maxIter, xtol, ftol, debug}) (i, (f0, x0), (f1, x1)) = (i >= 0) && ((df > 0.0) || (i >= maxIter) || (xerr <= xtol) || (ferr <= ftol))
+isFinalStep (OptParams {maxIter, xtol, ftol, verbosity}) (i, (f0, x0), (f1, x1)) = result
     where
         xerr = distance x1 x0
-        ferr = distance (Real' f1) (Real' f0)
-        msg = "Iter " ++ show i ++ "\n\tx = " ++ show x1 ++ "\n\tf = " ++ show f1 ++ "\n\txerr = " ++ show xerr ++ "\n\tferr = " ++ show ferr
-        df = if debug then (trace msg $ f1 - f0) else (f1 - f0)
-        
+        df = f1 - f0
+        ferr = abs df
+        msg = "Iter " ++ show i ++ (if (verbosity > 1) then ("\n\tx =    " ++ show x1) else "") ++ "\n\tf =    " ++ show f1 ++ "\n\tdf =   " ++ show df ++ "\n\txerr = " ++ show xerr
+        shouldTerminate = (i >= 0) && ((i >= maxIter) || (xerr <= xtol) || (df > -ftol))
+        msg' = if shouldTerminate then (msg ++ "\nTerminating after " ++ show (i + 1) ++ " iteration(s).") else msg
+        result = if ((verbosity > 0) && (i >= 0)) then trace msg' shouldTerminate else shouldTerminate
+
 -- given iteration and point, returns next point
 type PointStep = (Int, Point) -> Point
 type PointStepM m = (Int, Point) -> m Point
--- computes the gradient at a point        
+-- computes the gradient at a point
 type GradientFunc = Point -> Point
 type GradientFuncM m = Point -> m Point
 
@@ -104,20 +107,20 @@ type ArmijoParams = (Double, Double, Double)  -- alpha_0, eta, tau
 
 defaultArmijoParams = (32.0, 0.5, 0.5)
 
--- performs a backtracking Armijo linesearch to obtain a good step size    
+-- performs a backtracking Armijo linesearch to obtain a good step size
 armijoStep :: (Monad m) => ArmijoParams -> ScalarFuncM m Point -> GradientFuncM m -> Vec -> Point -> m Point
 armijoStep (alpha0, eta, tau) func grad p x = do
     f <- func x
     g <- grad x
     let p' = unitVec p
     let thresh = eta * (p' ^.^ g)
-    let alphas = [alpha0] ++ [tau * alpha | alpha <- alphas]
+    let alphas = alpha0 : [tau * alpha | alpha <- alphas]
     let steps = [x ^+^ (alpha *^ p') | alpha <- alphas]
     fvals <- sequence [func step | step <- steps]
     let (_, (_, step, _):_) = break (\(alpha, step, fval) -> fval <= f + alpha * thresh) (zip3 alphas steps fvals)
     return step
 
--- performs a backtracking Armijo linesearch to obtain a good gradient step 
+-- performs a backtracking Armijo linesearch to obtain a good gradient step
 armijoGradientDescentStep :: (Monad m) => ArmijoParams -> ScalarFuncM m Point -> GradientFuncM m -> PointStepM m
 armijoGradientDescentStep params func grad (_, x) = do
     p <- (-1 *^) <$> grad x
@@ -129,7 +132,9 @@ minimizeM params func step x0 = do
     f0 <- func x0
     let pair0 = (f0, x0)
     let state0 = (-1, pair0, pair0)
-    (_, _, pointF) <- fromJust . fmap head <$> dfsM neighborGen termination state0
+    -- get the second-to-last state since loss may have increased on the last step
+    (_, _, pointF) <- (!! 1) . fromJust <$> dfsM neighborGen termination state0
+    --(_, _, pointF) <- head . fromJust <$> dfsM neighborGen termination state0
     return pointF
     where
         termination :: FinalStatePredicate (OptStep Point)
@@ -139,14 +144,14 @@ minimizeM params func step x0 = do
             f2 <- func x2
             return [(i + 1, (f1, x1), (f2, x2))]
 
--- deterministic minimization function            
+-- deterministic minimization function
 minimize :: OptParams -> ScalarFunc Point -> PointStep -> Point -> (Double, Point)
 minimize params func step x0 = runIdentity $ minimizeM params (return . func) (return . step) x0
 
 -- backtracking Armijo linesearch with gradient descent direction
 armijoGradientDescent :: OptParams -> ArmijoParams -> ScalarFunc Point -> GradientFunc -> Point -> (Double, Point)
 armijoGradientDescent optParams armijoParams func grad = minimize optParams func (runIdentity . armijoGradientDescentStep armijoParams (return . func) (return . grad))
-    
+
 
 -- GRADIENT APPROXIMATION --
 
@@ -161,8 +166,8 @@ data FinDiffParams = FinDiffParams { a :: Double, b :: Double, alpha :: Double, 
 mkFinDiffFuncs :: FinDiffParams -> FinDiffFuncs
 mkFinDiffFuncs (FinDiffParams {a, b, alpha, c, gamma}) = (ak, ck)
     where
-        ak = \k -> a / ((fromIntegral k + 1 + b) ** alpha)
-        ck = \k -> c / ((fromIntegral k + 1) ** gamma)
+        ak k = a / ((fromIntegral k + 1 + b) ** alpha)
+        ck k = c / ((fromIntegral k + 1) ** gamma)
 
 defaultFinDiffParams = FinDiffParams {a = 0.5, b = 50.0, alpha = 0.602, c = 0.1, gamma = 0.101}
 defaultFinDiffFuncs = mkFinDiffFuncs defaultFinDiffParams

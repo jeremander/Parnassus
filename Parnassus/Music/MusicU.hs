@@ -3,7 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp #-}
 
-module Parnassus.MusicU where
+module Parnassus.Music.MusicU where
 
 import qualified Data.List (nub)
 import Data.Ratio
@@ -11,7 +11,7 @@ import Data.Tuple.Select
 
 import Euterpea hiding (chord, dur, line, scaleDurations, toMusic1)
 import Parnassus.Utils
-import Parnassus.MusicBase
+import Parnassus.Music.MusicBase
 
 
 -- unassociative music data structure (isomorphic to Music)
@@ -85,8 +85,8 @@ instance MusicT MusicU a where
         where
             extractPar :: MusicU a -> [MusicU a]
             extractPar m = case m of
-                ParU ms    -> ms
-                otherwise -> [m]
+                ParU ms -> ms
+                _       -> [m]
     line :: Eq a => [MusicU a] -> MusicU a
     line ms = combine $ filter (not . isEmpty) $ concatMap unLine ms
         where combine = combineU unLine SeqU

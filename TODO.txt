@@ -1,8 +1,8 @@
 TODO
 ----
-- break *all* the rules
+- move tests into their own modules
 - generalized stochastic DFS (if limit to one sample, can get stuck)
 - simulated annealing
 - generation order
-- make things more efficient
+- make things more efficient (esp. MusicD)
 - map function for MusicD to manipulate all the leaf notes.

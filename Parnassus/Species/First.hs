@@ -14,11 +14,12 @@ import System.Random (RandomGen)
 
 import Euterpea (absPitch, Mode (..), pitch, Pitch, PitchClass (..))
 import Parnassus.Utils (ngrams)
-import Parnassus.Dist (discreteDist, DiscreteDist (..), getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
-import Parnassus.Markov (boundedIntegerRandomWalk, markovConditionOn)
-import Parnassus.MusicBase (Key, modify, play)
-import Parnassus.MusicD (extractTied, MusicD (..), Tied (..), ToMusicD (..))
-import Parnassus.Search (beamSearchM, dfsM, greedySearchM, NeighborGenM)
+import Parnassus.Math.Dist (discreteDist, DiscreteDist (..), getLogProb, sample, samplesWithoutReplacement, trainDiscrete, uniformDiscreteDist)
+import Parnassus.Math.Markov (boundedIntegerRandomWalk, markovConditionOn)
+import Parnassus.Math.Search (beamSearchM, dfsM, greedySearchM, NeighborGenM)
+import Parnassus.Music.MusicBase (Key, modify, play)
+import Parnassus.Music.MusicD (extractTied, MusicD (..), Tied (..), ToMusicD (..))
+
 import Parnassus.Species.Base
 
 import Debug.Trace
@@ -27,7 +28,7 @@ import Debug.Trace
 -- FIRST SPECIES RULES --
 
 fsRuleCheck0 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specIndex, specInterval}) =
-    (specIndex /= 0) || 
+    (specIndex /= 0) ||
     (harmonicIntervalType pc specInterval == PerfectConsonance)
 
 fsRule0 = SpecRule {
@@ -37,7 +38,7 @@ fsRule0 = SpecRule {
 }
 
 fsRuleCheck1 (SpecContext {specConsts = SpecConsts {specLength, specKey = (pc, _)}, specIndex, specInterval}) =
-    (specIndex /= specLength - 1) || 
+    (specIndex /= specLength - 1) ||
     (harmonicIntervalType pc specInterval == PerfectConsonance)
 
 fsRule1 = SpecRule {
@@ -47,7 +48,7 @@ fsRule1 = SpecRule {
 }
 
 fsRuleCheck2 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check motion = (motionType motion /= Parallel) || (harmonicIntervalType pc (snd motion) /= PerfectConsonance)
@@ -59,7 +60,7 @@ fsRule2 = SpecRule {
 }
 
 fsRuleCheck3 (SpecContext {specConsts = SpecConsts {specLength, specOrdering}, specIndex, specInterval}) =
-    (specIndex /= specLength - 2) || 
+    (specIndex /= specLength - 2) ||
     (specOrdering && intervalDisplacement specInterval == 9) ||
     (not specOrdering && intervalDisplacement specInterval == -3)
 
@@ -70,7 +71,7 @@ fsRule3 = SpecRule {
 }
 
 fsRuleCheck4 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specIndex, specInterval = ((pc1, oct1), (pc2, oct2))}) = (specIndex /= 0) || (equivPitchClass pc' pc)
-    where pc' = if (absPitch (pc1, oct1) <= absPitch (pc2, oct2)) then pc1 else pc2                      
+    where pc' = if (absPitch (pc1, oct1) <= absPitch (pc2, oct2)) then pc1 else pc2
 
 fsRule4 = SpecRule {
     specRuleCheck = fsRuleCheck4,
@@ -78,7 +79,7 @@ fsRule4 = SpecRule {
     specRuleIsEssential = True
 }
 
-fsRuleCheck5 (SpecContext {specMotions}) = all (fromMaybe True . fmap check) specMotions
+fsRuleCheck5 (SpecContext {specMotions}) = all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -116,7 +117,7 @@ fsRule7 = SpecRule {
     specRuleIsEssential = True
 }
 
-fsRuleCheck8 (SpecContext {specMotions}) = all (fromMaybe True . fmap check) specMotions
+fsRuleCheck8 (SpecContext {specMotions}) = all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -131,7 +132,7 @@ fsRule8 = SpecRule {
 }
 
 fsRuleCheck9 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check (interval1, interval2) = not $
@@ -147,7 +148,7 @@ fsRule9 = SpecRule {
 }
 
 fsRuleCheck10 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check pm = not $
@@ -162,7 +163,7 @@ fsRule10 = SpecRule {
 }
 
 fsRuleCheck11 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check pm = not $
@@ -178,7 +179,7 @@ fsRule11 = SpecRule {
 
 fsRuleCheck12 (SpecContext {specConsts = SpecConsts {specKey = (pc, _)}, specInterval, specMotions}) =
     (intervalDistance specInterval <= 16) &&
-    all (fromMaybe True . fmap check) specMotions &&
+    all (maybe True check) specMotions &&
     (harmonicIntervalType pc specInterval /= Dissonance)
     where
         check :: PairwiseMotion -> Bool
@@ -192,7 +193,7 @@ fsRule12 = SpecRule {
 }
 
 fsRuleCheck13 (SpecContext {specConsts = SpecConsts {specKey = (pc, mode)}, specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         fa = shiftPitch (firstDegree (pc, mode)) 5
         checkMotion :: Interval -> Bool
@@ -211,7 +212,7 @@ fsRule13 = SpecRule {
 }
 
 fsRuleCheck14 (SpecContext {specConsts = SpecConsts {specKey = (pc, mode)}, specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         mi = shiftPitch (firstDegree (pc, mode)) 4
         checkMotion :: Interval -> Bool
@@ -230,7 +231,7 @@ fsRule14 = SpecRule {
 }
 
 fsRuleCheck15 (SpecContext {specMotions}) =
-    all (fromMaybe True . fmap check) specMotions
+    all (maybe True check) specMotions
     where
         check :: PairwiseMotion -> Bool
         check pm = (intervalDisplacement motion1 /= 0) || (intervalDisplacement motion2 /= 0)
@@ -413,11 +414,11 @@ firstSpeciesNeighborCost (FirstSpeciesSetup {fsModel = FirstSpecModel {harmonicM
             -- backward transition
             (Nothing, Just (j, d)) -> (n - i2, revMelodicRandomWalk, Just (j, d), Nothing)
             -- forward transition
-            otherwise              -> (i2, melodicRandomWalk, pair1, pair2)
+            _                      -> (i2, melodicRandomWalk, pair1, pair2)
         condDist =  markovConditionOn rwalk (toInteger i) (pair1', pair2')
         melodicCost = case (pair1, pair2) of
             (Nothing, Nothing) -> 0.0  -- indifferent to the first pitch chosen
-            otherwise          -> -(getLogProb condDist cptNoteDist)
+            _                  -> -(getLogProb condDist cptNoteDist)
         cost = harmonicCost + melodicCost
         --cost = (trace (show (i, cptNoteDist, pair1', pair2') ++ "\n" ++ (show condDist) ++ "\n" ++ show (harmonicCost, melodicCost, harmonicCost + melodicCost))) $ harmonicCost + melodicCost
 
@@ -428,13 +429,13 @@ firstSpeciesNeighbors (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoic
         BackwardPolicy -> return (i - 1)
         RandomPolicy   -> sample idxDist
             where
-                validIndices = fst <$> filter (not . isJust . snd) (zip [0..] (V.toList cpt))
+                validIndices = fst <$> filter (isNothing . snd) (zip [0..] (V.toList cpt))
                 idxDist = uniformDiscreteDist () validIndices
     let states = case (cpt V.! i') of
                     Just p  -> [(i', cpt)]  -- no nontrivial neighbors
                     Nothing -> [(i', cpt V.// [(i', Just p)]) | p <- validPitches]
     let neighbors = filter (passesEssentialRules . getContext) states
-    return neighbors   
+    return neighbors
     where
         scale = scaleForKey fsKey True  -- scale with leading tones
         validPitches = [(pc, n) | (pc, n) <- pitch <$> fromRanges [voiceRange fsCptVoice], pc `elem` scale]
@@ -451,10 +452,10 @@ firstSpeciesNeighbors (FirstSpeciesSetup {fsKey, fsCf = (cfVoice, cf), fsCptVoic
                 start = max 0 (i - 3)
                 len = min 7 (n - start)
                 window = maybePair <$> V.toList (V.zip (V.map Just $ V.slice start len cfPitchVec) cpt)
-                leftInterval = (\x -> (cfPitchVec V.! (i - 1), x)) <$> join (cpt V.!? (i - 1))
-                rightInterval = (\x -> (cfPitchVec V.! (i + 1), x)) <$> join (cpt V.!? (i + 1))
-                motions = [(\x -> (x, interval)) <$> leftInterval, (\x -> (interval, x)) <$> rightInterval]
-        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules  
+                leftInterval = (cfPitchVec V.! (i - 1),) <$> join (cpt V.!? (i - 1))
+                rightInterval = (cfPitchVec V.! (i + 1),) <$> join (cpt V.!? (i + 1))
+                motions = [(, interval) <$> leftInterval, (interval,) <$> rightInterval]
+        passesEssentialRules = passesFirstSpeciesRules firstSpeciesEssentialRules
 
 -- returns probability distribution on neighbor states (Nothing if the set is empty)
 firstSpeciesNeighborDist :: RandomGen g => FirstSpeciesSetup -> FirstSpeciesState -> FirstSpeciesTransitionCostFunc -> Rand g (Maybe (DiscreteDist () FirstSpeciesState))
@@ -506,7 +507,7 @@ randomFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searc
     where
         costFunc = firstSpeciesNeighborCost setup
         neighborGen = firstSpeciesRandomNeighborStates setup costFunc
-        searcher nbrGen _ solutionFound startState = dfsM nbrGen solutionFound startState
+        searcher nbrGen _ = dfsM nbrGen
 
 greedyFirstSpecies :: RandomGen g => FirstSpeciesSetup -> Rand g (Maybe Species)
 greedyFirstSpecies setup = generateFirstSpecies setup neighborGen costFunc searcher

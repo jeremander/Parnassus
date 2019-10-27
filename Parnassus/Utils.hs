@@ -1,6 +1,5 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ParallelListComp #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 module Parnassus.Utils where
 
@@ -8,6 +7,7 @@ import Control.Arrow (second)
 import qualified Data.Array as A
 import qualified Data.List (transpose)
 import Data.List.Split (chunksOf)
+import Data.Maybe (fromMaybe)
 import qualified Data.Set as S
 import Data.Ratio
 import qualified Data.Text as T
@@ -33,11 +33,7 @@ rationalGCD x y = (gcd a c) % (lcm b d)
 
 argmax, argmin :: Ord a => [a] -> Int
 argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
-argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]        
-
--- product of numbers        
-prod :: (Foldable f, Num a) => f a -> a
-prod = foldr (*) 1    
+argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]
 
 -- cumulative sums
 cumsum :: (Num a) => [a] -> [a]
@@ -65,6 +61,10 @@ strip = T.unpack . T.strip . T.pack
 pairwise :: [a] -> [(a, a)]
 pairwise xs = zip xs (tail xs)
 
+-- produces all ordered pairs (x_i, x_j) in a list, where i < j
+orderedPairs :: [a] -> [(a, a)]
+orderedPairs xs = [(xi, xj) | (i, xi) <- zip [0..] xs, (j, xj) <- zip [1..] (tail xs), i < j]
+
 -- rotates a list left by some number
 rotateL :: Int -> [a] -> [a]
 rotateL n xs = drop n' xs ++ take n' xs
@@ -77,9 +77,7 @@ safeHead (x:xs) = Just x
 
 -- extracts a Just value, emitting a specified error if it is Nothing
 justOrError :: Maybe a -> String -> a
-justOrError mx err = case mx of
-    Just x  -> x
-    Nothing -> error err
+justOrError mx err = fromMaybe (error err) mx 
 
 -- given n, a list of sorted indices in [0, n), and a list of items, selects items from the list at the corresponding indices
 -- does no bounds checking
@@ -165,7 +163,7 @@ quantizeRationals q rs = rs'
                                 else (imax, q)
         stepSeq = iterate step (totalDiff, diffs)
         pairSeq = zip stepSeq (tail stepSeq)
-        dropCondition = \((t1, _), (t2, _)) -> (t1 /= t2) && (abs t1 > (q / 2))
+        dropCondition ((t1, _), (t2, _)) = (t1 /= t2) && (abs t1 > (q / 2))
         ((_, finalDiffs), (_, _)) = head $ dropWhile dropCondition pairSeq
         rs' = zipWith (-) rs finalDiffs
 

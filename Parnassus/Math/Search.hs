@@ -1,13 +1,14 @@
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
-module Parnassus.Search where
+module Parnassus.Math.Search where
 
 import Control.Monad.Identity (runIdentity)
 import Control.Monad.Loops (iterateUntilM)
 import Data.Foldable (asum, toList)
 import Data.List (partition)
 import Data.Maybe (fromJust)
+import Data.Ord (Down (..))
 import qualified Data.Sequence as S
 import Data.Sort (sortOn)
 
@@ -71,7 +72,7 @@ insertMany pairs beam = foldr insert beam pairs
 fromList :: (Ord w) => Int -> [(w, a)] -> Beam w a
 fromList capacity pairs = Beam {capacity = capacity, queue = queue}
     where
-        pairs' = reverse $ sortOn fst pairs
+        pairs' = sortOn (Down . fst) pairs
         queue = S.fromList $ reverse $ take capacity pairs'
 
 
@@ -94,7 +95,7 @@ dfsM next found initial = go [initial]
                     paths <- sequence $ go . (: path) <$> neighbors
                     return $ case paths of
                         [] -> Nothing
-                        otherwise -> asum paths
+                        _  -> asum paths
 
 -- pure depth-first search
 dfs :: NeighborGen s -> FinalStatePredicate s -> s -> Maybe [s]
@@ -143,4 +144,3 @@ greedySearchM neighborGen costFunc found initial = safeHead <$> beamSearchM 1 ne
 
 greedySearch :: forall c s . (Num c, Ord c) => NeighborGen s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> Maybe (c, [s])
 greedySearch neighborGen costFunc found initial = safeHead $ beamSearch 1 neighborGen costFunc found initial
-        

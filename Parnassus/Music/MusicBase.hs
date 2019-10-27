@@ -5,7 +5,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
 
-module Parnassus.MusicBase where
+module Parnassus.Music.MusicBase where
 
 import Codec.Midi hiding (Key)
 import Control.DeepSeq (NFData)
@@ -14,11 +14,9 @@ import Data.List (partition)
 import qualified Data.Map
 import Data.Maybe (fromJust)
 import Data.Ratio
-import qualified Music.Lilypond as LP
-import System.Process (rawSystem)
-import Text.Pretty (braces, pretty)
 
-import Euterpea hiding (chord, cut, dur, line, play, remove, scaleDurations, toMusic1, transpose)
+import qualified Data.Music.Lilypond as LP
+import Euterpea hiding (chord, cut, dur, fromMidi, line, play, remove, scaleDurations, toMidi, toMusic1, transpose)
 import qualified Euterpea
 import qualified Euterpea.IO.MIDI.FromMidi
 import qualified Euterpea.IO.MIDI.ToMidi
@@ -53,6 +51,16 @@ durP p = case p of
 extractTempo :: Control -> Rational
 extractTempo (Tempo t) = t
 extractTempo _         = 1
+
+-- fix Euterpea's chord function to avoid creating empty rests
+chord' :: [Music a] -> Music a
+chord' (x:[]) = x
+chord' xs = Euterpea.chord xs
+
+-- fix Euterpea's line function to avoid creating empty rests
+line' :: [Music a] -> Music a
+line' (x:[]) = x
+line' xs = Euterpea.line xs
 
 unChord' :: Music a -> [Music a]
 unChord' (x :=: y) = unChord' x ++ unChord' y
@@ -103,8 +111,8 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
 
 -- Lilypond conversion --
 
--- converts Euterpea PitchClass to Lilypond PitchClass (with Accidental)
-noteMapping :: Data.Map.Map PitchClass (LP.PitchClass, LP.Accidental)
+-- converts Euterpea PitchClass to Lilypond PitchName (with Accidental)
+noteMapping :: Data.Map.Map PitchClass (LP.PitchName, LP.Accidental)
 noteMapping = Data.Map.fromList [(Cff, (LP.C, -2)), (Cf, (LP.C, -1)), (C, (LP.C, 0)), (Dff, (LP.D, -2)), (Cs, (LP.C, 1)), (Df, (LP.D, -1)), (Css, (LP.C, 2)), (D, (LP.D, 0)), (Eff, (LP.E, -2)), (Ds, (LP.D, 1)), (Ef, (LP.E, -1)), (Fff, (LP.F, -2)), (Dss, (LP.D, 2)), (E, (LP.E, 0)), (Ff, (LP.F, -1)), (Es, (LP.E, 1)), (F, (LP.F, 0)), (Gff, (LP.G, -2)), (Ess, (LP.E, 2)), (Fs, (LP.F, 1)), (Gf, (LP.G, -1)), (Fss, (LP.F, 2)), (G, (LP.G, 0)), (Aff, (LP.A, -2)), (Gs, (LP.G, 1)), (Af, (LP.A, -1)), (Gss, (LP.G, 2)), (A, (LP.A, 0)), (Bff, (LP.B, -2)), (As, (LP.A, 1)), (Bf, (LP.B, -1)), (Ass, (LP.A, 2)), (B, (LP.B, 0)), (Bs, (LP.B, 1)), (Bss, (LP.B, 2))]
 
 -- converts a proper mode to the corresponding major or minor key signature
@@ -124,27 +132,43 @@ modeToMajMin (pc, mode) = LP.Key (LP.Pitch (pc'', acc, 0)) mode'
             _          -> (pc, LP.Major)
         (pc'', acc) = fromJust $ Data.Map.lookup pc' noteMapping
 
+
+-- TODO: consolidate, make toPDF for LilyPond
+-- Lilypond doesn't allow more than two dots, so we must represent some notes as tied
+splitRational :: Rational -> [Rational]
+splitRational r = if (n == 0)
+                    then []
+                    else if (diff == 0) || (diff * 2 == n')
+                            then [r]
+                            else (n'' % d) : (splitRational $ diff % d)
+    where
+        (n, d) = (numerator r, denominator r)
+        n' = 2 ^ (truncate $ logBase 2 (fromInteger n))
+        nPlusHalf = n' + n' `quot` 2
+        n'' = if nPlusHalf <= n then nPlusHalf else n'
+        diff = n - n''
+
 toLilypond' :: (Pitched a) => Music a -> LP.Music
 toLilypond' = mFold f combineSeq combinePar g
     where
+        splitNote :: (Rational -> LP.Music) -> Rational -> LP.Music
+        splitNote func r = LP.Sequential $ func <$> splitRational r
         f :: (Pitched a) => Primitive a -> LP.Music
-        f (Note d x) = LP.Note (LP.NotePitch (LP.Pitch (p', acc, oct + 1)) Nothing) (Just (LP.Duration d)) []
+        f (Note d x) = LP.Sequential [LP.Note (LP.NotePitch (LP.Pitch (p', acc, oct + 1)) Nothing) (Just (LP.Duration d')) (if i == (length ds) then [] else [LP.Tie]) | (i, d') <- zip [1..] ds]
             where
                 (p, oct) = getPitch x
                 (p', acc) = fromJust $ Data.Map.lookup p noteMapping
-        f (Rest d)
-            | d == 0    = LP.Sequential []
-            | otherwise = LP.Rest (Just (LP.Duration d)) []
+                ds = splitRational d
+        f (Rest d) = LP.Sequential [LP.Rest (Just (LP.Duration d')) [] | d' <- splitRational d]
         combineSeq :: LP.Music -> LP.Music -> LP.Music
-        combineSeq m1 m2 = LP.Sequential [m1, m2]
+        combineSeq m1 m2 = LP.sequential m1 m2
         combinePar :: LP.Music -> LP.Music -> LP.Music
-        combinePar m1 m2 = LP.Simultaneous True [m1, m2]
+        combinePar m1 m2 = LP.simultaneous m1 m2
         g :: Control -> LP.Music -> LP.Music
-        -- Lilypond library wrongly uses \time instead of \tempo: fix this
-        -- g (Tempo r) m         = LP.Sequential [t, m]
-        --     where
-        --         bpm = round $ 120 * r
-        --         t = LP.Tempo Nothing (Just (LP.Duration (1 % 4), bpm))
+        g (Tempo r) m         = LP.Sequential [t, m]
+            where
+                bpm = round $ 120 * r
+                t = LP.Tempo Nothing (Just (LP.Duration (1 % 4), bpm))
         g (Transpose d) m     = LP.Transpose (LP.Pitch (LP.C, 0, 4)) (LP.Pitch (p', acc, oct)) m
             where
                 (p, oct) = pitch (absPitch (C, 4) + d)
@@ -162,20 +186,12 @@ class MusicT m a where
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
     fromMusic :: Music a -> m a
-    -- converts music to a Lilypond string
-    toLilypond :: (Pitched a) => m a -> String -> TimeSig -> String
-    toLilypond mus title (n, d) = header ++ (show $ pretty mus')
+    -- converts music to a Lilypond object
+    toLilypond :: (Pitched a) => m a -> String -> TimeSig -> LP.Lilypond
+    toLilypond mus title (n, d) = LP.setHeader hdr $ LP.toLilypond mus'
         where
             mus' = LP.Sequential [LP.Time (toInteger n) (toInteger d), toLilypond' $ toMusic mus]
-            header = "\\header {title = " ++ show title ++ "}\n"
-    -- converts music to PDF via Lilypond
-    toPDF :: (Pitched a) => m a -> String -> TimeSig -> IO ()
-    toPDF mus title ts = do
-        let path = title ++ ".ly"
-        let content = toLilypond mus title ts
-        writeFile path content
-        _ <- rawSystem "lilypond" [path]
-        return ()
+            hdr = LP.emptyHeader {LP.title = Just $ LP.toValue title}
     -- if possible, convert to Music1
     toMusic1 :: ToMusic1 a => m a -> Music1
     toMusic1 = Euterpea.toMusic1 . toMusic
@@ -217,10 +233,10 @@ class MusicT m a where
     (/*/) x n = foldr1 (/+/) (replicate n x)
     -- chains together musical segments in sequence
     line :: Eq a => [m a] -> m a
-    line = unConjF1 Euterpea.line
+    line = unConjF1 line'
     -- combines musical lines in parallel
     chord :: Eq a => [m a] -> m a
-    chord = unConjF1 Euterpea.chord
+    chord = unConjF1 chord'
     -- splits music into time-sequential segments
     unLine :: Eq a => m a -> [m a]
     unLine = unConjF2 unLine'
@@ -288,13 +304,13 @@ class (MusicT m Note1) => ToMidi m where
     fromMidi = fromMusic . Euterpea.IO.MIDI.FromMidi.fromMidi
     -- constructs from Midi file
     fromMidiFile :: FilePath -> IO (m Note1)
-    fromMidiFile path = Parnassus.MusicBase.fromMidi . head . snd . partitionEithers . pure <$> importFile path
+    fromMidiFile path = fromMidi . head . snd . partitionEithers . pure <$> importFile path
     -- creates a Midi
     toMidi :: m Note1 -> Codec.Midi.Midi
     toMidi = Euterpea.IO.MIDI.ToMidi.toMidi . perform . toMusic
     -- writes Midi to a file
     toMidiFile :: m Note1 -> FilePath -> IO ()
-    toMidiFile m path = exportMidiFile path $ Parnassus.MusicBase.toMidi m
+    toMidiFile m path = exportMidiFile path $ toMidi m
 
 class Quantizable m a where
     -- quantizes the music so that every note/rest is a multiple of the given duration
@@ -346,4 +362,3 @@ instance MusicT Music a where
         where (mhead, mtail) = bisect d m
 
 instance ToMidi Music
-

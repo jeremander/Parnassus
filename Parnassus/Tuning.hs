@@ -1,20 +1,25 @@
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Parnassus.Tuning where
 
 import Data.Array
-import Data.Counter (count)
+import Data.Counter (count, Counter)
 import Data.List (foldl', intersperse)
 import qualified Data.Map as M
+import Data.Maybe (catMaybes)
 import Data.Range.Range
 import Data.Ratio
 import qualified Data.Set as S
 import Data.Sort
 import qualified Data.Vector as V
 
-import Euterpea
+import Euterpea hiding (a, b, c, play)
 import Parnassus.Utils
 import Parnassus.Optimize
+import Parnassus.MusicBase (Pitched (..), play, toMusic)
+import Parnassus.Music.MusicD (extractTied, isTied, MusicD (..), Tied (..), ToMusicD, toMusicD)
+import Parnassus.Music (twinkle, twinkle2)
 
 import Debug.Trace
 
@@ -43,10 +48,10 @@ type TuningPackage = [TuningSystem Double]
 
 -- HELPER FUNCTIONS --
 
--- takes reciprocal of a rational if necessary so that it is >= 1    
+-- takes reciprocal of a rational if necessary so that it is >= 1
 posRatio :: RealFrac a => a -> a
 posRatio r = if (r >= 1) then r else (1 / r)
-    
+
 -- multiplies or divides by the right power of 2 until the rational is in [1, 2)
 normalize2pow :: RealFrac a => a -> a
 normalize2pow r
@@ -111,18 +116,18 @@ extendScaleTuning pc tuning = freqs
         diff' = if (diff == 0) then 12 else (12 - diff)
         baseFreqs = cycle tuning
         octaves = concat $ replicate 12 <$> [-(octave + 1)..]
-        freqs = take 128 $ drop diff' $ [freq * (2 ** fromIntegral oct) | (freq, oct) <- zip baseFreqs octaves]
+        freqs = take 128 $ drop diff' [freq * (2 ** fromIntegral oct) | (freq, oct) <- zip baseFreqs octaves]
 
--- extends a scale to a full tuning [0..127], given a base pitch & frequency        
-makeTuning :: (ToDouble a) => Scale a -> StdPitch -> Tuning        
+-- extends a scale to a full tuning [0..127], given a base pitch & frequency
+makeTuning :: (ToDouble a) => Scale a -> StdPitch -> Tuning
 makeTuning scale (basePitch, baseFreq) = extendScaleTuning basePitch tuning
     where tuning = (baseFreq *) . toDouble <$> scale
 
--- measures interval ratios between each pair of notes in a scale 
+-- measures interval ratios between each pair of notes in a scale
 -- always expresses ratio between a lower note and the higher note
 -- if the first note is higher, uses the octave above the lower note
 intervalRatios :: Fractional a => Scale a -> [(ScaleInterval, a)]
-intervalRatios scale = [((i, j), if (i <= j) then (s2 / s1) else (2 * s2 / s1)) | (i, s1) <- zip [0..] scale, (j, s2) <- zip [0..] scale] 
+intervalRatios scale = [((i, j), if (i <= j) then (s2 / s1) else (2 * s2 / s1)) | (i, s1) <- zip [0..] scale, (j, s2) <- zip [0..] scale]
 
 -- measures deviations between a scale's intervals and some "ideal" intervals, as ratios
 intervalDevs :: (Fractional a, Ord a, RealFrac a) => [Int] -> IdealScale a -> Scale a -> [(ScaleInterval, a)]
@@ -152,7 +157,7 @@ constructScale pairs = extract <$> elems finalScale
 
 circleOfFifths :: [Int]
 circleOfFifths = [7 * i `mod` 12 | i <- [0..12]]
-        
+
 -- creates 12-tone scale based on a stack of fifths of a given size
 -- takes the base note to be the center of the stack
 stackedFifthScale :: RealFrac a => a -> Scale a
@@ -162,7 +167,7 @@ stackedFifthScale r = constructScale $ zip pairs1 (repeat r) ++ zip pairs2 (repe
         pairs2 = pairwise $ take 6 $ reverse circleOfFifths
 
 
--- TEMPERAMENTS --        
+-- TEMPERAMENTS --
 
 -- Just Temperament
 
@@ -304,11 +309,11 @@ allTuningPackage = justTuningPackage ++ equalTuningPackage ++ pythagoreanTuningP
 -- MUSICAL EXAMPLES --
 
 melodicInterval :: Pitch -> AbsPitch -> Music Pitch
-melodicInterval pc i = nt :+: transpose i nt
+melodicInterval pc i = nt :+: shiftPitches i nt
     where nt = note qn pc
 
 harmonicInterval :: Pitch -> AbsPitch -> Music Pitch
-harmonicInterval pc i = nt :=: transpose i nt
+harmonicInterval pc i = nt :=: shiftPitches i nt
     where nt = note hn pc
 
 melodicIntervals :: [(Pitch, AbsPitch)] -> Music Pitch
@@ -327,7 +332,7 @@ minorScale pc = line $ note qn . pitch . (+ absPitch pc) <$> [0, 2, 3, 5, 7, 8, 
 
 -- instances of every interval from each note in [i..(i + 11)]
 allIntervals :: Pitch -> AbsPitch -> Music Pitch
-allIntervals pc i = line $ zipWith ($) (transpose <$> [0..11]) (repeat $ melodicInterval pc i)
+allIntervals pc i = line [shiftPitches i interval | (i, interval) <- zip [0..11] (repeat $ melodicInterval pc i)]
 
 majCadencePattern :: Pitch -> Music Pitch
 majCadencePattern pc = line $ mkChord <$> [[0, 4, 7], [0, 5, 9], [0, 4, 7], [-1, 2, 7], [-1, 5, 7], [0, 4, 7]]
@@ -362,38 +367,79 @@ data TunOpt = TunOpt {
 
 type Interval = (AbsPitch, AbsPitch)
 
-defaultTunOpt = TunOpt 1.0 (fmap fromRational <$> strict5Limit)
+defaultTunOpt = TunOpt 2.0 (fmap fromRational <$> strict5Limit)
 
 diatonicIntervals :: [Interval]
 diatonicIntervals = [(60, 60 + i) | i <- [0, 2, 4, 5, 7, 9, 11, 12]]
 
--- TODO: collapse intervals mod 12
-pNormLoss :: TunOpt -> [Interval] -> Pitch -> Scale Double -> Double
-pNormLoss (TunOpt {pnorm, idealScale}) intervals pc scale = loss
+-- takes interval notes mod 12
+collapseInterval :: Interval -> Interval
+collapseInterval (i, j) = (i `mod` 12, j `mod` 12)
+
+-- gives p-norm distance between 2 scales in log space
+scaleDistance :: Double -> Scale Double -> Scale Double -> Double
+scaleDistance p scale1 scale2 = dist
     where
-        base = absPitch pc  -- base pitch (0 of the scale)
+        scale1' = V.fromList $ log2 <$> scale1
+        scale2' = V.fromList $ log2 <$> scale2
+        dist = (** (1.0 / p)) $ V.sum $ (** p) . abs <$> (scale1' ^-^ scale2')
+
+-- computes p-norm loss between a given scale and an ideal scale
+pNormLoss :: TunOpt -> Counter Interval Int -> PitchClass -> Scale Double -> Double
+pNormLoss (TunOpt {pnorm, idealScale}) intervalCtr pc scale = loss
+    where
+        base = absPitch (pc, 4) `mod` 12  -- base pitch class
+        base' = 12 - base
         scaleArr = log2 <$> mkArray scale
         idealDiffArr = mkArray $ fmap log2 <$> idealScale
         err :: Interval -> Int -> Double
         err (i, j) ct = (fromIntegral ct) * (minAbsErr ** pnorm)
             where
-                (iOct, i') = (i - base) `divMod` 12
-                iDiff = fromIntegral iOct + (scaleArr ! i')
-                (jOct, j') = (j - base) `divMod` 12
-                jDiff = fromIntegral jOct + (scaleArr ! j')
-                actualDiff = jDiff - iDiff
+                i' = (i + base') `mod` 12
+                iDiff = scaleArr ! i'
+                j' = (j + base') `mod` 12
+                jDiff = scaleArr ! j'
+                actualDiff = if (j' >= i') then (jDiff - iDiff) else (1.0 + jDiff - iDiff)
                 dist = j - i
-                (distOct, dist') = dist `divMod` 12
-                idealDiffs = [fromIntegral distOct + d | d <- idealDiffArr ! dist']
+                (_, dist') = dist `divMod` 12
+                idealDiffs = idealDiffArr ! dist'
                 minAbsErr = minimum $ abs . (actualDiff -) <$> idealDiffs
-        intervalCounts = M.toList $ count intervals
-        lossTerms = [err interval ct | (interval, ct) <- intervalCounts]
-        loss = (sum lossTerms) ** (1.0 / pnorm)        
-        
-optimizeScale :: TunOpt -> [Interval] -> Pitch -> Scale Double
+        intervalCtPairs = M.toList intervalCtr
+        lossTerms = [err interval ct | (interval, ct) <- intervalCtPairs]
+        loss = (sum lossTerms) ** (1.0 / pnorm)
+
+tuningFinDiffParams = FinDiffParams {a = 0.0001, b = 50.0, alpha = 0.602, c = 0.0001, gamma = 0.101}
+tuningFinDiffFuncs = mkFinDiffFuncs tuningFinDiffParams
+
+-- optimizes a 12-tone scale to minimize p-norm loss with an ideal scale
+optimizeScale :: TunOpt -> [Interval] -> PitchClass -> Scale Double
 optimizeScale tunOpt intervals pc = vecToScale xf
     where
         vecToScale = fmap (2.0 **) . (0.0 :) . V.toList
-        lossFunc = pNormLoss tunOpt intervals pc . vecToScale
+        intervalCtr = count $ collapseInterval <$> intervals
+        lossFunc = pNormLoss tunOpt intervalCtr pc . vecToScale
         x0 = V.fromList $ log2 <$> tail stdScale  -- start with equal temperament
-        (_, xf) = fdsaGradientDescent defaultOptParams defaultFinDiffFuncs lossFunc x0
+        (_, xf) = fdsaGradientDescent defaultOptParams tuningFinDiffFuncs lossFunc x0
+
+musicToIntervals :: (Pitched a, ToMusicD m a) => m a -> [Interval]
+musicToIntervals mus = vertIntervals ++ horizIntervals
+    where
+        (MusicD _ _ arr) = toMusicD mus
+        orderPair (i, j) = if (i <= j) then (i, j) else (j, i)
+        ap = absPitch . getPitch
+        -- gets interval between each untied note and each other note in a chord
+        chordIntervals notes = intervals
+            where
+                untiedPcs = sort $ ap <$> (catMaybes $ extractTied <$> filter (not . isTied) notes)
+                tiedPcs = sort $ ap <$> (catMaybes $ extractTied <$> filter isTied notes)
+                intervals = [orderPair (untiedPc, tiedPc) | untiedPc <- untiedPcs, tiedPc <- tiedPcs]
+        vertIntervals = concat $ chordIntervals <$> arr
+        seqInterval (Untied _ p1) (Untied _ p2) = Just (ap p1, ap p2)
+        seqInterval (Tied p1)     (Untied _ p2) = Just (ap p1, ap p2)
+        seqInterval _             _             = Nothing
+        adjChordIntervals (notes1, notes2) = catMaybes [seqInterval note1 note2 | note1 <- notes1, note2 <- notes2]
+        horizIntervals = concat $ adjChordIntervals <$> pairwise arr
+
+-- optimizes a 12-tone scale (starting on C) for a given piece of music
+optimizeScaleForMusic :: (Pitched a, ToMusicD m a) => TunOpt -> m a -> Scale Double
+optimizeScaleForMusic tunOpt mus = optimizeScale tunOpt (musicToIntervals mus) C

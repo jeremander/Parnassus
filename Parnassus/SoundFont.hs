@@ -53,7 +53,7 @@ testPath = sfPath ++ "test.sf2"
 
 
 -- GENERAL MIDI --
-        
+
 ibagSpans :: [Int] -> Reader SoundFont [(Int, Int)]
 ibagSpans instIndices = do
     pdata <- pdta <$> ask
@@ -76,7 +76,7 @@ insertTuningGens tuningGens gens = left ++ tuningGens ++ right
         isSampleMode _              = False
         (left, right) = break isSampleMode gens
 
--- given a list of igen spans, gets the corresponding instrument zones    
+-- given a list of igen spans, gets the corresponding instrument zones
 getZones :: [(Int, Int)] -> Reader SoundFont [[Generator]]
 getZones spans = do
     gens <- igens . pdta <$> ask
@@ -102,7 +102,7 @@ retuneZones tuning spans = do
                             if (k == topNote)
                                 then KeyRange k 127
                                 else KeyRange k k
-    let tuningGens = centsToGenerators . round <$> centsFromStd tuning                     
+    let tuningGens = centsToGenerators . round <$> centsFromStd tuning
     let newKeyZones = [insertTuningGens (tuningGens !! k) (krange (fromIntegral k) : tail (zones !! i)) | (k, i) <- zip prange zoneIndices]
     let newZones = fst <$> sortOn snd (nonKeyPairs ++ [(zone, minIdx) | zone <- newKeyZones])
     return $ case keyPairs of
@@ -111,7 +111,7 @@ retuneZones tuning spans = do
 
 -- retunes melodic instruments
 -- for now, only does this to instruments in bank 0 up to preset 63, to avoid int16 overflow issues
--- should go up to at least preset 95        
+-- should go up to at least preset 95
 retuneMelodicInstruments :: Tuning -> Reader SoundFont SoundFont
 retuneMelodicInstruments tuning = do
     sf <- ask
@@ -126,13 +126,13 @@ retuneMelodicInstruments tuning = do
     let newInsts = mkArray [fixInst instrument i | (instrument, i) <- zip (elems $ insts pdata) newBagIndices]
     let newGenIndices = cumsum $ length <$> concat newZones
     -- for simplicity, require all modulator indices to be 0
-    let modIndexSet = S.fromList $ [modNdx bag | bag <- elems $ (ibags pdata)]
+    let modIndexSet = S.fromList [modNdx bag | bag <- elems $ (ibags pdata)]
     let assertion = assert (modIndexSet == S.singleton 0)
     let newIbags = mkArray [Bag {genNdx = fromIntegral i, modNdx = 0} | i <- newGenIndices]
     let newIgens = mkArray $ concat $ concat newZones
     let newPhdrs = fixPhdr <$> phdrs pdata
     let newPdata = pdata {phdrs = newPhdrs, insts = newInsts, ibags = newIbags, igens = newIgens}
-    return $ assertion $ sf {pdta = newPdata}    
+    return $ assertion $ sf {pdta = newPdata}
 
 -- SOUNDFONT MANIPULATION --
 
@@ -152,7 +152,7 @@ renameSF name sf@(SoundFont {infos}) = liftM2 modifySF (return sf) infos'
             time <- getCurrentTime
             user <- getEffectiveUserName
             return $ mkArray $ (modifyInfo <$> elems infos) ++ [CreationDate $ show time, Authors user]
-        modifySF = \s -> \i -> s {infos = i}
+        modifySF s i = {infos = i}
 
 -- given a base frequency and tuning system, retunes the given SoundFont
 retuneSF :: StdPitch -> TuningSystem a -> SoundFont -> IO SoundFont
@@ -161,7 +161,7 @@ retuneSF std (name, scale) = renameSF name . retuner
         tuning = makeTuning scale std
         retuner = runReader (retuneMelodicInstruments tuning)
 
--- given a tuning system, base frequency, and path to a SoundFont, retunes the SoundFont and saves it to [name].sf2 in the same directory as the input file    
+-- given a tuning system, base frequency, and path to a SoundFont, retunes the SoundFont and saves it to [name].sf2 in the same directory as the input file
 retuneSoundFont :: FilePath -> StdPitch -> TuningSystem a -> IO ()
 retuneSoundFont infile std (name, scale) = do
     sf <- either (\err -> error $ "invalid SoundFont " ++ "'" ++ infile ++ "'") id <$> importFile infile
@@ -170,6 +170,6 @@ retuneSoundFont infile std (name, scale) = do
     putStrLn outfile
     exportFile outfile sf'
 
--- given a tuning package (list of tuning systems), base frequency, and path to a SoundFont, retunes the SoundFont in each tuning system, and saves them all to different output files    
+-- given a tuning package (list of tuning systems), base frequency, and path to a SoundFont, retunes the SoundFont in each tuning system, and saves them all to different output files
 retuneSoundFonts :: FilePath -> StdPitch -> TuningPackage -> IO ()
 retuneSoundFonts infile std pkg = forM_ pkg (retuneSoundFont infile std)

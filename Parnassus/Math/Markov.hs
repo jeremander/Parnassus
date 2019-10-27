@@ -5,7 +5,7 @@
 {-# LANGUAGE TypeFamilies #-}
 
 
-module Parnassus.Markov where
+module Parnassus.Math.Markov where
 
 import Control.Monad.Random (getRandoms, Rand, RandomGen)
 import Data.Counter (count)
@@ -19,7 +19,7 @@ import qualified Data.Vector.Storable as V
 import qualified Numeric.LinearAlgebra as LA
 
 import Parnassus.Utils (ngrams)
-import Parnassus.Dist
+import Parnassus.Math.Dist
 
 import System.IO.Unsafe
 
@@ -252,7 +252,7 @@ instance {-# OVERLAPPING #-} (b ~ [a]) => Simulable (NgramModel v) (Token a) b w
 
 -- TEXT N-GRAM MODELS --
 
-data CharNgramParams = CharNgramParams { 
+data CharNgramParams = CharNgramParams {
       charAlphabet :: Maybe [Char],   -- alphabet to use
       charSmooth :: Double,           -- smoothing constant
       charLineSep :: String,          -- line separator string

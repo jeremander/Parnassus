@@ -13,8 +13,8 @@ import Data.List.Split (splitOn)
 
 import Euterpea (absPitch, AbsPitch, Control (..), InstrumentName (..), Mode (..), pitch, Pitch, PitchClass (..))
 import Parnassus.Utils (justOrError, ngrams, safeHead)
-import Parnassus.MusicBase (Key, modify, (/=/))
-import Parnassus.MusicD (extractTied, MusicD (MusicD), Tied (..), ToMusicD (..))
+import Parnassus.Music.MusicBase (Key, modify, (/=/))
+import Parnassus.Music.MusicD (extractTied, MusicD (MusicD), Tied (..), ToMusicD (..))
 
 
 -- HELPER FUNCTIONS --
@@ -63,7 +63,7 @@ foldRepeats xs = reverse $ foldRepeats' $ reverse xs
 
 -- gets the max number of repeated elements in a list (that are not Nothing) and the element itself
 maxRepeats :: (Eq a) => [Maybe a] -> Int
-maxRepeats xs = maximum $ [0] ++ (snd <$> filter (isJust . fst) (foldRepeats xs))
+maxRepeats xs = maximum $ 0 : (snd <$> filter (isJust . fst) (foldRepeats xs))
 
 
 -- VOICES --
@@ -111,7 +111,7 @@ firstDegree (pc, mode) = shiftPitch pc i
             Aeolian    -> 3
             Minor      -> 3
             Locrian    -> 1
-            otherwise  -> 0
+            _          -> 0
 
 -- gets the pitch class scale for a given key
 -- extra boolean flag indicating whether to include "extra" nodes (e.g. leading tone) sometimes permitted in the scale
@@ -119,14 +119,14 @@ scaleForKey :: Key -> Bool -> [PitchClass]
 scaleForKey (pc, mode) extra = [shiftPitch pc j | j <- scale]
     where
         scale = case mode of
-            Dorian -> if extra then [0, 2, 3, 5, 7, 9, 10, 11] else [0, 2, 3, 5, 7, 9, 10]
-            Phrygian -> [0, 1, 3, 5, 7, 8, 10]
-            Lydian -> if extra then [0, 2, 4, 5, 6, 7, 9, 11] else [0, 2, 4, 6, 7, 9, 11]
+            Dorian     -> if extra then [0, 2, 3, 5, 7, 9, 10, 11] else [0, 2, 3, 5, 7, 9, 10]
+            Phrygian   -> [0, 1, 3, 5, 7, 8, 10]
+            Lydian     -> if extra then [0, 2, 4, 5, 6, 7, 9, 11] else [0, 2, 4, 6, 7, 9, 11]
             Mixolydian -> if extra then [0, 2, 4, 5, 7, 9, 10, 11] else [0, 2, 4, 5, 7, 9, 10]
-            Aeolian -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
-            Minor -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
-            Locrian -> [0, 1, 3, 5, 6, 8, 10]
-            otherwise -> [0, 2, 4, 5, 7, 9, 11]
+            Aeolian    -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
+            Minor      -> if extra then [0, 2, 3, 5, 7, 8, 10, 11] else [0, 2, 3, 5, 7, 8, 10]
+            Locrian    -> [0, 1, 3, 5, 6, 8, 10]
+            _          -> [0, 2, 4, 5, 7, 9, 11]
 
 -- INTERVALS --
 
@@ -197,7 +197,7 @@ motionType ((p1, p2), (p1', p2'))
 -- converts PairwiseMotion from adjacent harmonies to concurrent motions
 motionTranspose :: PairwiseMotion -> (Interval, Interval)
 motionTranspose ((p1, p2), (p1', p2')) = ((p1, p1'), (p2, p2'))
-        
+
 -- PARSING --
 
 -- parses a note from a string: starts with the pitch, followed by an octave, followed by ~ if it is tied; a rest is simply a *
@@ -206,12 +206,12 @@ parseNote "*" = Rest
 parseNote s   = tp
     where
         (tie, s') = span (== '~') s
-        (pc, s'') = span (not . isDigit) s'
+        (pc, s'') = break isDigit s'
         (oct, _) = span isDigit s''
         tp = case tie of
-            ""        -> Untied [] (read pc, read oct)
-            "~"       -> Tied (read pc, read oct)
-            otherwise -> error "parse error"
+            ""  -> Untied [] (read pc, read oct)
+            "~" -> Tied (read pc, read oct)
+            _   -> error "parse error"
 
 parseLine :: String -> [Tied Pitch]
 parseLine s = parseNote <$> filter (not . null) (splitOn " " s)
@@ -232,7 +232,7 @@ type Species = SpeciesT Pitch
 -- convert Species to/from MusicD Pitch
 instance ToMusicD SpeciesT Pitch where
     toMusicD Species {cantusFirmus = (_, cf), counterpoint = (_, cpt)} = modify (Tempo 3) $ (MusicD 1 [Instrument VoiceOohs] (pure <$> cf)) /=/ (MusicD 1 [Instrument VoiceOohs] (pure <$> cpt))
-    fromMusicD (MusicD _ _ (cf:cpt:[])) = Species {key = key, cantusFirmus = (getVoice cfPitches, cf), counterpoint = (getVoice cptPitches, cpt)}
+    fromMusicD (MusicD _ _ [cf, cpt]) = Species {key = key, cantusFirmus = (getVoice cfPitches, cf), counterpoint = (getVoice cptPitches, cpt)}
         where
             (cfPitches, _) = foldTied cf
             (cptPitches, _) = foldTied cpt
@@ -252,7 +252,7 @@ checkRules :: [a -> RuleCheck] -> a -> RuleCheck
 checkRules [] x     = Passed
 checkRules (f:fs) x = case f x of
     fx@(Failed _) -> fx
-    otherwise     -> checkRules fs x
+    _             -> checkRules fs x
 
 -- convenience constructor from strings
 species :: Key -> (Voice, String) -> (Voice, String) -> Species
@@ -281,8 +281,8 @@ species (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
             doCheck "penultimate note of C.F. must be the second note of the scale" (equivPitchClass (scale !! 1) cadencePitchClass)]
         firstFailed = dropWhile (== Passed) checks
         spec = case firstFailed of
-            (x:_)     -> error s where (Failed s) = x
-            otherwise -> Species {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
+            (x:_)  -> error s where (Failed s) = x
+            _      -> Species {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
 
 -- global data for first species
 data SpeciesConstants = SpecConsts {
@@ -314,9 +314,7 @@ checkSpeciesRule :: SpeciesRule -> SpeciesContext -> RuleCheck
 checkSpeciesRule (SpecRule {specRuleCheck, specRuleDescr}) context@(SpecContext {specIndex}) = result
     where
         passed = specRuleCheck context
-        result = case passed of
-            True  -> Passed
-            False -> Failed $ "Bar " ++ show specIndex ++ ": " ++ specRuleDescr
+        result = if passed then Passed else (Failed $ "Bar " ++ show specIndex ++ ": " ++ specRuleDescr)
 
 -- given a list of rules, returns True if the given context passes all the rules
 passesFirstSpeciesRules :: [SpeciesRule] -> SpeciesContext -> Bool
@@ -330,5 +328,5 @@ checkSpeciesContexts rules contexts = result
         results = (checkSpeciesRule <$> rules) <*> contexts  -- nested for loop (rules are outer loop)
         firstFailed = dropWhile (== Passed) results
         result = case firstFailed of
-            (x:_)     -> x       -- first failure
-            otherwise -> Passed  -- no failures, so we've passed
+            (x:_) -> x       -- first failure
+            _     -> Passed  -- no failures, so we've passed
