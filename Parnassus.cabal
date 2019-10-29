@@ -18,26 +18,30 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:
-    Data.Music.Lilypond,
-      Data.Music.Lilypond.Dynamics,
-      Data.Music.Lilypond.IO,
-      Data.Music.Lilypond.Music,
-      Data.Music.Lilypond.Pitch,
-      Data.Music.Lilypond.Score,
-      Data.Music.Lilypond.Value,
-    Parnassus.Math.Dist,
-    Parnassus.Math.Markov,
-    Parnassus.Math.Optimize,
-    Parnassus.Math.Search,
-    Parnassus.Music,
-      Parnassus.Music.MusicD,
-      Parnassus.Music.MusicU,
-    Parnassus.Primes,
-    Parnassus.Wave
+    Music.Lilypond,
+      Music.Lilypond.Dynamics,
+      Music.Lilypond.IO,
+      Music.Lilypond.Music,
+      Music.Lilypond.Score,
+      Music.Lilypond.Value,
+    Math.Dist,
+    Math.Markov,
+    Math.Multiarray,
+    Math.Optimize,
+    Math.Search,
+    Music.Pitch,
+    Music.Rhythm,
+    Music.Species.Base
+    Music.Species.First
+    Music.Types,
+      Music.Types.MusicT,
+      Music.Types.MusicD,
+      Music.Types.MusicU,
+    Music.Primes,
+    Music.Wave
   other-modules:
-    Parnassus.Music.MusicBase,
-    Parnassus.Utils
-  other-extensions:    Arrows, NamedFieldPuns, ParallelListComp
+    Misc.Utils
+  other-extensions: Arrows, NamedFieldPuns, ParallelListComp
   build-depends:
     array >=0.5,
     base >=4.7,
@@ -52,13 +56,14 @@ library
     log-domain >=0.12,
     monad-loops >=0.4,
     MonadRandom >=0.1,
-    music-dynamics-literal >=1.7,
-    music-pitch-literal >=1.7,
     mtl >=2.2,
+    music-pitch-literal >=1.7,
     prettify >=1.0,
     process >=1.6,
     QuickCheck >=2.13,
     random >=1.1,
+    range >=0.2,
+    search-algorithms >=0.3,
     sort >=1.0,
     split >=0.2,
     text >=1.2,
@@ -75,13 +80,15 @@ test-suite test
     Spec.hs
   other-modules:
     TestDist,
-    TestLilypond
+    TestLilypond,
+    TestMarkov
   hs-source-dirs:
     test
   ghc-options: -threaded -rtsopts -with-rtsopts=-N
   build-depends:
     Parnassus,
     base >=4.7,
+    data-default >=0.7,
     music-pitch-literal >=1.7,
     QuickCheck >=2.13,
     vector >=0.12,

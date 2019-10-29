@@ -1,8 +1,6 @@
-{-# LANGUAGE
-    OverloadedStrings
-    #-}
+{-# LANGUAGE OverloadedStrings #-}
 
-module Data.Music.Lilypond.IO (
+module Music.Lilypond.IO (
     lilypondProg,
     lilypondVersion,
     writeLilypond
@@ -15,7 +13,7 @@ import System.FilePath.Posix ((<.>), (-<.>), takeExtension)
 import System.Process (callProcess, readProcess)
 import Text.Pretty ((<+>), (<//>), doubleQuotes, pretty, string)
 
-import Data.Music.Lilypond.Score (ToLilypond(..))
+import Music.Lilypond.Score (ToLilypond(..))
 
 
 safeTail :: [a] -> [a]

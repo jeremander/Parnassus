@@ -22,13 +22,13 @@ module Data.Music.Lilypond.Pitch (
         OctaveCheck(..),
   ) where
 
-import Data.Maybe (fromMaybe)    
+import Data.Maybe (fromMaybe)
 import Text.Pretty hiding (Mode)
 import Music.Pitch.Literal
 import Data.AffineSpace ((.-.))
 
 data PitchName = C | D | E | F | G | A | B
-    deriving (Eq, Ord, Show, Enum)
+    deriving (Enum, Eq, Ord, Read, Show)
 
 newtype Pitch = Pitch { getPitch :: (PitchName, Accidental, Octaves) }
     deriving (Eq, Ord, Show)

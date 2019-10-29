@@ -1,7 +1,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ParallelListComp #-}
 
-module Parnassus.Utils where
+module Misc.Utils where
 
 import Control.Arrow (second)
 import qualified Data.Array as A

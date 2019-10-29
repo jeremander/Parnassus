@@ -111,16 +111,3 @@ instance (Ord a, Pitched a) => Quantizable Music a where
     quantize q = fromMusicU . quantize q . toMusicU
     split :: Rational -> Music a -> [Music a]
     split d = (fromMusicU <$>) . split d . toMusicU
-
-
--- WAV files --
-
-musicToWav :: (MusicT m a, ToMusic1 a) => FilePath -> InstrMap AudSig -> m a -> IO ()
-musicToWav path instrMap music = writeWavNorm path instrMap music1
-    where
-        (instrName, _) = head instrMap
-        music1 = instrument instrName $ toMusic1 music
-
--- saves music to a wav file via the sine instrument
-musicToSineWav :: FilePath -> Music1 -> IO ()
-musicToSineWav path music = writeWavNorm path sineInstrMap music

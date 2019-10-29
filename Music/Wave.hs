@@ -1,6 +1,6 @@
 {-# LANGUAGE Arrows #-}
 
-module Parnassus.Wave where
+module Music.Wave where
 
 import Data.Array.Unboxed as UA
 import qualified Data.List (transpose)

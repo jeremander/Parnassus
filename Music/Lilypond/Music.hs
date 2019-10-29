@@ -6,7 +6,7 @@
     TypeFamilies
     #-}
 
-module Data.Music.Lilypond.Music (
+module Music.Lilypond.Music (
         -- * Representation
 
         -- ** Music expressions
@@ -31,16 +31,10 @@ module Data.Music.Lilypond.Music (
 
         -- ** Miscellaneous types
         Direction(..),
-        OctaveCheck(..),
         BreathingSign(..),
 
         -- ** Time
         Duration(..),
-        -- ** Pitch
-        Pitch(..),
-        PitchName(..),
-        Accidental(..),
-        Octaves(..),
 
         -- * Constructing Lilypond expresions
         -- ** Notes and rests
@@ -92,9 +86,10 @@ import Data.String (IsString(..))
 import Data.VectorSpace ((*^), AdditiveGroup(..), Scalar, VectorSpace)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, empty, hcat, hsep, int, nest, sep, sepByS, string, vcat)
 
-import Data.Music.Lilypond.Dynamics (Dynamics)
-import Data.Music.Lilypond.Pitch (Accidental(..), Mode, Octaves(..), OctaveCheck, Pitch(..), PitchName(..))
-import Data.Music.Lilypond.Value (Value(..), toLiteralValue, toValue)
+import Euterpea (Mode(..), Pitch)
+import Music.Lilypond.Dynamics (Dynamics)
+import Music.Lilypond.Value (Value(..), toLiteralValue, toValue)
+import Music.Pitch (FromPitch(..), OctaveCheck(..))
 
 
 -- | A Lilypond music expression.
@@ -242,6 +237,9 @@ instance Pretty Music where
 
     prettyList                      = hsep . fmap pretty
 
+instance FromPitch Music where
+    fromPitch p = Note (NotePitch p Nothing) (Just (1/4)) []
+
 instance AdditiveGroup Music where
     zeroV   = Rest (Just $ 1/4) []
     a ^+^ b = Sequential [a,b]
@@ -265,6 +263,9 @@ instance Pretty Note where
     pretty (NotePitch p _)         = notImpl "Non-standard pitch"
     pretty (DrumNotePitch _)       = notImpl "Non-standard pitch"
     prettyList                     = hsep . fmap pretty
+
+instance FromPitch Note where
+    fromPitch = (`NotePitch` Nothing)
 
 data Clef
     = Treble

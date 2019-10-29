@@ -3,7 +3,8 @@ module TestDist where
 import Test.QuickCheck hiding (sample)
 import qualified Data.Vector.Storable as V
 
-import Parnassus.Math.Dist
+import Math.Multiarray
+import Math.Dist
 
 
 testArr = multiarray [2, 3, 4] [(0::Int)..23]

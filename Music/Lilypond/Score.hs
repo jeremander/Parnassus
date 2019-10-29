@@ -2,7 +2,7 @@
     OverloadedStrings
     #-}
 
-module Data.Music.Lilypond.Score (
+module Music.Lilypond.Score (
     Score(..),
     Header(..),
     BookPart(..),
@@ -15,8 +15,8 @@ module Data.Music.Lilypond.Score (
 import Data.Default (Default(..))
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
-import Data.Music.Lilypond.Music (Music(..))
-import Data.Music.Lilypond.Value (Value(..))
+import Music.Lilypond.Music (Music(..))
+import Music.Lilypond.Value (Value(..))
 
 
 

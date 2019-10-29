@@ -2,13 +2,15 @@
 
 module TestLilypond where
 
-import Music.Pitch.Literal
 import Data.VectorSpace
+import Music.Pitch.Literal.Pitch
 
-import Data.Music.Lilypond.Music
-import Data.Music.Lilypond.Dynamics (Dynamics(FF))
+import Music.Lilypond.Music (Articulation(..), Clef(..), Markup(..), Music(..), PostEvent(..), addArticulation, addDynamics, addMarkup, addPost, chord, markup, rest, toValue)
+import Music.Lilypond.Dynamics (Dynamics(..))
+import Music.Lilypond.IO (writeLilypond)
 
-test = Simultaneous False [
+
+test1 = Simultaneous False [
         New "StaffGroup" Nothing (Simultaneous False [
             New "Staff" Nothing (Relative c' $ Sequential [
                 Set "Staff.instrumentName" (toValue "Violin I"),
@@ -52,4 +54,7 @@ test2 =
             ]
         ]
 
-main = print "Testing lilypond... OK"
+testLilypond :: IO ()
+testLilypond = do
+    writeLilypond test1 "test1.pdf"
+    writeLilypond test2 "test2.pdf"
