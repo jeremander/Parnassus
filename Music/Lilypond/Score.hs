@@ -15,7 +15,7 @@ module Music.Lilypond.Score (
 import Data.Default (Default(..))
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
-import Music.Lilypond.Music (Music(..))
+import Music.Lilypond.Music (MusicL(..))
 import Music.Lilypond.Value (Value(..))
 
 
@@ -24,7 +24,7 @@ mkSection :: String -> Printer -> Printer
 mkSection name p = string (name ++ "{") <//> nest 4 p <//> string "}"
 
 -- | A Score is a compound musical expression.
-newtype Score = Score Music
+newtype Score = Score MusicL
     deriving (Eq, Show)
 
 instance Pretty Score where
@@ -118,5 +118,5 @@ instance ToLilypond BookPart where
 instance ToLilypond Score where
     toLilypond score = toLilypond $ BookPart Nothing [score]
 
-instance ToLilypond Music where
+instance ToLilypond MusicL where
     toLilypond mus = toLilypond $ Score mus

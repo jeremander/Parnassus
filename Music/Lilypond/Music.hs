@@ -1,85 +1,13 @@
-
 {-# LANGUAGE
-    GeneralizedNewtypeDeriving,
-    OverloadedStrings,
-    TupleSections,
-    TypeFamilies
-    #-}
+     GeneralizedNewtypeDeriving,
+     OverloadedStrings,
+     TypeFamilies
+     #-}
 
-module Music.Lilypond.Music (
-        -- * Representation
-
-        -- ** Music expressions
-        Music(..),
-        Note(..),
-        Clef(..),
-        Mode(..),
-
-        -- ** Attributes
-        Value,
-        toValue,
-        toLiteralValue,
-
-        -- ** Articulation and dynamics
-        PostEvent(..),
-        ChordPostEvent(..),
-
-        -- ** Text
-        Articulation(..),
-        Markup(..),
-        HasMarkup(..),
-
-        -- ** Miscellaneous types
-        Direction(..),
-        BreathingSign(..),
-
-        -- ** Time
-        Duration(..),
-
-        -- * Constructing Lilypond expresions
-        -- ** Notes and rests
-        rest,
-        note,
-        chord,
-        chordHarm,
-        chordWithPost,
-
-        -- ** Composition
-        sequential,
-        simultaneous,
-
-        -- ** Post events
-        addPost,
-        addText,
-        addMarkup,
-        addDynamics,
-        addArticulation,
-        addText',
-        addMarkup',
-        addDynamics',
-        addArticulation',
-
-        -- ** Curves and lines
-        beginTie,
-        beginGlissando,
-        beginBeam,
-        endBeam,
-        beginSlur,
-        endSlur,
-        beginPhraseSlur,
-        endPhraseSlur,
-        beginCresc,
-        endCresc,
-        beginDim,
-        endDim,
-
-        -- * Utility
-        foldMusic,
-        removeSingleChords,
-    )
-where
+module Music.Lilypond.Music where
 
 import Control.Arrow ((***), (<<<), second)
+import Data.Char (isAlpha, toLower)
 import Data.Default (Default(..))
 import Data.Ratio ((%), denominator, numerator)
 import Data.String (IsString(..))
@@ -87,263 +15,17 @@ import Data.VectorSpace ((*^), AdditiveGroup(..), Scalar, VectorSpace)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, empty, hcat, hsep, int, nest, sep, sepByS, string, vcat)
 
 import Euterpea (Mode(..), Pitch)
-import Music.Lilypond.Dynamics (Dynamics)
-import Music.Lilypond.Value (Value(..), toLiteralValue, toValue)
-import Music.Pitch (FromPitch(..), OctaveCheck(..))
+import Music.Dynamics (DynamicMotion, Dynamics)
+import Music.Pitch (FromPitch(..), Key)
+import Music.Rhythm (TimeSig)
 
 
--- | A Lilypond music expression.
---
---   Use the 'Pretty' instance to convert into Lilypond syntax.
---
-data Music
-    = Rest (Maybe Duration) [PostEvent]             -- ^ Single rest.
-    | Note Note (Maybe Duration) [PostEvent]        -- ^ Single note.
-    | Chord [(Note, [ChordPostEvent])] (Maybe Duration) [PostEvent]     -- ^ Single chord.
-    | Sequential   [Music]                          -- ^ Sequential composition.
-    | Simultaneous Bool [Music]                     -- ^ Parallel composition (split voices?).
-    | Repeat Bool Int Music (Maybe (Music, Music))  -- ^ Repetition (unfold?, times, music, alternative).
-    | Tremolo Int Music                             -- ^ Tremolo (multiplier).
-    | Times Rational Music                          -- ^ Stretch music (multiplier).
-    | Transpose Pitch Pitch Music                   -- ^ Transpose music (from to).
-    | Relative Pitch Music                          -- ^ Use relative octave (octave).
-    | Clef Clef                                     -- ^ Clef.
-    | Key Pitch Mode                                -- ^ Key signature.
-    | Time Integer Integer                          -- ^ Time signature.
-    | Breathe (Maybe BreathingSign)                 -- ^ Breath mark (caesura)
-    | Tempo (Maybe String) (Maybe (Duration,Integer)) -- ^ Tempo mark.
-    | New String (Maybe String) Music               -- ^ New expression.
-    | Context String (Maybe String) Music           -- ^ Context expression.
-    | Set String Value
-    | Override String Value
-    | Revert String
-    deriving (Eq, Show)
+-- Utilities
 
-foldMusic :: (Music -> Music) -> Music -> Music
-foldMusic f = go
-    where
-        go (Sequential ms)      = Sequential (fmap go ms)
-        go (Simultaneous b ms)  = Simultaneous b (fmap go ms)
-        go (Repeat b i m qmm)   = Repeat b i m (fmap (go *** go) qmm)
-        go (Tremolo n m)        = Tremolo n (go m)
-        go (Times r m)          = Times r (go m)
-        go (Transpose p p2 m)   = Transpose p p2 (go m)
-        go (Relative p m)       = Relative p (go m)
-        go (New s v m)          = New s v (go m)
-        go (Context s v m)      = Context s v (go m)
-        go x = f x
+notImpl :: String -> a
+notImpl a = error $ "Not implemented: " ++ a
 
-foldMusic' :: (Music -> Music) -- Rest Note Chord
-           -> (Music -> Music) -- Other non-recursive
-           -> (Music -> Music) -- Recursive
-           -> Music -> Music
-foldMusic' f g h = go
-    where
-        go m@(Rest _ _)         = f m
-        go m@(Note {})          = f m
-        go m@(Chord {})         = f m
-        go m@(Clef _)           = g m
-        go m@(Key _ _)          = g m
-        go m@(Time _ _)         = g m
-        go m@(Breathe _)        = g m
-        go m@(Tempo _ _)        = g m
-        go m@(Set _ _)          = g m
-        go m@(Override _ _)     = g m
-        go m@(Revert _)         = g m
-        go (Sequential ms)      = Sequential (fmap h ms)
-        go (Simultaneous b ms)  = Simultaneous b (fmap h ms)
-        go (Repeat b i m qmm)   = Repeat b i m (fmap (h *** h) qmm)
-        go (Tremolo n m)        = Tremolo n (h m)
-        go (Times r m)          = Times r (h m)
-        go (Transpose p p2 m)   = Transpose p p2 (h m)
-        go (Relative p m)       = Relative p (h m)
-        go (New s v m)          = New s v (h m)
-        go (Context s v m)      = Context s v (h m)
-
-
-durationPrinter :: Printer -> Printer -> Maybe Duration -> Printer
-durationPrinter p sep Nothing  = p
-durationPrinter p sep (Just d) = go (separateDots d)
-    where
-        go [dd] = p <> (string $ showDottedDuration dd)
-        go dds  = "{" <=> (sepByS sep $ go . pure <$> dds) <=> "}"
-
-instance Pretty Music where
-    pretty (Rest d p) = durationPrinter "r" "" d <> prettyList p
-
-    pretty (Note n d p) = durationPrinter (pretty n) "~" d <> prettyList p
-
-    pretty (Chord ns d p) = durationPrinter printer "~" d <> prettyList p
-        where printer = "<" <> nest 4 (sepByS "" $ fmap (uncurry (<>) <<< pretty *** pretty) ns) <> char '>'
-
-    pretty (Sequential xs)  = "{" <=> nest 4 ((hsep . fmap pretty) xs) <=> "}"
-
-    pretty (Simultaneous False xs) = "<<" <//> nest 4 ((vcat . fmap pretty) xs)           <//> ">>"
-    pretty (Simultaneous True xs)  = "<<" <//> nest 4 ((sepByS " \\\\" . fmap pretty) xs) <//> ">>"
-
-    pretty (Repeat unfold times x alts) =
-        "\\repeat" <=> unf unfold <=> int times <=> pretty x <=> alt alts
-        where
-            unf p = if p then "unfold" else "volta"
-            alt Nothing      = empty
-            alt (Just (x,y)) = "\\alternative" <> pretty x <> pretty y
-
-    pretty (Tremolo n x) =
-        "\\repeat tremolo" <+> pretty n <=> pretty x
-
-    pretty (Times n x) =
-        "\\times" <+> frac n <=> pretty x
-        where
-            frac n = pretty (numerator n) <> "/" <> pretty (denominator n)
-
-    pretty (Transpose from to x) =
-        "\\transpose" <+> pretty from <=> pretty to <=> pretty x
-
-    pretty (Relative p x) =
-        "\\relative" <=> pretty p <=> pretty x
-
-    pretty (Clef c) = "\\clef" <+> pretty c
-
-    pretty (Key p m) = "\\key" <+> pretty p <+> pretty m
-
-    pretty (Time m n) = "\\time" <+> (pretty m <> "/" <> pretty n)
-
-    pretty (Breathe Nothing) = "\\breathe"
-    pretty (Breathe a)       = notImpl "Non-standard breath marks"
-
-    pretty (Tempo Nothing Nothing)           = mempty
-    pretty (Tempo (Just t) Nothing)          = "\\tempo" <+> pretty t
-    pretty (Tempo Nothing (Just (d,bpm)))    = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
-    pretty (Tempo (Just t) (Just (d,bpm)))   = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
-
-    -- TODO metronome
-
-    pretty (New typ name x) =
-        "\\new" <+> string typ <+> pretty name <//> pretty x
-
-    pretty (Context typ name x) =
-        "\\context" <+> string typ <+> pretty name <//> pretty x
-
-    pretty (Set name val) =
-        "\\set" <+> string name <+> "=" <+> pretty val
-
-    pretty (Override name val) =
-        "\\override" <+> string name <+> "=" <+> pretty val
-
-    pretty (Revert name) =
-        "\\revert" <+> string name
-
-    -- pretty _                        = notImpl "Unknown music expression"
-
-    prettyList                      = hsep . fmap pretty
-
-instance FromPitch Music where
-    fromPitch p = Note (NotePitch p Nothing) (Just (1/4)) []
-
-instance AdditiveGroup Music where
-    zeroV   = Rest (Just $ 1/4) []
-    a ^+^ b = Sequential [a,b]
-    negateV = error "No Data.Music.Lilypond.Music.negateV"
-
-instance VectorSpace Music where
-    type Scalar Music = Duration
-    a *^ (Rest  (Just d) p)     = Rest (Just $ a*d) p
-    a *^ (Note  n (Just d) p)   = Note n (Just $ a*d) p
-    a *^ (Chord ns (Just d) p)  = Chord ns (Just $ a*d) p
-    a *^ x                      = x
-
-
-data Note
-    = NotePitch Pitch (Maybe OctaveCheck)
-    | DrumNotePitch (Maybe Duration)
-    deriving (Eq, Show)
-
-instance Pretty Note where
-    pretty (NotePitch p Nothing)   = pretty p
-    pretty (NotePitch p _)         = notImpl "Non-standard pitch"
-    pretty (DrumNotePitch _)       = notImpl "Non-standard pitch"
-    prettyList                     = hsep . fmap pretty
-
-instance FromPitch Note where
-    fromPitch = (`NotePitch` Nothing)
-
-data Clef
-    = Treble
-    | Alto
-    | Tenor
-    | Bass
-    | French
-    | Soprano
-    | MezzoSoprano
-    | Baritone
-    | VarBaritone
-    | SubBass
-    | Percussion
-    | Tab
-    deriving (Eq, Show)
-
-instance Pretty Clef where
-    pretty Treble       = "treble"
-    pretty Alto         = "alto"
-    pretty Tenor        = "tenor"
-    pretty Bass         = "bass"
-    pretty French       = "french"
-    pretty Soprano      = "soprano"
-    pretty MezzoSoprano = "mezzosoprano"
-    pretty Baritone     = "baritone"
-    pretty VarBaritone  = "varbaritone"
-    pretty SubBass      = "subbass"
-    pretty Percussion   = "percussion"
-    pretty Tab          = "tab"
-
-data BreathingSign
-    = RightVarComma
-    | StraightCaesura
-    | CurvedCaesura
-    deriving (Eq, Show)
-
-data ChordPostEvent
-    = Harmonic
-    deriving (Eq, Show)
-
-instance Pretty ChordPostEvent where
-    pretty Harmonic = "\\harmonic"
-
-data PostEvent
-    = Articulation Direction Articulation
-    | Dynamics Direction Dynamics
-    | Tie
-    | Glissando
-    | BeginBeam
-    | EndBeam
-    | BeginSlur
-    | EndSlur
-    | BeginPhraseSlur
-    | EndPhraseSlur
-    | BeginCresc
-    | BeginDim
-    | EndCrescDim
-    | Text Direction String
-    | Markup Direction Markup
-    deriving (Eq, Show)
-
-instance Pretty PostEvent where
-    pretty (Articulation d a)   = pretty d <> pretty a
-    pretty (Dynamics d a)       = pretty d <> pretty a
-    pretty Tie                  = "~"
-    pretty Glissando            = "\\glissando"
-    pretty BeginBeam            = "["
-    pretty EndBeam              = "]"
-    pretty BeginSlur            = "("
-    pretty EndSlur              = ")"
-    pretty BeginPhraseSlur      = "\\("
-    pretty EndPhraseSlur        = "\\)"
-    pretty BeginCresc           = "\\<"
-    pretty BeginDim             = "\\>"
-    pretty EndCrescDim          = "\\!"
-    pretty (Text d s)           = pretty d <> (string . show) s -- add quotes
-    pretty (Markup d m)         = pretty d <> ("\\markup" <+> pretty m)
-    prettyList                  = hcat . fmap pretty
+-- Types
 
 data Markup
     = MarkupText String
@@ -375,8 +57,10 @@ class HasMarkup a where
 
 instance HasMarkup Markup where
     markup = id
+
 instance HasMarkup a => HasMarkup [a] where
     markup = MarkupList . fmap markup
+
 instance IsString Markup where
     fromString = MarkupText
 
@@ -404,6 +88,32 @@ instance Pretty Markup where
     pretty (TypewriterFont a)   = "\\typewriter" <+> pretty a
     pretty (Upright a)          = "\\upright" <+> pretty a
 
+data Beam = BeamOn | BeamOff
+    deriving (Eq, Show)
+
+instance Pretty Beam where
+    pretty BeamOn  = "["
+    pretty BeamOff = "]"
+
+data Slur = SlurOn | SlurOff | PhraseSlurOn | PhraseSlurOff
+    deriving (Eq, Show)
+
+instance Pretty Slur where
+    pretty SlurOn = "("
+    pretty SlurOff = ")"
+    pretty PhraseSlurOn  = "\\("
+    pretty PhraseSlurOff = "\\)"
+
+data Direction = Below | Default | Above
+    deriving (Eq, Ord, Show)
+
+instance Default Direction where
+    def = Default
+
+instance Pretty Direction where
+    pretty Below   = "_"
+    pretty Default = "-"
+    pretty Above   = "^"
 
 -- | Articulations. These include ornaments.
 data Articulation
@@ -414,7 +124,6 @@ data Articulation
     | Staccato
     | Tenuto
     | Portato
-
     | Upbow
     | Downbow
     | Flageolet
@@ -428,7 +137,6 @@ data Articulation
     | Turn
     | ReverseTurn
     | Trill
-
     | Prall
     | Mordent
     | PrallPrall
@@ -441,28 +149,20 @@ data Articulation
     | PrallUp
     | LinePrall
     | SignumCongruentiae
-
     | ShortFermata
     | Fermata
     | LongFermata
     | VeryLongFermata
-
     | Segno
     | Coda
     | VarCoda
     deriving (Eq, Show)
 
 instance Pretty Articulation where
-    -- pretty Accent             = "\\accent"
-    -- pretty Marcato            = "\\marcato"
-    -- pretty Staccatissimo      = "\\staccatissimo"
     pretty Accent             = ">"
     pretty Marcato            = "^"
     pretty Staccatissimo      = "!"
     pretty Espressivo         = "\\espressivo"
-    -- pretty Staccato           = "\\staccato"
-    -- pretty Tenuto             = "\\tenuto"
-    -- pretty Portato            = "\\portato"
     pretty Staccato           = "."
     pretty Tenuto             = "-"
     pretty Portato            = "_"
@@ -475,7 +175,6 @@ instance Pretty Articulation where
     pretty LeftToe            = "\\lefttoe"
     pretty RightToe           = "\\righttoe"
     pretty Open               = "\\open"
-    -- pretty Stopped            = "\\stopped"
     pretty Stopped            = "+"
     pretty Turn               = "\\turn"
     pretty ReverseTurn        = "\\reverseturn"
@@ -499,180 +198,54 @@ instance Pretty Articulation where
     pretty Segno              = "\\segno"
     pretty Coda               = "\\coda"
     pretty VarCoda            = "\\varcoda"
-    prettyList              = hcat . fmap pretty
+    prettyList                = hcat . fmap pretty
 
-data Direction
-    = Above
-    | Default
-    | Below
-    deriving (Eq, Ord, Show)
+-- | Something 'expressive' appended to a note.
+data Expressive
+    = Articulation Direction Articulation
+    | Dynamics Direction Dynamics
+    | Tie
+    | Glissando
+    | Beam Beam
+    | Slur Slur
+    | Text Direction String    -- ^quoted string markup
+    | Markup Direction Markup  -- ^\markup
+    deriving (Eq, Show)
 
-instance Default Direction where
-    def = Default
+instance Pretty Expressive where
+    pretty (Articulation d a)   = pretty d <> pretty a
+    pretty (Dynamics d a)       = pretty d <> pretty a
+    pretty Tie                  = "~"
+    pretty Glissando            = "\\glissando"
+    pretty (Beam b)             = pretty b
+    pretty (Slur s)             = pretty s
+    pretty (Text d s)           = pretty d <> (string . show) s -- add quotes
+    pretty (Markup d m)         = pretty d <> ("\\markup" <+> pretty m)
+    prettyList                  = hcat . fmap pretty
 
-instance Pretty Direction where
-    pretty Above              = "^"
-    pretty Default            = "-"
-    pretty Below              = "_"
+data OctaveCheck = OctaveCheck
+    deriving (Eq, Show)
+
+data NotePitch = NotePitch Pitch (Maybe OctaveCheck) | DrumNotePitch
+    deriving (Eq, Show)
+
+instance Pretty NotePitch where
+    pretty (NotePitch p Nothing) = pretty p
+    pretty (NotePitch p _)       = string $ p' ++ "=" ++ oct
+        where (p', oct) = span isAlpha $ show $ pretty p
+    -- TODO: implement
+    pretty DrumNotePitch         = notImpl "Non-standard pitch"
+    prettyList                   = hsep . fmap pretty
+
+instance FromPitch NotePitch where
+    fromPitch = (`NotePitch` Nothing)
 
 -- | Notated time in fractions, in @[2^^i | i <- [-10..3]]@.
-newtype Duration = Duration { getDuration :: Rational }
+newtype Duration = Duration Rational
     deriving (Eq, Ord, Num, Enum, Fractional, Real, RealFrac, Show)
 
+-- base duration and number of dots
 type DottedDuration = (Duration, Int)
-
-showDottedDuration :: DottedDuration -> String
-showDottedDuration (Duration r, n) = pnv r ++ pds n
-    where
-        pnv 8 = "\\maxima"
-        pnv 4 = "\\longa"
-        pnv 2 = "\\breve"
-        pnv r' = show $ denominator r'
-        pds n = concat $ replicate n "."
-
-instance Pretty Duration where
-    pretty d = case (separateDots d) of
-        [dd] -> string $ showDottedDuration dd
-        _    -> error "invalid duration"
-
--- | Construct a rest of default duration @1/4@.
---
---   Use the 'VectorSpace' methods to change duration.
---
-rest :: Music
-rest = Rest (Just $ 1/4) []
-
--- | Construct a note of default duration @1/4@.
---
---   Use the 'VectorSpace' methods to change duration.
---
-note :: Note -> Music
-note n = Note n (Just $ 1/4) []
-
--- | Construct a chord of default duration @1/4@.
---
---   Use the 'VectorSpace' methods to change duration.
---
-chord :: [Note] -> Music
-chord ns = Chord (fmap (, []) ns) (Just $ 1/4) []
-
-chordHarm :: [(Note, Bool)] -> Music
-chordHarm = chordWithPost . fmap (second $ \x -> [Harmonic | x])
-
-chordWithPost :: [(Note, [ChordPostEvent])] -> Music
-chordWithPost ns = Chord ns (Just $ 1/4) []
-
-
-sequential :: Music -> Music -> Music
-Sequential as `sequential` Sequential bs = Sequential (as <> bs)
-Sequential as `sequential` b             = Sequential (as <> [b])
-a `sequential` Sequential bs             = Sequential ([a] <> bs)
-a `sequential` b                         = Sequential ([a,b])
-
-simultaneous :: Music -> Music -> Music
-Simultaneous s as `simultaneous` Simultaneous t bs = Simultaneous True (as <> bs)
-Simultaneous s as `simultaneous` b                 = Simultaneous s (as <> [b])
-a `simultaneous` Simultaneous t bs                 = Simultaneous t ([a] <> bs)
-a `simultaneous` b                                 = Simultaneous True ([a,b])
-
-
-
-addPost :: PostEvent -> Music -> Music
-addPost a = foldMusic' (addPost' a) id (addPost a)
-  where
-    addPost' a (Rest d es)     = Rest d (es ++ [a])
-    addPost' a (Note n d es)   = Note n d (es ++ [a])
-    addPost' a (Chord ns d es) = Chord ns d (es ++ [a])
-
-addText :: String -> Music -> Music
-addText s = addPost (Text def s)
-
-addText' :: Direction -> String -> Music -> Music
-addText' d s = addPost (Text d s)
-
-addMarkup :: HasMarkup a => a -> Music -> Music
-addMarkup s = addPost (Markup def (markup s))
-
-addMarkup' :: HasMarkup a => Direction -> a -> Music -> Music
-addMarkup' d s = addPost (Markup d (markup s))
-
-addArticulation :: Articulation -> Music -> Music
-addArticulation a = addPost (Articulation def a)
-
-addArticulation' :: Direction -> Articulation -> Music -> Music
-addArticulation' d a = addPost (Articulation d a)
-
-addDynamics :: Dynamics -> Music -> Music
-addDynamics a = addPost (Dynamics def a)
-
-addDynamics' :: Direction -> Dynamics -> Music -> Music
-addDynamics' d a = addPost (Dynamics d a)
-
-beginTie :: Music -> Music
-beginTie = addPost Tie
-
-beginGlissando :: Music -> Music
-beginGlissando = addPost Glissando
-
-beginBeam :: Music -> Music
-beginBeam = addPost BeginBeam
-
-endBeam :: Music -> Music
-endBeam = addPost EndBeam
-
-beginSlur :: Music -> Music
-beginSlur = addPost BeginSlur
-
-endSlur :: Music -> Music
-endSlur = addPost EndSlur
-
-beginPhraseSlur :: Music -> Music
-beginPhraseSlur = addPost BeginPhraseSlur
-
-endPhraseSlur :: Music -> Music
-endPhraseSlur = addPost EndPhraseSlur
-
-beginCresc :: Music -> Music
-beginCresc = addPost BeginCresc
-
-endCresc :: Music -> Music
-endCresc = addPost EndCrescDim
-
-beginDim :: Music -> Music
-beginDim = addPost BeginDim
-
-endDim :: Music -> Music
-endDim = addPost EndCrescDim
-
-
--- Specifics
-
-data NoteHeadStyle
-  = DefaultNoteHead
-  | AltDefaultNoteHead -- Same as default, except printing of breves
-  | BaroqueNoteHead
-  | NeomensuralNoteHead
-  | PetrucciNoteHead
-  | HarmonicNoteHead
-  | HarmonicBlackNoteHead
-  | HarmonicMixedNoteHead
-  | DiamondNoteHead
-  | CrossNoteHead
-  | XCircleNoteHead
-  | TriangleNoteHead
-  | SlashNoteHead
-
-
--- Utility
-
-removeSingleChords :: Music -> Music
-removeSingleChords = foldMusic go
-    where
-        go (Chord [(n,_)] d p) = Note n d p
-        go x                   = x
-
-notImpl :: String -> a
-notImpl a = error $ "Not implemented: " ++ a
 
 intLog2 :: (Integral a, Integral b) => a -> b
 intLog2 = truncate . logBase 2 . fromIntegral
@@ -692,5 +265,205 @@ separateDots (Duration r)
         q = diff / b
         (n', d') = (numerator q, denominator q)
 
+showDottedDuration :: DottedDuration -> String
+showDottedDuration (Duration r, n) = pnv r ++ pds n
+    where
+        pnv 8 = "\\maxima"
+        pnv 4 = "\\longa"
+        pnv 2 = "\\breve"
+        pnv r' = show $ denominator r'
+        pds n = concat $ replicate n "."
+
+instance Pretty Duration where
+    pretty d = case (separateDots d) of
+        [dd] -> string $ showDottedDuration dd
+        _    -> error "invalid duration"
+
+data RestType
+    = StdRest  -- ^ standard rest
+    | FullRest -- ^ multi-measure rest
+    | Skip     -- ^ invisible rest
+    deriving (Eq, Ord, Show)
+
+instance Pretty RestType where
+    pretty StdRest  = "r"
+    pretty FullRest = "R"
+    pretty Skip     = "s"
+
+data Clef
+    = Treble
+    | Alto
+    | Tenor
+    | Bass
+    | French
+    | Soprano
+    | MezzoSoprano
+    | Baritone
+    | VarBaritone
+    | SubBass
+    | Percussion
+    | Tab
+    deriving (Eq, Show)
+
+instance Pretty Clef where
+    pretty = string . fmap toLower . show
+
+data Literal = FloatL Double -- #0.4
+            | IntL Int -- #t
+            | BoolL Bool -- ##t / ##f
+            | StringL String -- etc.
+            | SymbolL String -- etc.
+            | SexpL String -- etc.
+    deriving (Eq, Show)
+
+instance Pretty Literal where
+  pretty (FloatL d) = string $ "#" ++ show d
+  pretty (IntL d) = string $ "#" ++ show d
+  pretty (BoolL True) = "##t"
+  pretty (BoolL False) = "##f"
+  pretty (StringL d) = string $ "#\"" ++ d ++ "\""
+  pretty (SymbolL d) = string $ "#\'" ++ d
+  pretty (SexpL d) = string $ "#(" ++ d ++ ")"
+
+data Assignment = Assignment String MusicL  -- foo = {a b c}
+            | SymbAssignment String Literal MusicL  -- foo #'bar = baz
+            | Override Assignment  -- \override ...
+            | Once Assignment  -- \once ...
+            | Revert String  -- \revert ...
+    deriving (Eq, Show)
+
+instance Pretty Assignment where
+    pretty (Assignment s e) = string s <+> "=" <+> pretty e
+    pretty (SymbAssignment s l e) = string s <+> pretty l <+> "=" <+> pretty e
+    pretty (Override a) = "\\override" <+> pretty a
+    pretty (Once a) = "\\once" <+> pretty a
+    pretty (Revert s) = "\\revert" <+> pretty s
+
+-- | A Lilypond music expression.
+data MusicL
+    = Note NotePitch (Maybe Duration) [Expressive]     -- ^ Single note.
+    | Rest RestType (Maybe Duration)                   -- ^ Single rest.
+    | Chord [NotePitch] (Maybe Duration) [Expressive]  -- ^ Single chord.
+    | Clef Clef                                        -- ^ Clef.
+    | Key Key                                          -- ^ Key signature.
+    | Time TimeSig                                     -- ^ Time signature.
+    | Tempo (Maybe String) (Maybe (Duration, Integer)) -- ^ Tempo mark.
+    | Sequential [MusicL]                              -- ^ Sequential composition.
+    | Simultaneous Bool [MusicL]                       -- ^ Parallel composition (split voices?).
+    | Repeat Bool Int MusicL (Maybe [MusicL])          -- ^ Repetition (unfold?, times, music, alternatives).
+    | Tremolo Int MusicL                               -- ^ Tremolo (multiplier).
+    | Times Rational MusicL                            -- ^ Stretch music (multiplier).
+    | Transpose Pitch Pitch MusicL                     -- ^ Transpose music (from to).
+    | Relative Pitch MusicL                            -- ^ Use relative octave (octave).
+    | Assign Assignment                                -- ^ Single assignment.
+    | With [Assignment]                                -- \with { alignAboveContext = #"main" }
+    | Voice (Maybe String) MusicL                      -- ^ \new Voice
+    | Staff (Maybe String) MusicL                      -- ^ \new Staff
+    | Lyrics String MusicL                             -- ^ \new Lyrics \lyricsto "foo" { bar }
+    | New String (Maybe String) MusicL                 -- ^ New expression.
+    | Context String (Maybe String) MusicL             -- ^ Context expression.
+    deriving (Eq, Show)
+
 infixl <=>
 a <=> b = sep [a,b]
+
+-- given a printer for something with a duration, converts it into a new printer, where elements may need to split into multiple elements to allow for printable durations
+durationPrinter :: Printer -> Printer -> Maybe Duration -> Printer
+durationPrinter p sep Nothing  = p
+durationPrinter p sep (Just d) = go (separateDots d)
+    where
+        go [dd] = p <> (string $ showDottedDuration dd)
+        go dds  = "{" <=> (sepByS sep $ go . pure <$> dds) <=> "}"
+
+instance Pretty MusicL where
+    pretty (Note p d exps) = pretty p <> pretty d <> prettyList exps
+    pretty (Rest t d) = pretty t <> pretty d
+    pretty (Chord ns d exps) = durationPrinter printer "~" d <> prettyList exps
+        where printer = char '<' <+> nest 4 (sepByS "" $ pretty <$> ns) <+> char '>'
+    pretty (Clef c) = "\\clef" <+> pretty c
+    pretty (Key (p, m)) = "\\key" <+> pretty p <+> pretty m
+    pretty (Time (m, n)) = "\\time" <+> (pretty m <> "/" <> pretty n)
+    pretty (Tempo Nothing Nothing)           = mempty
+    pretty (Tempo (Just t) Nothing)          = "\\tempo" <+> pretty t
+    pretty (Tempo Nothing (Just (d, bpm)))   = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
+    pretty (Tempo (Just t) (Just (d, bpm)))  = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
+    pretty (Sequential xs)  = "{" <=> nest 4 ((hsep . fmap pretty) xs) <=> "}"
+    pretty (Simultaneous b xs) = "<<" <//> nest 4 ((sepFunc . fmap pretty) xs) <//> ">>"
+        where sepFunc = if b then sepByS " \\\\" else vcat
+    pretty (Repeat unfold times x alts) = "\\repeat" <=> unf unfold <=> int times <=> pretty x <=> alt alts
+        where
+            unf p = if p then "unfold" else "volta"
+            alt Nothing      = empty
+            alt (Just exps)  = "\\alternative" <> prettyList exps
+    pretty (Tremolo n x) = "\\repeat tremolo" <+> pretty n <=> pretty x
+    pretty (Times n x) = "\\times" <+> frac n <=> pretty x
+        where frac n = pretty (numerator n) <> "/" <> pretty (denominator n)
+    pretty (Transpose from to x) = "\\transpose" <+> pretty from <=> pretty to <=> pretty x
+    pretty (Relative p x) = "\\relative" <=> pretty p <=> pretty x
+    pretty (Assign as) = pretty as
+    pretty (With as) = "\\with {" <+> (vcat $ pretty <$> as) <+> "}"
+    pretty (Voice name x) = "\\new Voice" <+> pretty name <//> pretty x
+    pretty (Staff name x) = "\\new Staff" <+> pretty name <//> pretty x
+    pretty (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> pretty x
+    pretty (New typ name x) = "\\new" <+> string typ <+> pretty name <//> pretty x
+    pretty (Context typ name x) = "\\context" <+> string typ <+> pretty name <//> pretty x
+    prettyList = hsep . fmap pretty
+
+instance FromPitch MusicL where
+    fromPitch p = Note (NotePitch p Nothing) (Just (1 / 4)) []
+
+instance AdditiveGroup MusicL where
+    zeroV   = Rest StdRest (Just $ 1 / 4)
+    a ^+^ b = Sequential [a, b]
+    negateV = error "No Music.Lilypond.Music.negateV"
+
+instance VectorSpace MusicL where
+    type Scalar MusicL = Duration
+    a *^ (Note n (Just d) p)   = Note n (Just $ a * d) p
+    a *^ (Rest typ (Just d))   = Rest typ (Just $ a * d)
+    a *^ (Chord ns (Just d) p) = Chord ns (Just $ a * d) p
+    a *^ x                     = x
+
+-- TODO: generic fold (have func return Maybe, then apply default folding behavior when Nothing?)
+
+-- -- | Construct a rest of default duration @1/4@.
+-- --
+-- --   Use the 'VectorSpace' methods to change duration.
+-- --
+-- rest :: MusicL
+-- rest = Rest StdRest (Just $ 1 / 4)
+
+-- -- | Construct a note of default duration @1/4@.
+-- --
+-- --   Use the 'VectorSpace' methods to change duration.
+-- --
+-- note :: Note -> Music
+-- note n = Note n (Just $ 1/4) []
+
+-- -- | Construct a chord of default duration @1/4@.
+-- --
+-- --   Use the 'VectorSpace' methods to change duration.
+-- --
+-- chord :: [Note] -> Music
+-- chord ns = Chord (fmap (, []) ns) (Just $ 1/4) []
+
+
+-- sequential :: Music -> Music -> Music
+-- Sequential as `sequential` Sequential bs = Sequential (as <> bs)
+-- Sequential as `sequential` b             = Sequential (as <> [b])
+-- a `sequential` Sequential bs             = Sequential ([a] <> bs)
+-- a `sequential` b                         = Sequential ([a,b])
+
+-- simultaneous :: Music -> Music -> Music
+-- Simultaneous s as `simultaneous` Simultaneous t bs = Simultaneous True (as <> bs)
+-- Simultaneous s as `simultaneous` b                 = Simultaneous s (as <> [b])
+-- a `simultaneous` Simultaneous t bs                 = Simultaneous t ([a] <> bs)
+-- a `simultaneous` b                                 = Simultaneous True ([a,b])
+
+
+-- addPost :: PostEvent -> Music -> Music
+-- addPost a = foldMusic' (addPost' a) id (addPost a)
+--   where
+--     addPost' a (Rest d es)     = Rest d (es ++ [a])
+--     addPost' a (Note n d es)   = Note n d (es ++ [a])
+--     addPost' a (Chord ns d es) = Chord ns d (es ++ [a])

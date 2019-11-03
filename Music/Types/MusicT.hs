@@ -332,7 +332,7 @@ toLilypond' = mFold f combineSeq combinePar g
 toLilypond :: (MusicT m a, ToPitch a) => m a -> String -> TimeSig -> LP.Lilypond
 toLilypond mus title (n, d) = LP.setHeader hdr $ LP.toLilypond mus'
     where
-        mus' = LP.Sequential [LP.Time (toInteger n) (toInteger d), toLilypond' $ toMusic mus]
+        mus' = LP.Sequential [LP.Time (n, d), toLilypond' $ toMusic mus]
         hdr = def {LP.title = Just $ LP.toValue title}
 
 

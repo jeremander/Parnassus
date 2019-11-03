@@ -80,8 +80,8 @@ instance MusicT MusicU a where
         where
             extractSeq :: MusicU a -> [MusicU a]
             extractSeq m = case m of
-                SeqU ms    -> ms
-                otherwise -> [m]
+                SeqU ms -> ms
+                _       -> [m]
     (/=/) :: MusicU a -> MusicU a -> MusicU a
     (/=/) m1 Empty = m1
     (/=/) Empty m2 = m2
@@ -148,7 +148,7 @@ instance MusicT MusicU a where
     pad d Empty                 = prim $ Rest d
     pad d (PrimU (Note oldD p)) = prim $ Note (max oldD d) p
     pad d (PrimU (Rest oldD))   = prim $ Rest (max oldD d)
-    pad d m@(SeqU ms)           = line (ms ++ filter (\_ -> (diff > 0)) [prim $ Rest diff])
+    pad d m@(SeqU ms)           = line (ms ++ filter (const (diff > 0)) [prim $ Rest diff])
         where diff = d - dur m
     pad d (ParU ms)             = chord ((pad d) <$> ms)
     pad d (ModifyU (Tempo r) m) = ModifyU (Tempo r) (pad (d * r) m)
@@ -159,13 +159,13 @@ instance MusicT MusicU a where
         f :: Primitive a -> (Controls, MusicU a)
         f p = ([], PrimU p)
         g :: Control -> (Controls, MusicU a) -> (Controls, MusicU a)
-        g ctl (ctls, m) = ([ctl] ++ ctls, m)
+        g ctl (ctls, m) = (ctl : ctls, m)
         combine :: ([MusicU a] -> MusicU a) -> [(Controls, MusicU a)] -> (Controls, MusicU a)
         combine foldOp pairs = (prefix, foldOp ms')
             where
                 (ctls, ms) = unzip pairs
                 (prefix, ctls') = unDistribute ctls  -- extract common controls
-                ms' = [((foldr (.) id) $ (map ModifyU) $ ctl') $ m | ctl' <- ctls' | m <- ms]
+                ms' = [(foldr ((.) . ModifyU) ctl') m | ctl' <- ctls' | m <- ms]
     removeTempos :: MusicU a -> MusicU a
     removeTempos = mFoldU Empty PrimU SeqU ParU g
         where

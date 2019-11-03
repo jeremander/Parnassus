@@ -18,17 +18,18 @@ cabal-version:       >=1.10
 
 library
   exposed-modules:
-    Music.Lilypond,
-      Music.Lilypond.Dynamics,
-      Music.Lilypond.IO,
-      Music.Lilypond.Music,
-      Music.Lilypond.Score,
-      Music.Lilypond.Value,
     Math.Dist,
     Math.Markov,
     Math.Multiarray,
     Math.Optimize,
     Math.Search,
+    Music.Dynamics,
+    Music.Lilypond,
+      Music.Lilypond.IO,
+      Music.Lilypond.Music,
+      Music.Lilypond.Parse,
+      Music.Lilypond.Score,
+      Music.Lilypond.Value,
     Music.Pitch,
     Music.Rhythm,
     Music.Species.Base
@@ -58,6 +59,8 @@ library
     MonadRandom >=0.1,
     mtl >=2.2,
     music-pitch-literal >=1.7,
+    parsec >=3.1,
+    parsec-class >=1.0,
     prettify >=1.0,
     process >=1.6,
     QuickCheck >=2.13,

@@ -1,19 +1,17 @@
 
 {-# LANGUAGE OverloadedStrings #-}
 
-module Music.Dynamics (
-        Dynamics(..),
-  ) where
+module Music.Dynamics where
 
 import Data.Char (toLower)
 import Text.Pretty (Pretty(..), string)
 import qualified Data.Char as Char
 
 
-data Dynamics = PPPPP | PPPP | PPP | P | MP | MF | F | FF | FFF | SF | SFF | SP | SPP | SFZ | RFZ
+data DynamicFixed = PPPPP | PPPP | PPP | P | MP | MF | F | FF | FFF | SF | SFF | SP | SPP | SFZ | RFZ
     deriving (Eq, Ord, Show, Enum, Bounded)
 
-instance Pretty Dynamics where
+instance Pretty DynamicFixed where
     pretty = string . ("\\" ++) . fmap toLower . show
 
 data DynamicMotion = Crescendo | Decrescendo | EndDynamicMotion
@@ -23,3 +21,10 @@ instance Pretty DynamicMotion where
     pretty Crescendo = string "\\<"
     pretty Decrescendo = string "\\>"
     pretty EndDynamicMotion = string "\\!"
+
+data Dynamics = DynFixed DynamicFixed | DynMotion DynamicMotion
+    deriving (Eq, Ord, Show)
+
+instance Pretty Dynamics where
+    pretty (DynFixed d)  = pretty d
+    pretty (DynMotion d) = pretty d

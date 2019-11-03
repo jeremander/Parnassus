@@ -73,10 +73,7 @@ instance {-# OVERLAPPABLE #-} (FromPitch a) => Music.Pitch.Literal.Pitch.IsPitch
 type Accidental = Int
 
 -- | Number of octaves raised (positive) or flattened (negative).
-type Octaves = Int
-
-data OctaveCheck = OctaveCheck
-    deriving (Eq, Show)
+type Octave = Int
 
 instance Pretty PitchClass where
     pretty pc = string (toLower <$> show pc') <> string acc'
@@ -96,7 +93,7 @@ instance {-# OVERLAPPING #-} Pretty Pitch where
             n = oct - 3
             octStr  | n < 0  = concat $ replicate (negate n) ","
                     | n == 0 = ""
-                    | n >0   = concat $ replicate n "'"
+                    | n > 0   = concat $ replicate n "'"
 
 
 -- * Modes and Keys

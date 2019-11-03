@@ -43,7 +43,7 @@ instance Num Value where
 instance Fractional Value where
     (/)     = noOverloading "(/)"
     recip   = noOverloading "recip"
-    fromRational = (toValue . toDouble)
+    fromRational = toValue . fromRational
 
 instance Show Value where
     show (Value a) = show a
@@ -62,9 +62,5 @@ toValue = Value
 toLiteralValue :: String -> Value
 toLiteralValue = Literal
 
-
 noOverloading :: String -> a
 noOverloading n = error $ "No overloading of " ++ n ++ " for Value"
-
-toDouble :: Rational -> Double
-toDouble = fromRational
