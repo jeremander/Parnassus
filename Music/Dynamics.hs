@@ -8,14 +8,14 @@ import Text.Pretty (Pretty(..), string)
 import qualified Data.Char as Char
 
 
-data DynamicFixed = PPPPP | PPPP | PPP | P | MP | MF | F | FF | FFF | SF | SFF | SP | SPP | SFZ | RFZ
-    deriving (Eq, Ord, Show, Enum, Bounded)
+data DynamicFixed = PPPPP | PPPP | PPP | PP | P | MP | MF | F | FF | FFF | FFFF | FFFFF | SF | SFF | SP | SPP | SFZ | RFZ
+    deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
 instance Pretty DynamicFixed where
     pretty = string . ("\\" ++) . fmap toLower . show
 
 data DynamicMotion = Crescendo | Decrescendo | EndDynamicMotion
-    deriving (Eq, Ord, Show, Enum, Bounded)
+    deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
 instance Pretty DynamicMotion where
     pretty Crescendo = string "\\<"

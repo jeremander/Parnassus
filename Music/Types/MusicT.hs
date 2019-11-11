@@ -304,17 +304,17 @@ changeTimeSig (n1, d1) (n2, d2) mus = modify ctl $ line measures'
 
 -- * Lilypond conversion
 
-toLilypond' :: (ToPitch a) => Music a -> LP.Music
+toLilypond' :: (ToPitch a) => Music a -> LP.MusicL
 toLilypond' = mFold f combineSeq combinePar g
     where
-        f :: (ToPitch a) => Primitive a -> LP.Music
+        f :: (ToPitch a) => Primitive a -> LP.MusicL
         f (Note d x) = LP.Note (LP.NotePitch (toPitch x) Nothing) (Just (LP.Duration d)) []
-        f (Rest d) = LP.Rest (Just (LP.Duration d)) []
-        combineSeq :: LP.Music -> LP.Music -> LP.Music
+        f (Rest d) = LP.Rest LP.StdRest (Just (LP.Duration d))
+        combineSeq :: LP.MusicL -> LP.MusicL -> LP.MusicL
         combineSeq = LP.sequential
-        combinePar :: LP.Music -> LP.Music -> LP.Music
+        combinePar :: LP.MusicL -> LP.MusicL -> LP.MusicL
         combinePar = LP.simultaneous
-        g :: Control -> LP.Music -> LP.Music
+        g :: Control -> LP.MusicL -> LP.MusicL
         g (Tempo r) m         = LP.Sequential [t, m]
             where
                 bpm = round $ 120 * r
@@ -323,9 +323,8 @@ toLilypond' = mFold f combineSeq combinePar g
             where
                 p = (C, 4)
                 p' = pitch $ absPitch p + d
-        g (Instrument inst) m = LP.Sequential [LP.Set "Staff.instrumentName" (LP.toValue $ show inst), m]
-        g (KeySig p mode) m   = LP.Sequential [LP.Key (p', 4) mode', m]
-            where (p', mode') = simplifyMode (p, mode)
+        g (Instrument inst) m = LP.Sequential [LP.Assign $ LP.Set "Staff.instrumentName" $ LP.StringL $ show inst, m]
+        g (KeySig p mode) m   = LP.Sequential [LP.Key $ simplifyMode (p, mode), m]
         g _ m                 = m  -- TODO: PhraseAttribute
 
 -- | Converts a Parnassus musical object to a Lilypond object.
@@ -333,7 +332,7 @@ toLilypond :: (MusicT m a, ToPitch a) => m a -> String -> TimeSig -> LP.Lilypond
 toLilypond mus title (n, d) = LP.setHeader hdr $ LP.toLilypond mus'
     where
         mus' = LP.Sequential [LP.Time (n, d), toLilypond' $ toMusic mus]
-        hdr = def {LP.title = Just $ LP.toValue title}
+        hdr = def {LP.title = Just $ LP.StringL title}
 
 
 -- * WAV conversion

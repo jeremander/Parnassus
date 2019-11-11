@@ -95,7 +95,6 @@ instance {-# OVERLAPPING #-} Pretty Pitch where
                     | n == 0 = ""
                     | n > 0   = concat $ replicate n "'"
 
-
 -- * Modes and Keys
 
 type Key = (PitchClass, Mode)

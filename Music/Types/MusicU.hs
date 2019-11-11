@@ -165,7 +165,7 @@ instance MusicT MusicU a where
             where
                 (ctls, ms) = unzip pairs
                 (prefix, ctls') = unDistribute ctls  -- extract common controls
-                ms' = [(foldr ((.) . ModifyU) ctl') m | ctl' <- ctls' | m <- ms]
+                ms' = [((foldr (.) id) $ (map ModifyU) ctl') m | ctl' <- ctls' | m <- ms]
     removeTempos :: MusicU a -> MusicU a
     removeTempos = mFoldU Empty PrimU SeqU ParU g
         where

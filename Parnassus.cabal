@@ -28,8 +28,7 @@ library
       Music.Lilypond.IO,
       Music.Lilypond.Music,
       Music.Lilypond.Parse,
-      Music.Lilypond.Score,
-      Music.Lilypond.Value,
+      Music.Lilypond.Score
     Music.Pitch,
     Music.Rhythm,
     Music.Species.Base
@@ -61,6 +60,7 @@ library
     music-pitch-literal >=1.7,
     parsec >=3.1,
     parsec-class >=1.0,
+    parsec3-numbers >=0.1,
     prettify >=1.0,
     process >=1.6,
     QuickCheck >=2.13,

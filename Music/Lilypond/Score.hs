@@ -1,5 +1,6 @@
 {-# LANGUAGE
-    OverloadedStrings
+    OverloadedStrings,
+    TemplateHaskell
     #-}
 
 module Music.Lilypond.Score (
@@ -7,17 +8,17 @@ module Music.Lilypond.Score (
     Header(..),
     BookPart(..),
     Book(..),
+    TopLevel(..),
     Lilypond(..),
     HasHeader(..),
     ToLilypond(..)
 ) where
 
+import Control.Lens ((^.), makeLenses)
 import Data.Default (Default(..))
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
-import Music.Lilypond.Music (MusicL(..))
-import Music.Lilypond.Value (Value(..))
-
+import Music.Lilypond.Music (Assignment(..), Literal(..), MusicL(..))
 
 
 mkSection :: String -> Printer -> Printer
@@ -33,35 +34,37 @@ instance Pretty Score where
 -- | LilyPond score header with various information about the score.
 -- TODO: enable markup text in the fields
 data Header = Header {
-    dedication :: Maybe Value,
-    title :: Maybe Value,
-    subtitle :: Maybe Value,
-    subsubtitle :: Maybe Value,
-    instrument :: Maybe Value,
-    poet :: Maybe Value,
-    composer :: Maybe Value,
-    meter :: Maybe Value,
-    arranger :: Maybe Value,
-    tagline :: Maybe Value,
-    copyright :: Maybe Value
+    _dedication :: Maybe Literal,
+    _title :: Maybe Literal,
+    _subtitle :: Maybe Literal,
+    _subsubtitle :: Maybe Literal,
+    _instrument :: Maybe Literal,
+    _poet :: Maybe Literal,
+    _composer :: Maybe Literal,
+    _meter :: Maybe Literal,
+    _arranger :: Maybe Literal,
+    _tagline :: Maybe Literal,
+    _copyright :: Maybe Literal
 } deriving (Eq, Show)
 
-mkHdrField :: String -> Maybe Value -> Printer
-mkHdrField name val = pretty $ (string name <+> "+" <+>) . pretty <$> val
+makeLenses ''Header
+
+mkHdrField :: String -> Maybe Literal -> Printer
+mkHdrField name lit = pretty $ (string name <+> "=" <+>) . pretty <$> lit
 
 instance Pretty Header where
     pretty hdr = mkSection "\\header" $ vcat [
-                    mkHdrField "dedication" $ dedication hdr,
-                    mkHdrField "title" $ title hdr,
-                    mkHdrField "subtitle" $ subtitle hdr,
-                    mkHdrField "subsubtitle" $ subsubtitle hdr,
-                    mkHdrField "instrument" $ instrument hdr,
-                    mkHdrField "poet" $ poet hdr,
-                    mkHdrField "composer" $ composer hdr,
-                    mkHdrField "meter" $ meter hdr,
-                    mkHdrField "arranger" $ arranger hdr,
-                    mkHdrField "tagline" $ tagline hdr,
-                    mkHdrField "copyright" $ copyright hdr
+                    mkHdrField "dedication" $ hdr^.dedication,
+                    mkHdrField "title" $ hdr^.title,
+                    mkHdrField "subtitle" $ hdr^.subtitle,
+                    mkHdrField "subsubtitle" $ hdr^.subsubtitle,
+                    mkHdrField "instrument" $ hdr^.instrument,
+                    mkHdrField "poet" $ hdr^.poet,
+                    mkHdrField "composer" $ hdr^.composer,
+                    mkHdrField "meter" $ hdr^.meter,
+                    mkHdrField "arranger" $ hdr^.arranger,
+                    mkHdrField "tagline" $ hdr^.tagline,
+                    mkHdrField "copyright" $ hdr^.copyright
                 ]
 
 instance Default Header where
@@ -84,18 +87,29 @@ instance Pretty Book where
             pretty' (BookPart Nothing [score]) = pretty score
             pretty' bookPart                   = pretty bookPart
 
--- | Lilypond object is the top-level element of a LilyPond file.
-data Lilypond = Lilypond (Maybe Header) [Book]
+data TopLevel = Version String
+              | Include FilePath
+              | AssignmentTop Assignment
+              | HeaderTop Header
+              | BookTop Book
+    deriving (Eq, Show)
+
+instance Pretty TopLevel where
+    pretty (Version v)       = "\\version" <+> string v
+    pretty (Include p)       = "\\include" <+> string p
+    pretty (AssignmentTop a) = pretty a
+    pretty (HeaderTop h)     = pretty h
+    pretty (BookTop b)       = pretty b
+
+-- | Lilypond object is the root element of a LilyPond file.
+newtype Lilypond = Lilypond [TopLevel]
     deriving (Eq, Show)
 
 instance Pretty Lilypond where
-    pretty (Lilypond hdr books) = pretty hdr <//> vcat (pretty <$> books)
+    pretty (Lilypond elts) = vcat $ pretty <$> elts
 
 class HasHeader a where
     setHeader :: Header -> a -> a
-
-instance HasHeader Lilypond where
-    setHeader hdr (Lilypond _ books) = Lilypond (Just hdr) books
 
 instance HasHeader Book where
     setHeader hdr (Book _ bookParts) = Book (Just hdr) bookParts
@@ -110,7 +124,7 @@ instance ToLilypond Lilypond where
     toLilypond = id
 
 instance ToLilypond Book where
-    toLilypond book = Lilypond Nothing [book]
+    toLilypond book = Lilypond [BookTop book]
 
 instance ToLilypond BookPart where
     toLilypond bookPart = toLilypond $ Book Nothing [bookPart]

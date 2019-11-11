@@ -1,5 +1,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE ParallelListComp #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 
 module Misc.Utils where
 
@@ -52,6 +54,10 @@ safeDiv x y = x / y
 
 
 -- MISC --
+
+-- enumerates a Bounded Enum type
+enumerate :: forall a . (Bounded a, Enum a) => [a]
+enumerate = toEnum <$> [0..(fromEnum (maxBound::a))]
 
 -- strips leading and trailing whitespace from a string
 strip :: String -> String

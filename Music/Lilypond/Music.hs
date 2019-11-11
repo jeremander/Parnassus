@@ -16,7 +16,7 @@ import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, empty, hcat, hsep,
 
 import Euterpea (Mode(..), Pitch)
 import Music.Dynamics (DynamicMotion, Dynamics)
-import Music.Pitch (FromPitch(..), Key)
+import Music.Pitch (FromPitch(..), ToPitch(..), Key)
 import Music.Rhythm (TimeSig)
 
 
@@ -26,6 +26,16 @@ notImpl :: String -> a
 notImpl a = error $ "Not implemented: " ++ a
 
 -- Types
+
+-- * Identifier
+
+newtype Identifier = Identifier { getIdentifier :: String } -- \foo
+    deriving (Eq, Show)
+
+instance Pretty Identifier where
+    pretty (Identifier s) = char '\\' <> string s
+
+-- * Markup
 
 data Markup
     = MarkupText String
@@ -40,7 +50,7 @@ data Markup
     | Italic Markup
     | Large Markup
     | Larger Markup
-    | Magnify Markup
+    | Magnify Double Markup
     | Medium Markup
     | Roman Markup
     | Sans Markup
@@ -77,7 +87,7 @@ instance Pretty Markup where
     pretty (Italic a)           = "\\italic" <+> pretty a
     pretty (Large a)            = "\\large" <+> pretty a
     pretty (Larger a)           = "\\larger" <+> pretty a
-    pretty (Magnify a)          = "\\magnify" <+> pretty a
+    pretty (Magnify n a)        = "\\magnify" <+> ("#" <> pretty n) <+> pretty a
     pretty (Medium a)           = "\\medium" <+> pretty a
     pretty (Roman a)            = "\\roman" <+> pretty a
     pretty (Sans a)             = "\\sans" <+> pretty a
@@ -87,6 +97,13 @@ instance Pretty Markup where
     pretty (Tiny a)             = "\\tiny" <+> pretty a
     pretty (TypewriterFont a)   = "\\typewriter" <+> pretty a
     pretty (Upright a)          = "\\upright" <+> pretty a
+
+data BarLine = BarCheck | BarLine String
+    deriving (Eq, Show)
+
+instance Pretty BarLine where
+    pretty BarCheck    = "|"
+    pretty (BarLine s) = "\\bar" <+> (string $ show s)
 
 data Beam = BeamOn | BeamOff
     deriving (Eq, Show)
@@ -156,7 +173,7 @@ data Articulation
     | Segno
     | Coda
     | VarCoda
-    deriving (Eq, Show)
+    deriving (Bounded, Enum, Eq, Read, Show)
 
 instance Pretty Articulation where
     pretty Accent             = ">"
@@ -237,6 +254,10 @@ instance Pretty NotePitch where
     pretty DrumNotePitch         = notImpl "Non-standard pitch"
     prettyList                   = hsep . fmap pretty
 
+instance ToPitch NotePitch where
+    toPitch (NotePitch p _) = p
+    toPitch _               = notImpl "Non-standard pitch"
+
 instance FromPitch NotePitch where
     fromPitch = (`NotePitch` Nothing)
 
@@ -290,23 +311,36 @@ instance Pretty RestType where
     pretty FullRest = "R"
     pretty Skip     = "s"
 
-data Clef
-    = Treble
-    | Alto
-    | Tenor
-    | Bass
-    | French
-    | Soprano
-    | MezzoSoprano
-    | Baritone
-    | VarBaritone
-    | SubBass
-    | Percussion
-    | Tab
+data StdClef = Treble
+             | French
+             | GG
+             | TenorG
+             | Soprano
+             | Mezzosoprano
+             | Alto
+             | Tenor
+             | Baritone
+             | AltovarC
+             | TenorvarC
+             | BaritonevarC
+             | Varbaritone
+             | Bass
+             | Subbass
+             | Percussion
+             | Varpercussion
+             | Tab
+             | Moderntab
+    deriving (Bounded, Enum, Eq, Ord, Read, Show)
+
+instance Pretty StdClef where
+    pretty = string . fmap toLower . show
+
+data Clef = StdClef StdClef | CustomClef String
     deriving (Eq, Show)
 
 instance Pretty Clef where
-    pretty = string . fmap toLower . show
+    pretty (StdClef std)  = pretty std
+    pretty (CustomClef s) = string $ show s
 
 data Literal = FloatL Double -- #0.4
             | IntL Int -- #t
@@ -327,6 +361,7 @@ instance Pretty Literal where
 
 data Assignment = Assignment String MusicL  -- foo = {a b c}
             | SymbAssignment String Literal MusicL  -- foo #'bar = baz
+            | Set Assignment -- \set ...
             | Override Assignment  -- \override ...
             | Once Assignment  -- \once ...
             | Revert String  -- \revert ...
@@ -335,6 +370,7 @@ data Assignment = Assignment String MusicL  -- foo = {a b c}
 instance Pretty Assignment where
     pretty (Assignment s e) = string s <+> "=" <+> pretty e
     pretty (SymbAssignment s l e) = string s <+> pretty l <+> "=" <+> pretty e
+    pretty (Set a) = "\\set" <+> pretty a
     pretty (Override a) = "\\override" <+> pretty a
     pretty (Once a) = "\\once" <+> pretty a
     pretty (Revert s) = "\\revert" <+> pretty s
@@ -344,6 +380,7 @@ data MusicL
     = Note NotePitch (Maybe Duration) [Expressive]     -- ^ Single note.
     | Rest RestType (Maybe Duration)                   -- ^ Single rest.
     | Chord [NotePitch] (Maybe Duration) [Expressive]  -- ^ Single chord.
+    | Bar BarLine                                      -- ^ Bar line.
     | Clef Clef                                        -- ^ Clef.
     | Key Key                                          -- ^ Key signature.
     | Time TimeSig                                     -- ^ Time signature.
@@ -353,10 +390,12 @@ data MusicL
     | Repeat Bool Int MusicL (Maybe [MusicL])          -- ^ Repetition (unfold?, times, music, alternatives).
     | Tremolo Int MusicL                               -- ^ Tremolo (multiplier).
     | Times Rational MusicL                            -- ^ Stretch music (multiplier).
+    | Tuplet Rational MusicL                           -- ^ Tuplet.
     | Transpose Pitch Pitch MusicL                     -- ^ Transpose music (from to).
-    | Relative Pitch MusicL                            -- ^ Use relative octave (octave).
+    | Relative (Maybe Pitch) MusicL                    -- ^ Use relative octave (octave).
+    | Lit Literal                                      -- ^ Single literal.
     | Assign Assignment                                -- ^ Single assignment.
-    | With [Assignment]                                -- \with { alignAboveContext = #"main" }
+    | With Assignment                                  -- ^ \with { alignAboveContext = #"main" }
     | Voice (Maybe String) MusicL                      -- ^ \new Voice
     | Staff (Maybe String) MusicL                      -- ^ \new Staff
     | Lyrics String MusicL                             -- ^ \new Lyrics \lyricsto "foo" { bar }
@@ -375,11 +414,15 @@ durationPrinter p sep (Just d) = go (separateDots d)
         go [dd] = p <> (string $ showDottedDuration dd)
         go dds  = "{" <=> (sepByS sep $ go . pure <$> dds) <=> "}"
 
+fracPrinter :: Rational -> Printer
+fracPrinter r = pretty (numerator r) <> "/" <> pretty (denominator r)
+
 instance Pretty MusicL where
     pretty (Note p d exps) = pretty p <> pretty d <> prettyList exps
     pretty (Rest t d) = pretty t <> pretty d
     pretty (Chord ns d exps) = durationPrinter printer "~" d <> prettyList exps
         where printer = char '<' <+> nest 4 (sepByS "" $ pretty <$> ns) <+> char '>'
+    pretty (Bar b) = pretty b
     pretty (Clef c) = "\\clef" <+> pretty c
     pretty (Key (p, m)) = "\\key" <+> pretty p <+> pretty m
     pretty (Time (m, n)) = "\\time" <+> (pretty m <> "/" <> pretty n)
@@ -396,12 +439,13 @@ instance Pretty MusicL where
             alt Nothing      = empty
             alt (Just exps)  = "\\alternative" <> prettyList exps
     pretty (Tremolo n x) = "\\repeat tremolo" <+> pretty n <=> pretty x
-    pretty (Times n x) = "\\times" <+> frac n <=> pretty x
-        where frac n = pretty (numerator n) <> "/" <> pretty (denominator n)
+    pretty (Times r x) = "\\times" <+> fracPrinter r <=> pretty x
+    pretty (Tuplet r x) = "\\tuplet" <+> fracPrinter r <=> pretty x
     pretty (Transpose from to x) = "\\transpose" <+> pretty from <=> pretty to <=> pretty x
     pretty (Relative p x) = "\\relative" <=> pretty p <=> pretty x
+    pretty (Lit lit) = pretty lit
     pretty (Assign as) = pretty as
-    pretty (With as) = "\\with {" <+> (vcat $ pretty <$> as) <+> "}"
+    pretty (With a) = "\\with {" <+> (pretty a) <+> "}"
     pretty (Voice name x) = "\\new Voice" <+> pretty name <//> pretty x
     pretty (Staff name x) = "\\new Staff" <+> pretty name <//> pretty x
     pretty (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> pretty x
@@ -448,17 +492,17 @@ instance VectorSpace MusicL where
 -- chord ns = Chord (fmap (, []) ns) (Just $ 1/4) []
 
 
--- sequential :: Music -> Music -> Music
--- Sequential as `sequential` Sequential bs = Sequential (as <> bs)
--- Sequential as `sequential` b             = Sequential (as <> [b])
--- a `sequential` Sequential bs             = Sequential ([a] <> bs)
--- a `sequential` b                         = Sequential ([a,b])
+sequential :: MusicL -> MusicL -> MusicL
+Sequential as `sequential` Sequential bs = Sequential (as <> bs)
+Sequential as `sequential` b             = Sequential (as <> [b])
+a `sequential` Sequential bs             = Sequential ([a] <> bs)
+a `sequential` b                         = Sequential ([a,b])
 
--- simultaneous :: Music -> Music -> Music
--- Simultaneous s as `simultaneous` Simultaneous t bs = Simultaneous True (as <> bs)
--- Simultaneous s as `simultaneous` b                 = Simultaneous s (as <> [b])
--- a `simultaneous` Simultaneous t bs                 = Simultaneous t ([a] <> bs)
--- a `simultaneous` b                                 = Simultaneous True ([a,b])
+simultaneous :: MusicL -> MusicL -> MusicL
+Simultaneous s as `simultaneous` Simultaneous t bs = Simultaneous True (as <> bs)
+Simultaneous s as `simultaneous` b                 = Simultaneous s (as <> [b])
+a `simultaneous` Simultaneous t bs                 = Simultaneous t ([a] <> bs)
+a `simultaneous` b                                 = Simultaneous True ([a,b])
 
 
 -- addPost :: PostEvent -> Music -> Music
