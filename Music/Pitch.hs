@@ -141,11 +141,23 @@ noteName Svenska Af = "ass"
 noteName Svenska Bf = "b"
 noteName lang pc = if (lang `elem` [Deutsch, Norsk, Suomi, Svenska]) then germanNoteName' lang pc else noteName' lang pc
 
-instance Pretty PitchClass where
-    pretty = string . noteName def
+class PrettyPitch a where
+    prettyPitch :: Language -> a -> Printer
+    prettyPitchList :: Language -> [a] -> Printer
+    prettyPitchList lang = brackets . sepBy (char ',') . map (prettyPitch lang)
 
-instance {-# OVERLAPPING #-} Pretty Pitch where
-    pretty (pc, oct) = pretty pc <> string octStr
+instance PrettyPitch a => PrettyPitch (Maybe a) where
+    prettyPitch lang = maybe empty (prettyPitch lang)
+
+instance PrettyPitch PitchClass where
+    prettyPitch lang = string . noteName lang
+
+instance {-# OVERLAPS #-} PrettyPitch a => Pretty a where
+    pretty = prettyPitch def
+    prettyList = prettyPitchList def
+
+instance PrettyPitch Pitch where
+    prettyPitch lang (pc, oct) = prettyPitch lang pc <> string octStr
         where
             n = oct - 3
             octStr  | n < 0  = concat $ replicate (negate n) ","

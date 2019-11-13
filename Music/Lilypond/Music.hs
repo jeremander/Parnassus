@@ -16,7 +16,7 @@ import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, empty, hcat, hsep,
 
 import Euterpea (Mode(..), Pitch)
 import Music.Dynamics (DynamicMotion, Dynamics)
-import Music.Pitch (FromPitch(..), ToPitch(..), Key)
+import Music.Pitch (FromPitch(..), Language(..), PrettyPitch(..), ToPitch(..), Key)
 import Music.Rhythm (TimeSig)
 
 
@@ -39,6 +39,7 @@ instance Pretty Identifier where
 
 data Markup
     = MarkupText String
+    | MarkupQuote String
     | MarkupList [Markup]
     | Bold Markup
     | Box Markup
@@ -75,7 +76,8 @@ instance IsString Markup where
     fromString = MarkupText
 
 instance Pretty Markup where
-    pretty (MarkupText s)       = (string . show) s
+    pretty (MarkupText s)       = string s
+    pretty (MarkupQuote s)      = (string . show) s
     pretty (MarkupList as)      = "{" <+> hsep (fmap pretty as) <+> "}"
     pretty (Bold a)             = "\\bold" <+> pretty a
     pretty (Box a)              = "\\box" <+> pretty a
@@ -246,13 +248,13 @@ data OctaveCheck = OctaveCheck
 data NotePitch = NotePitch Pitch (Maybe OctaveCheck) | DrumNotePitch
     deriving (Eq, Show)
 
-instance Pretty NotePitch where
-    pretty (NotePitch p Nothing) = pretty p
-    pretty (NotePitch p _)       = string $ p' ++ "=" ++ oct
-        where (p', oct) = span isAlpha $ show $ pretty p
+instance PrettyPitch NotePitch where
+    prettyPitch lang (NotePitch p Nothing) = prettyPitch lang p
+    prettyPitch lang (NotePitch p _)       = string $ p' ++ "=" ++ oct
+        where (p', oct) = span isAlpha $ show $ prettyPitch lang p
     -- TODO: implement
-    pretty DrumNotePitch         = notImpl "Non-standard pitch"
-    prettyList                   = hsep . fmap pretty
+    prettyPitch _ DrumNotePitch            = notImpl "Non-standard pitch"
+    prettyPitchList lang                   = hsep . fmap (prettyPitch lang)
 
 instance ToPitch NotePitch where
     toPitch (NotePitch p _) = p
@@ -383,13 +385,13 @@ data Assignment = Assignment String MusicL  -- foo = {a b c}
             | Revert String  -- \revert ...
     deriving (Eq, Show)
 
-instance Pretty Assignment where
-    pretty (Assignment s e) = string s <+> "=" <+> pretty e
-    pretty (SymbAssignment s l e) = string s <+> pretty l <+> "=" <+> pretty e
-    pretty (Set a) = "\\set" <+> pretty a
-    pretty (Override a) = "\\override" <+> pretty a
-    pretty (Once a) = "\\once" <+> pretty a
-    pretty (Revert s) = "\\revert" <+> pretty s
+instance PrettyPitch Assignment where
+    prettyPitch lang (Assignment s e) = string s <+> "=" <+> prettyPitch lang e
+    prettyPitch lang (SymbAssignment s l e) = string s <+> pretty l <+> "=" <+> prettyPitch lang e
+    prettyPitch lang (Set a) = "\\set" <+> prettyPitch lang a
+    prettyPitch lang (Override a) = "\\override" <+> prettyPitch lang a
+    prettyPitch lang (Once a) = "\\once" <+> prettyPitch lang a
+    prettyPitch _    (Revert s) = "\\revert" <+> pretty s
 
 -- | A Lilypond music expression.
 data MusicL
@@ -426,42 +428,41 @@ a <=> b = sep [a,b]
 fracPrinter :: Rational -> Printer
 fracPrinter r = pretty (numerator r) <> "/" <> pretty (denominator r)
 
-instance Pretty MusicL where
-    pretty (Note p d exps) = pretty p <> pretty d <> prettyList exps
-    pretty (Rest t d) = pretty t <> pretty d
-    pretty (Chord ns d exps) = (char '<' <+> nest 2 (sepByS "" $ pretty <$> ns) <+> char '>') <> prettyList exps
-    pretty (Bar b) = pretty b
-    pretty (Clef c) = "\\clef" <+> pretty c
-    pretty (Key (p, m)) = "\\key" <+> pretty p <+> pretty m
-    pretty (Time (m, n)) = "\\time" <+> (pretty m <> "/" <> pretty n)
-    pretty (Tempo Nothing Nothing)           = mempty
-    pretty (Tempo (Just t) Nothing)          = "\\tempo" <+> pretty t
-    pretty (Tempo Nothing (Just (d, bpm)))   = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
-    pretty (Tempo (Just t) (Just (d, bpm)))  = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
-    pretty (Sequential xs) = "{" <+> (hsep . fmap pretty) xs <+> "}"
-    -- pretty (Sequential xs)  = "{" <=> nest 2 ((hsep . fmap pretty) xs) <=> "}"
-    pretty (Simultaneous b xs) = "<<" <//> nest 2 ((sepFunc . fmap pretty) xs) <//> ">>"
+instance PrettyPitch MusicL where
+    prettyPitch lang (Note p d exps) = prettyPitch lang p <> pretty d <> prettyList exps
+    prettyPitch _  (Rest t d) = pretty t <> pretty d
+    prettyPitch lang (Chord ns d exps) = (char '<' <+> nest 2 (sepByS "" $ prettyPitch lang <$> ns) <+> char '>') <> prettyList exps
+    prettyPitch _ (Bar b) = pretty b
+    prettyPitch _ (Clef c) = "\\clef" <+> pretty c
+    prettyPitch lang (Key (p, m)) = "\\key" <+> prettyPitch lang p <+> pretty m
+    prettyPitch _ (Time (m, n)) = "\\time" <+> (pretty m <> "/" <> pretty n)
+    prettyPitch _ (Tempo Nothing Nothing)           = mempty
+    prettyPitch _ (Tempo (Just t) Nothing)          = "\\tempo" <+> pretty t
+    prettyPitch _ (Tempo Nothing (Just (d, bpm)))   = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
+    prettyPitch _ (Tempo (Just t) (Just (d, bpm)))  = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
+    prettyPitch lang (Sequential xs) = "{" <+> (hsep . fmap (prettyPitch lang)) xs <+> "}"
+    prettyPitch lang (Simultaneous b xs) = "<<" <//> nest 2 ((sepFunc . fmap (prettyPitch lang)) xs) <//> ">>"
         where sepFunc = if b then sepByS " \\\\" else vcat
-    pretty (Repeat unfold times x alts) = "\\repeat" <=> unf unfold <=> int times <=> pretty x <=> alt alts
+    prettyPitch lang (Repeat unfold times x alts) = "\\repeat" <=> unf unfold <=> int times <=> prettyPitch lang x <=> alt alts
         where
             unf p = if p then "unfold" else "volta"
             alt Nothing      = empty
-            alt (Just exps)  = "\\alternative" <> prettyList exps
-    pretty (Tremolo n x) = "\\repeat tremolo" <+> pretty n <=> pretty x
-    pretty (Times r x) = "\\times" <+> fracPrinter r <+> pretty x
-    pretty (Tuplet r x) = "\\tuplet" <+> fracPrinter r <=> pretty x
-    pretty (Transpose from to x) = "\\transpose" <+> pretty from <=> pretty to <=> pretty x
-    pretty (Relative p x) = "\\relative" <=> pretty p <=> pretty x
-    pretty (Lit lit) = pretty lit
-    pretty (Assign as) = pretty as
-    pretty (With a) = "\\with {" <+> (pretty a) <+> "}"
-    pretty (Voice name x) = "\\new Voice" <+> pretty name <//> pretty x
-    pretty (Staff name x) = "\\new Staff" <+> pretty name <//> pretty x
-    pretty (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> pretty x
-    pretty (New typ name x) = "\\new" <+> string typ <+> pretty name <//> pretty x
-    pretty (Context typ name x) = "\\context" <+> string typ <+> pretty name <//> pretty x
-    pretty (Var v) = "\\" <> string v
-    prettyList = hsep . fmap pretty
+            alt (Just exps)  = "\\alternative" <> prettyPitchList lang exps
+    prettyPitch lang (Tremolo n x) = "\\repeat tremolo" <+> pretty n <=> prettyPitch lang x
+    prettyPitch lang (Times r x) = "\\times" <+> fracPrinter r <+> prettyPitch lang x
+    prettyPitch lang (Tuplet r x) = "\\tuplet" <+> fracPrinter r <=> prettyPitch lang x
+    prettyPitch lang (Transpose from to x) = "\\transpose" <+> prettyPitch lang from <=> prettyPitch lang to <=> prettyPitch lang x
+    prettyPitch lang (Relative p x) = "\\relative" <=> prettyPitch lang p <=> prettyPitch lang x
+    prettyPitch _ (Lit lit) = pretty lit
+    prettyPitch lang (Assign as) = prettyPitch lang as
+    prettyPitch lang (With a) = "\\with {" <+> (prettyPitch lang a) <+> "}"
+    prettyPitch lang (Voice name x) = "\\new Voice" <+> pretty name <//> prettyPitch lang x
+    prettyPitch lang (Staff name x) = "\\new Staff" <+> pretty name <//> prettyPitch lang x
+    prettyPitch lang (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> prettyPitch lang x
+    prettyPitch lang (New typ name x) = "\\new" <+> string typ <+> pretty name <//> prettyPitch lang x
+    prettyPitch lang (Context typ name x) = "\\context" <+> string typ <+> pretty name <//> prettyPitch lang x
+    prettyPitch _ (Var v) = "\\" <> string v
+    prettyPitchList lang = hsep . fmap (prettyPitch lang)
 
 instance FromPitch MusicL where
     fromPitch p = Note (NotePitch p Nothing) (Just (1 / 4)) []

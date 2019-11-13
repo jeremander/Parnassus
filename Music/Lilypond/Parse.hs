@@ -31,10 +31,12 @@ import Misc.Utils (enumerate)
 import Music.Dynamics
 import Music.Pitch
 import Music.Rhythm
+import Music.Lilypond.IO
 import Music.Lilypond.Music
 import Music.Lilypond.Score
 
 import System.IO.Unsafe
+import System.FilePath.Posix
 
 
 makeLenses ''Header
@@ -134,6 +136,7 @@ parseLiteral =  try (BoolL <$> parseBool)
 
 parseMarkup :: (Stream s m Char) => ParsecT s u m Markup
 parseMarkup =   MarkupList <$> braces' (many1 $ parseMarkup <* sorc)
+            <|> MarkupQuote <$> parseString
             <|> markupParser Bold "bold"
             <|> markupParser Box "box"
             <|> markupParser Caps "caps"
@@ -397,7 +400,7 @@ parseScore = try (string "\\score" *> sorc *> (Score <$> braces' parseMusic))
          <|> Score <$> parseMusic
 
 parseHeader :: (Stream s m Char) => ParsecT s u m Header
-parseHeader = string "\\default" *> sorc *> braces' (fieldSetter <*> pure def)
+parseHeader = string "\\header" *> sorc *> braces' (fieldSetter <*> pure def)
     where
         parseField' (setter, field) = set setter . Just <$> (string field *> sorc *> parseEq *> sorc *> parseLiteral)
         parseField = choice $ try . parseField' <$> [
@@ -417,21 +420,25 @@ parseHeader = string "\\default" *> sorc *> braces' (fieldSetter <*> pure def)
         fieldSetter = foldr (.) id . reverse <$> fieldSetters
 
 parseBookPart :: (Stream s m Char) => ParsecT s LilypondState m BookPart
-parseBookPart = try (string "\\bookpart" *> sorc *> (BookPart <$> (optionMaybe parseHeader <* sorc) <*> (sepBy parseScore sorc)))
+parseBookPart = (try (string "\\bookpart") *> sorc *> braces' (BookPart <$> (sorc *> optionMaybe parseHeader <* sorc) <*> (sepBy parseScore sorc)))
             <|> (BookPart Nothing <$> (sepBy1 parseScore sorc))
 
 parseBook :: (Stream s m Char) => ParsecT s LilypondState m Book
-parseBook = try (Book Nothing <$> (sepBy1 parseBookPart sorc))
-        <|> (string "\\book" *> sorc *> (Book <$> (optionMaybe parseHeader <* sorc) <*> (sepBy parseBookPart sorc)))
+parseBook = (try (string "\\book") *> sorc *> braces' (Book <$> (sorc *> optionMaybe parseHeader <* sorc) <*> (sepBy parseBookPart sorc)))
+        <|> (Book Nothing <$> (sepBy1 parseBookPart sorc))
 
 parseTopLevel :: ParsecT String LilypondState IO TopLevel
 parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
-            <|> try (string "\\language" *> sorc *> parseLang)
-            <|> (string "\\include" *> sorc *> parseInclude)
+            <|> (try (string "\\language") *> sorc *> parseLang)
+            <|> (try (string "\\include") *> sorc *> parseInclude)
             <|> try (AssignmentTop <$> parseAssignment)
             <|> try (HeaderTop <$> parseHeader)
             <|> (BookTop <$> parseBook)
     where
+        parseLang = do
+            lang <- between (char '"') (char '"') parseLanguage
+            modifyState (\st -> st {language = lang})
+            return $ Lang lang
         parseInclude = do
             path <- parseString
             st <- getState
@@ -445,10 +452,6 @@ parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
                     lp <- parseLilypond <* eof
                     setInput curInput
                     return $ Include path lp
-        parseLang = do
-            lang <- between (char '"') (char '"') parseLanguage
-            modifyState (\st -> st {language = lang})
-            return $ Lang lang
 
 parseLilypond :: ParsecT String LilypondState IO Lilypond
 parseLilypond = Lilypond <$> (sorc *> endBy parseTopLevel sorc <* eof)
@@ -456,13 +459,26 @@ parseLilypond = Lilypond <$> (sorc *> endBy parseTopLevel sorc <* eof)
 ----
 
 inPath :: FilePath
-inPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/Andante.ly"
+inPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/SonataIV.ly"
 
 outPath :: FilePath
-outPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/Andante2.ly"
+outPath = replaceBaseName inPath (base ++ "2")
+    where
+        base = takeBaseName inPath
 
--- lp :: IO Lilypond
--- lp = parseLilypond "" <$> readFile inPath
+lp :: IO (Either ParseError Lilypond)
+lp = do
+    s <- readFile inPath
+    runParserT parseLilypond defaultLilypondState inPath s
 
--- main :: IO ()
--- main = writeFile outPath =<< (P.runPrinter . pretty <$> lp)
+main :: IO ()
+main = do
+    s <- readFile inPath
+    res <- runParserT parseLilypond defaultLilypondState inPath s
+    case res of
+        (Left err) -> print err
+        (Right lp) -> do
+            writeLilypond lp outPath
+            putStrLn $ "Successfully saved to " ++ outPath
+
+test = unsafePerformIO $ readFile "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/test.ly"
