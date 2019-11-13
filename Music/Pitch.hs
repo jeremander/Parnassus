@@ -9,6 +9,8 @@
 module Music.Pitch where
 
 import Data.Char (toLower)
+import Data.Default (Default(..))
+import qualified Data.Map as M
 import qualified Music.Pitch.Literal.Pitch
 import Music.Pitch.Literal.Pitch hiding (IsPitch(..))
 import Text.Pretty hiding (Mode)
@@ -75,17 +77,72 @@ type Accidental = Int
 -- | Number of octaves raised (positive) or flattened (negative).
 type Octave = Int
 
+-- * Languages
+
+data Language = Nederlands | Catalan | Deutsch | English | Espanol | Francais | Italiano | Norsk | Portugues | Suomi | Svenska | Vlaams
+    deriving (Bounded, Enum, Eq, Ord, Show)
+
+instance Default Language where
+    def = Nederlands
+
+instance Pretty Language where
+    pretty Francais = "français"
+    pretty lang = string $ toLower <$> show lang
+
+stdNoteNames :: M.Map PitchClass String
+stdNoteNames = M.fromList [(pc, toLower <$> show pc) | pc <- [C, D, E, F, G, A, B]]
+
+solfegeNoteNames :: M.Map PitchClass String
+solfegeNoteNames = M.fromList [(C, "do"), (D, "re"), (E, "mi"), (F, "fa"), (G, "sol"), (A, "la"), (B, "si")]
+
+germanNoteNames :: M.Map PitchClass String
+germanNoteNames = M.fromList $ [(pc, toLower <$> show pc) | pc <- [C, D, E, F, G, A]] ++ [(B, "h")]
+
+-- maps from language to (diatonic note name map, (flat names, sharp names))
+languageNoteMap :: M.Map Language (M.Map PitchClass String, ([String], [String]))
+languageNoteMap = M.fromList [
+    (Nederlands, (stdNoteNames, (["es"], ["is"]))),
+    (Catalan, (solfegeNoteNames, (["b"], ["d", "s"]))),
+    (Deutsch, (germanNoteNames, (["es"], ["is"]))),
+    (English, (stdNoteNames, (["f", "flat"], ["s", "sharp"]))),
+    (Espanol, (solfegeNoteNames, (["b"], ["s"]))),
+    (Francais, (solfegeNoteNames, (["b"], ["d"]))),
+    (Italiano, (solfegeNoteNames, (["b"], ["d"]))),
+    (Norsk, (germanNoteNames, (["es", "ess"], ["is", "iss"]))),
+    (Portugues, (solfegeNoteNames, (["b"], ["s"]))),
+    (Suomi, (germanNoteNames, (["es"], ["is"]))),
+    (Svenska, (germanNoteNames, (["ess"], ["iss"]))),
+    (Vlaams, (solfegeNoteNames, (["b"], ["k"])))
+    ]
+
+noteName' :: Language -> PitchClass -> String
+noteName' lang pc = nameMap M.! base ++ concat (replicate n accSym)
+    where
+        (nameMap, (flat:_, sharp:_)) = languageNoteMap M.! lang
+        (base, acc) = noteMapping pc
+        accSym = if (acc >= 0) then sharp else flat
+        n = abs acc
+
+germanNoteName' :: Language -> PitchClass -> String
+germanNoteName' lang Eff = "eses"
+germanNoteName' lang Ef = "es"
+germanNoteName' lang Aff = "ases"
+germanNoteName' lang Af = "as"
+germanNoteName' lang Bf = "b"
+germanNoteName' lang pc = noteName' lang pc
+
+-- language-specific rendering of note names
+noteName :: Language -> PitchClass -> String
+noteName Norsk Bff = "bes"
+noteName Svenska Eff = "essess"
+noteName Svenska Ef = "ess"
+noteName Svenska Aff = "assess"
+noteName Svenska Af = "ass"
+noteName Svenska Bf = "b"
+noteName lang pc = if (lang `elem` [Deutsch, Norsk, Suomi, Svenska]) then germanNoteName' lang pc else noteName' lang pc
+
 instance Pretty PitchClass where
-    pretty pc = string (toLower <$> show pc') <> string acc'
-        where
-            (pc', acc) = noteMapping pc
-            acc' = case acc of
-                -2 -> "eses"
-                -1 -> "es"
-                0  -> ""
-                1  -> "is"
-                2  -> "isis"
-                _  -> error "invalid PitchClass \"" ++ show pc ++ "\""
+    pretty = string . noteName def
 
 instance {-# OVERLAPPING #-} Pretty Pitch where
     pretty (pc, oct) = pretty pc <> string octStr
@@ -94,6 +151,7 @@ instance {-# OVERLAPPING #-} Pretty Pitch where
             octStr  | n < 0  = concat $ replicate (negate n) ","
                     | n == 0 = ""
                     | n > 0   = concat $ replicate n "'"
+
 
 -- * Modes and Keys
 

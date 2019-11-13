@@ -261,24 +261,38 @@ instance ToPitch NotePitch where
 instance FromPitch NotePitch where
     fromPitch = (`NotePitch` Nothing)
 
--- | Notated time in fractions, in @[2^^i | i <- [-10..3]]@.
-newtype Duration = Duration Rational
-    deriving (Eq, Ord, Num, Enum, Fractional, Real, RealFrac, Show)
+-- | Notated time in fractions, in @[2^^i | i <- [-10..3]]@, along with a number of dots and a multiplier.
+data Duration = Duration Rational Int Int
+    deriving (Eq, Ord, Show)
 
--- base duration and number of dots
-type DottedDuration = (Duration, Int)
+instance Real Duration where
+    toRational (Duration r nd m) = r * ((3 / 2) ^^ nd) * (fromIntegral m)
+
+instance Fractional Duration where
+    fromRational r          = Duration r 0 1
+    recip (Duration r _ _ ) = Duration (1 / r) 0 1
+
+instance Num Duration where
+    (+) d1 d2 = fromRational (toRational d1 + toRational d2)
+    (-) d1 d2 = fromRational (toRational d1 - toRational d2)
+    (*) d1 d2 = fromRational (toRational d1 * toRational d2)
+    abs d = fromRational $ abs $ toRational d
+    signum d = fromRational $ signum $ toRational d
+    fromInteger = fromRational . fromIntegral
 
 intLog2 :: (Integral a, Integral b) => a -> b
 intLog2 = truncate . logBase 2 . fromIntegral
 
--- | Separate a duration into a sequence of undotted durations with some number of dots
-separateDots :: Duration -> [DottedDuration]
-separateDots (Duration r)
+type DottedDuration = (Rational, Int)
+
+-- | Separate a rational duration into a sequence of undotted durations with some number of dots
+separateDots :: Rational -> [DottedDuration]
+separateDots r
     | r == 0       = []
-    | r >= 16      = (Duration 8, 0) : separateDots (Duration r - 8)
-    | diff == 0    = [(Duration r, 0)]
-    | n' == d' - 1 = [(Duration b, intLog2 d')]
-    | otherwise    = (Duration b, 0) : separateDots (Duration diff)
+    | r >= 16      = (8, 0) : separateDots (r - 8)
+    | diff == 0    = [(r, 0)]
+    | n' == d' - 1 = [(b, intLog2 d')]
+    | otherwise    = (b, 0) : separateDots diff
     where
         (n, d) = (numerator r, denominator r)
         b = (2 ^ (intLog2 $ fromInteger n)) % d
@@ -286,18 +300,20 @@ separateDots (Duration r)
         q = diff / b
         (n', d') = (numerator q, denominator q)
 
+-- rational2Durations :: Rational -> [Duration]
+-- rational2Durations r = [Duration r' nd 1 | (r', nd) <- separateDots r]
+
 showDottedDuration :: DottedDuration -> String
-showDottedDuration (Duration r, n) = pnv r ++ pds n
+showDottedDuration (r, nd) = go r ++ (concat $ replicate nd ".")
     where
-        pnv 8 = "\\maxima"
-        pnv 4 = "\\longa"
-        pnv 2 = "\\breve"
-        pnv r' = show $ denominator r'
-        pds n = concat $ replicate n "."
+        go 8 = "\\maxima"
+        go 4 = "\\longa"
+        go 2 = "\\breve"
+        go r' = show $ denominator r'
 
 instance Pretty Duration where
-    pretty d = case (separateDots d) of
-        [dd] -> string $ showDottedDuration dd
+    pretty (Duration r nd m) = case (separateDots r) of
+        [dd] -> string (showDottedDuration dd) <> (if (m == 1) then "" else (string $ "*" ++ show m))
         _    -> error "invalid duration"
 
 data RestType
@@ -401,18 +417,11 @@ data MusicL
     | Lyrics String MusicL                             -- ^ \new Lyrics \lyricsto "foo" { bar }
     | New String (Maybe String) MusicL                 -- ^ New expression.
     | Context String (Maybe String) MusicL             -- ^ Context expression.
+    | Var String                                       -- ^ Variable occurrence.
     deriving (Eq, Show)
 
 infixl <=>
 a <=> b = sep [a,b]
-
--- given a printer for something with a duration, converts it into a new printer, where elements may need to split into multiple elements to allow for printable durations
-durationPrinter :: Printer -> Printer -> Maybe Duration -> Printer
-durationPrinter p sep Nothing  = p
-durationPrinter p sep (Just d) = go (separateDots d)
-    where
-        go [dd] = p <> (string $ showDottedDuration dd)
-        go dds  = "{" <=> (sepByS sep $ go . pure <$> dds) <=> "}"
 
 fracPrinter :: Rational -> Printer
 fracPrinter r = pretty (numerator r) <> "/" <> pretty (denominator r)
@@ -420,8 +429,7 @@ fracPrinter r = pretty (numerator r) <> "/" <> pretty (denominator r)
 instance Pretty MusicL where
     pretty (Note p d exps) = pretty p <> pretty d <> prettyList exps
     pretty (Rest t d) = pretty t <> pretty d
-    pretty (Chord ns d exps) = durationPrinter printer "~" d <> prettyList exps
-        where printer = char '<' <+> nest 4 (sepByS "" $ pretty <$> ns) <+> char '>'
+    pretty (Chord ns d exps) = (char '<' <+> nest 2 (sepByS "" $ pretty <$> ns) <+> char '>') <> prettyList exps
     pretty (Bar b) = pretty b
     pretty (Clef c) = "\\clef" <+> pretty c
     pretty (Key (p, m)) = "\\key" <+> pretty p <+> pretty m
@@ -430,8 +438,9 @@ instance Pretty MusicL where
     pretty (Tempo (Just t) Nothing)          = "\\tempo" <+> pretty t
     pretty (Tempo Nothing (Just (d, bpm)))   = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
     pretty (Tempo (Just t) (Just (d, bpm)))  = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
-    pretty (Sequential xs)  = "{" <=> nest 4 ((hsep . fmap pretty) xs) <=> "}"
-    pretty (Simultaneous b xs) = "<<" <//> nest 4 ((sepFunc . fmap pretty) xs) <//> ">>"
+    pretty (Sequential xs) = "{" <+> (hsep . fmap pretty) xs <+> "}"
+    -- pretty (Sequential xs)  = "{" <=> nest 2 ((hsep . fmap pretty) xs) <=> "}"
+    pretty (Simultaneous b xs) = "<<" <//> nest 2 ((sepFunc . fmap pretty) xs) <//> ">>"
         where sepFunc = if b then sepByS " \\\\" else vcat
     pretty (Repeat unfold times x alts) = "\\repeat" <=> unf unfold <=> int times <=> pretty x <=> alt alts
         where
@@ -439,7 +448,7 @@ instance Pretty MusicL where
             alt Nothing      = empty
             alt (Just exps)  = "\\alternative" <> prettyList exps
     pretty (Tremolo n x) = "\\repeat tremolo" <+> pretty n <=> pretty x
-    pretty (Times r x) = "\\times" <+> fracPrinter r <=> pretty x
+    pretty (Times r x) = "\\times" <+> fracPrinter r <+> pretty x
     pretty (Tuplet r x) = "\\tuplet" <+> fracPrinter r <=> pretty x
     pretty (Transpose from to x) = "\\transpose" <+> pretty from <=> pretty to <=> pretty x
     pretty (Relative p x) = "\\relative" <=> pretty p <=> pretty x
@@ -451,6 +460,7 @@ instance Pretty MusicL where
     pretty (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> pretty x
     pretty (New typ name x) = "\\new" <+> string typ <+> pretty name <//> pretty x
     pretty (Context typ name x) = "\\context" <+> string typ <+> pretty name <//> pretty x
+    pretty (Var v) = "\\" <> string v
     prettyList = hsep . fmap pretty
 
 instance FromPitch MusicL where
@@ -503,11 +513,3 @@ Simultaneous s as `simultaneous` Simultaneous t bs = Simultaneous True (as <> bs
 Simultaneous s as `simultaneous` b                 = Simultaneous s (as <> [b])
 a `simultaneous` Simultaneous t bs                 = Simultaneous t ([a] <> bs)
 a `simultaneous` b                                 = Simultaneous True ([a,b])
-
-
--- addPost :: PostEvent -> Music -> Music
--- addPost a = foldMusic' (addPost' a) id (addPost a)
---   where
---     addPost' a (Rest d es)     = Rest d (es ++ [a])
---     addPost' a (Note n d es)   = Note n d (es ++ [a])
---     addPost' a (Chord ns d es) = Chord ns d (es ++ [a])

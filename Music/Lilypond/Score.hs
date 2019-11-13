@@ -16,9 +16,11 @@ module Music.Lilypond.Score (
 
 import Control.Lens ((^.), makeLenses)
 import Data.Default (Default(..))
+import Data.List (intersperse)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
 import Music.Lilypond.Music (Assignment(..), Literal(..), MusicL(..))
+import Music.Pitch (Language(..))
 
 
 mkSection :: String -> Printer -> Printer
@@ -88,15 +90,17 @@ instance Pretty Book where
             pretty' bookPart                   = pretty bookPart
 
 data TopLevel = Version String
-              | Include FilePath
+              | Lang Language
+              | Include FilePath Lilypond
               | AssignmentTop Assignment
               | HeaderTop Header
               | BookTop Book
     deriving (Eq, Show)
 
 instance Pretty TopLevel where
-    pretty (Version v)       = "\\version" <+> string v
-    pretty (Include p)       = "\\include" <+> string p
+    pretty (Version v)       = "\\version" <+> (string $ show v)
+    pretty (Lang lang)       = "\\language" <+> pretty lang
+    pretty (Include p _ )    = "\\include" <+> (string $ show p)
     pretty (AssignmentTop a) = pretty a
     pretty (HeaderTop h)     = pretty h
     pretty (BookTop b)       = pretty b
@@ -106,7 +110,7 @@ newtype Lilypond = Lilypond [TopLevel]
     deriving (Eq, Show)
 
 instance Pretty Lilypond where
-    pretty (Lilypond elts) = vcat $ pretty <$> elts
+    pretty (Lilypond elts) = vcat $ intersperse (string "") $ pretty <$> elts
 
 class HasHeader a where
     setHeader :: Header -> a -> a
