@@ -1,7 +1,4 @@
-{-# LANGUAGE
-    OverloadedStrings,
-    TemplateHaskell
-    #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 module Music.Lilypond.Score (
     Score(..),
@@ -14,14 +11,14 @@ module Music.Lilypond.Score (
     ToLilypond(..)
 ) where
 
-import Control.Lens ((^.), makeLenses)
 import Data.Default (Default(..))
 import Data.Maybe (fromMaybe)
 import Data.Foldable (foldl')
 import Data.List (intersperse)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
-import Music.Lilypond.Music (Assignment(..), Literal(..), MusicL(..))
+import Music.Lilypond.Literal (Literal(..))
+import Music.Lilypond.Music (Assignment(..), MusicL(..))
 import Music.Pitch (Language(..), PrettyPitch(..))
 
 
@@ -37,42 +34,14 @@ instance PrettyPitch Score where
 
 -- | LilyPond score header with various information about the score.
 -- TODO: enable markup text in the fields
-data Header = Header {
-    _dedication :: Maybe Literal,
-    _title :: Maybe Literal,
-    _subtitle :: Maybe Literal,
-    _subsubtitle :: Maybe Literal,
-    _instrument :: Maybe Literal,
-    _poet :: Maybe Literal,
-    _composer :: Maybe Literal,
-    _meter :: Maybe Literal,
-    _arranger :: Maybe Literal,
-    _tagline :: Maybe Literal,
-    _copyright :: Maybe Literal
-} deriving (Eq, Show)
-
-makeLenses ''Header
-
-mkHdrField :: String -> Maybe Literal -> Printer
-mkHdrField name lit = pretty $ (string name <+> "=" <+>) . pretty <$> lit
+newtype Header = Header [(String, Literal)]
+    deriving (Eq, Show)
 
 instance Pretty Header where
-    pretty hdr = mkSection "\\header" $ vcat [
-                    mkHdrField "dedication" $ hdr^.dedication,
-                    mkHdrField "title" $ hdr^.title,
-                    mkHdrField "subtitle" $ hdr^.subtitle,
-                    mkHdrField "subsubtitle" $ hdr^.subsubtitle,
-                    mkHdrField "instrument" $ hdr^.instrument,
-                    mkHdrField "poet" $ hdr^.poet,
-                    mkHdrField "composer" $ hdr^.composer,
-                    mkHdrField "meter" $ hdr^.meter,
-                    mkHdrField "arranger" $ hdr^.arranger,
-                    mkHdrField "tagline" $ hdr^.tagline,
-                    mkHdrField "copyright" $ hdr^.copyright
-                ]
+    pretty (Header hdr) = mkSection "\\header" $ vcat [string name <+> "=" <+> pretty val | (name, val) <- hdr]
 
 instance Default Header where
-    def = Header Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing Nothing
+    def = Header []
 
 -- | A BookPart consists of an optional header and one or more Scores.
 data BookPart = BookPart (Maybe Header) [Score]
@@ -136,6 +105,9 @@ instance HasHeader BookPart where
 
 instance HasHeader Book where
     setHeader hdr (Book _ bookParts) = Book (Just hdr) bookParts
+
+instance HasHeader Lilypond where
+    setHeader hdr (Lilypond topLevels) = Lilypond (HeaderTop hdr : topLevels)
 
 class ToLilypond a where
     toLilypond :: a -> Lilypond

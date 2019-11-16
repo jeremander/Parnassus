@@ -1,21 +1,21 @@
 {-# LANGUAGE
-     GeneralizedNewtypeDeriving,
-     OverloadedStrings,
-     TypeFamilies
-     #-}
+    OverloadedStrings,
+    TypeFamilies
+#-}
 
 module Music.Lilypond.Music where
 
 import Control.Arrow ((***), (<<<), second)
-import Data.Char (isAlpha, toLower)
+import Data.Char (isAlpha, isUpper, toLower, toUpper)
 import Data.Default (Default(..))
+import Data.List.Split (splitOn)
 import Data.Ratio ((%), denominator, numerator)
-import Data.String (IsString(..))
 import Data.VectorSpace ((*^), AdditiveGroup(..), Scalar, VectorSpace)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, empty, hcat, hsep, int, nest, sep, sepByS, string, vcat)
 
 import Euterpea (Mode(..), Pitch)
 import Music.Dynamics (DynamicMotion, Dynamics)
+import Music.Lilypond.Literal
 import Music.Pitch (FromPitch(..), Language(..), PrettyPitch(..), ToPitch(..), Key)
 import Music.Rhythm (TimeSig)
 
@@ -25,80 +25,22 @@ import Music.Rhythm (TimeSig)
 notImpl :: String -> a
 notImpl a = error $ "Not implemented: " ++ a
 
+-- capitalizes the first letter of a string
+cap :: String -> String
+cap cs = [if (i == 0) then toUpper c else c | (i, c) <- zip [0..] cs]
+
+-- -- converts a string from camel-case to hyphen-separated
+-- camelToHyph :: String -> String
+-- camelToHyph []    = []
+-- camelToHyph (c:s) = if isUpper c then ('-' : toLower c : s') else (c : s') where s' = camelToHyph s
+
+-- hyphToCamel :: String -> String
+-- hyphToCamel s = uncap $ concat $ cap <$> splitOn "-" s
+--     where uncap cs = [if (i == 0) then toLower c else c | (i, c) <- zip [0..] cs]
+
 -- Types
 
--- * Identifier
-
-newtype Identifier = Identifier { getIdentifier :: String } -- \foo
-    deriving (Eq, Show)
-
-instance Pretty Identifier where
-    pretty (Identifier s) = char '\\' <> string s
-
--- * Markup
-
-data Markup
-    = MarkupText String
-    | MarkupQuote String
-    | MarkupList [Markup]
-    | Bold Markup
-    | Box Markup
-    | Caps Markup
-    | DynamicsFont Markup
-    | FingeringFont Markup
-    | Fontsize Double Markup
-    | Huge Markup
-    | Italic Markup
-    | Large Markup
-    | Larger Markup
-    | Magnify Double Markup
-    | Medium Markup
-    | Roman Markup
-    | Sans Markup
-    | Sub Markup
-    | Super Markup
-    | TextFont Markup
-    | Tiny Markup
-    | TypewriterFont Markup
-    | Upright Markup
-    deriving (Eq, Show)
-
-class HasMarkup a where
-    markup :: a -> Markup
-
-instance HasMarkup Markup where
-    markup = id
-
-instance HasMarkup a => HasMarkup [a] where
-    markup = MarkupList . fmap markup
-
-instance IsString Markup where
-    fromString = MarkupText
-
-instance Pretty Markup where
-    pretty (MarkupText s)       = string s
-    pretty (MarkupQuote s)      = (string . show) s
-    pretty (MarkupList as)      = "{" <+> hsep (fmap pretty as) <+> "}"
-    pretty (Bold a)             = "\\bold" <+> pretty a
-    pretty (Box a)              = "\\box" <+> pretty a
-    pretty (Caps a)             = "\\caps" <+> pretty a
-    pretty (DynamicsFont a)     = "\\dynamics" <+> pretty a
-    pretty (FingeringFont a)    = "\\fingering" <+> pretty a
-    pretty (Fontsize n a)       = "\\fontsize" <+> ("#" <> pretty n) <+> pretty a
-    pretty (Huge a)             = "\\huge" <+> pretty a
-    pretty (Italic a)           = "\\italic" <+> pretty a
-    pretty (Large a)            = "\\large" <+> pretty a
-    pretty (Larger a)           = "\\larger" <+> pretty a
-    pretty (Magnify n a)        = "\\magnify" <+> ("#" <> pretty n) <+> pretty a
-    pretty (Medium a)           = "\\medium" <+> pretty a
-    pretty (Roman a)            = "\\roman" <+> pretty a
-    pretty (Sans a)             = "\\sans" <+> pretty a
-    pretty (Sub a)              = "\\sub" <+> pretty a
-    pretty (Super a)            = "\\super" <+> pretty a
-    pretty (TextFont a)         = "\\text" <+> pretty a
-    pretty (Tiny a)             = "\\tiny" <+> pretty a
-    pretty (TypewriterFont a)   = "\\typewriter" <+> pretty a
-    pretty (Upright a)          = "\\upright" <+> pretty a
+-- * Musical Notation
 
 data BarLine = BarCheck | BarLine String
     deriving (Eq, Show)
@@ -360,38 +302,19 @@ instance Pretty Clef where
     pretty (StdClef std)  = pretty std
     pretty (CustomClef s) = string $ show s
 
-data Literal = FloatL Double -- #0.4
-            | IntL Int -- #t
-            | BoolL Bool -- ##t / ##f
-            | StringL String -- etc.
-            | SymbolL String -- etc.
-            | SexpL String -- etc.
-    deriving (Eq, Show)
-
-instance Pretty Literal where
-  pretty (FloatL d) = string $ "#" ++ show d
-  pretty (IntL d) = string $ "#" ++ show d
-  pretty (BoolL True) = "##t"
-  pretty (BoolL False) = "##f"
-  pretty (StringL d) = string $ "#\"" ++ d ++ "\""
-  pretty (SymbolL d) = string $ "#\'" ++ d
-  pretty (SexpL d) = string $ "#(" ++ d ++ ")"
-
 data Assignment = Assignment String MusicL  -- foo = {a b c}
             | SymbAssignment String Literal MusicL  -- foo #'bar = baz
+            | PropAssignment Tweak  -- \override, etc.
             | Set Assignment -- \set ...
-            | Override Assignment  -- \override ...
             | Once Assignment  -- \once ...
-            | Revert String  -- \revert ...
     deriving (Eq, Show)
 
 instance PrettyPitch Assignment where
     prettyPitch lang (Assignment s e) = string s <+> "=" <+> prettyPitch lang e
     prettyPitch lang (SymbAssignment s l e) = string s <+> pretty l <+> "=" <+> prettyPitch lang e
+    prettyPitch _    (PropAssignment t) = pretty t
     prettyPitch lang (Set a) = "\\set" <+> prettyPitch lang a
-    prettyPitch lang (Override a) = "\\override" <+> prettyPitch lang a
     prettyPitch lang (Once a) = "\\once" <+> prettyPitch lang a
-    prettyPitch _    (Revert s) = "\\revert" <+> pretty s
 
 -- | A Lilypond music expression.
 data MusicL
