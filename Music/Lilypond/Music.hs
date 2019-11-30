@@ -29,14 +29,6 @@ notImpl a = error $ "Not implemented: " ++ a
 cap :: String -> String
 cap cs = [if (i == 0) then toUpper c else c | (i, c) <- zip [0..] cs]
 
--- -- converts a string from camel-case to hyphen-separated
--- camelToHyph :: String -> String
--- camelToHyph []    = []
--- camelToHyph (c:s) = if isUpper c then ('-' : toLower c : s') else (c : s') where s' = camelToHyph s
-
--- hyphToCamel :: String -> String
--- hyphToCamel s = uncap $ concat $ cap <$> splitOn "-" s
---     where uncap cs = [if (i == 0) then toLower c else c | (i, c) <- zip [0..] cs]
 
 -- Types
 
@@ -244,9 +236,6 @@ separateDots r
         q = diff / b
         (n', d') = (numerator q, denominator q)
 
--- rational2Durations :: Rational -> [Duration]
--- rational2Durations r = [Duration r' nd 1 | (r', nd) <- separateDots r]
-
 showDottedDuration :: DottedDuration -> String
 showDottedDuration (r, nd) = go r ++ (concat $ replicate nd ".")
     where
@@ -257,8 +246,8 @@ showDottedDuration (r, nd) = go r ++ (concat $ replicate nd ".")
 
 instance Pretty Duration where
     pretty (Duration r nd m) = case (separateDots r) of
-        [dd] -> string (showDottedDuration dd) <> (if (m == 1) then "" else (string $ "*" ++ show m))
-        _    -> error "invalid duration"
+        [(r', nd')] -> string (showDottedDuration (r', nd' + nd)) <> (if (m == 1) then "" else (string $ "*" ++ show m))
+        _           -> error "invalid duration"
 
 data RestType
     = StdRest  -- ^ standard rest
@@ -302,6 +291,29 @@ instance Pretty Clef where
     pretty (StdClef std)  = pretty std
     pretty (CustomClef s) = string $ show s
 
+data Tempo = Tempo (Maybe String) (Maybe (Duration, Integer))
+    deriving (Eq, Show)
+
+instance Pretty Tempo where
+    pretty (Tempo Nothing Nothing)          = mempty
+    pretty (Tempo (Just t) Nothing)         = "\\tempo" <+> pretty t
+    pretty (Tempo Nothing (Just (d, bpm)))  = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
+    pretty (Tempo (Just t) (Just (d, bpm))) = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
+
+data Staff =  Staff
+            | DrumStaff
+            | RhythmicStaff
+            | TabStaff
+            | GregorianTranscriptStaff
+            | StaffGroup
+            | ChoirStaff
+            | GrandStaff
+            | PianoStaff
+    deriving (Bounded, Enum, Eq, Read, Show)
+
+instance Pretty Staff where
+    pretty = string . show
+
 data Assignment = Assignment String MusicL  -- foo = {a b c}
             | SymbAssignment String Literal MusicL  -- foo #'bar = baz
             | PropAssignment Tweak  -- \override, etc.
@@ -316,16 +328,32 @@ instance PrettyPitch Assignment where
     prettyPitch lang (Set a) = "\\set" <+> prettyPitch lang a
     prettyPitch lang (Once a) = "\\once" <+> prettyPitch lang a
 
+data Context = Context (Maybe (String, (Maybe String))) MusicL
+    deriving (Eq, Show)
+
+instance PrettyPitch Context where
+    prettyPitch lang (Context pref x) = "\\context" <+>
+        (case pref of
+            Nothing          -> string ""
+            Just (typ, name) -> string typ <+> pretty name)
+        <//> prettyPitch lang x
+
+newtype Variable = Variable String
+    deriving (Eq, Show)
+
+instance Pretty Variable where
+    pretty (Variable s) = "\\" <> string s
+
 -- | A Lilypond music expression.
 data MusicL
     = Note NotePitch (Maybe Duration) [Expressive]     -- ^ Single note.
-    | Rest RestType (Maybe Duration)                   -- ^ Single rest.
+    | Rest RestType (Maybe Duration) [Expressive]      -- ^ Single rest.
     | Chord [NotePitch] (Maybe Duration) [Expressive]  -- ^ Single chord.
     | Bar BarLine                                      -- ^ Bar line.
     | Clef Clef                                        -- ^ Clef.
     | Key Key                                          -- ^ Key signature.
     | Time TimeSig                                     -- ^ Time signature.
-    | Tempo (Maybe String) (Maybe (Duration, Integer)) -- ^ Tempo mark.
+    | Tmp Tempo                                        -- ^ Tempo mark.
     | Sequential [MusicL]                              -- ^ Sequential composition.
     | Simultaneous Bool [MusicL]                       -- ^ Parallel composition (split voices?).
     | Repeat Bool Int MusicL (Maybe [MusicL])          -- ^ Repetition (unfold?, times, music, alternatives).
@@ -338,11 +366,11 @@ data MusicL
     | Assign Assignment                                -- ^ Single assignment.
     | With Assignment                                  -- ^ \with { alignAboveContext = #"main" }
     | Voice (Maybe String) MusicL                      -- ^ \new Voice
-    | Staff (Maybe String) MusicL                      -- ^ \new Staff
+    | NewStaff Staff (Maybe String) MusicL             -- ^ \new Staff, etc.
     | Lyrics String MusicL                             -- ^ \new Lyrics \lyricsto "foo" { bar }
     | New String (Maybe String) MusicL                 -- ^ New expression.
-    | Context String (Maybe String) MusicL             -- ^ Context expression.
-    | Var String                                       -- ^ Variable occurrence.
+    | Ctx Context                                      -- ^ Context expression.
+    | Var Variable                                     -- ^ Variable occurrence.
     deriving (Eq, Show)
 
 infixl <=>
@@ -353,16 +381,13 @@ fracPrinter r = pretty (numerator r) <> "/" <> pretty (denominator r)
 
 instance PrettyPitch MusicL where
     prettyPitch lang (Note p d exps) = prettyPitch lang p <> pretty d <> prettyList exps
-    prettyPitch _  (Rest t d) = pretty t <> pretty d
+    prettyPitch _  (Rest t d exps) = pretty t <> pretty d <> prettyList exps
     prettyPitch lang (Chord ns d exps) = (char '<' <+> nest 2 (sepByS "" $ prettyPitch lang <$> ns) <+> char '>') <> prettyList exps
     prettyPitch _ (Bar b) = pretty b
     prettyPitch _ (Clef c) = "\\clef" <+> pretty c
     prettyPitch lang (Key (p, m)) = "\\key" <+> prettyPitch lang p <+> pretty m
     prettyPitch _ (Time (m, n)) = "\\time" <+> (pretty m <> "/" <> pretty n)
-    prettyPitch _ (Tempo Nothing Nothing)           = mempty
-    prettyPitch _ (Tempo (Just t) Nothing)          = "\\tempo" <+> pretty t
-    prettyPitch _ (Tempo Nothing (Just (d, bpm)))   = "\\tempo" <+> pretty d <+> "=" <+> pretty bpm
-    prettyPitch _ (Tempo (Just t) (Just (d, bpm)))  = "\\tempo" <+> pretty t <+> pretty d <+> "=" <+> pretty bpm
+    prettyPitch _ (Tmp tempo) = pretty tempo
     prettyPitch lang (Sequential xs) = "{" <+> (hsep . fmap (prettyPitch lang)) xs <+> "}"
     prettyPitch lang (Simultaneous b xs) = "<<" <//> nest 2 ((sepFunc . fmap (prettyPitch lang)) xs) <//> ">>"
         where sepFunc = if b then sepByS " \\\\" else vcat
@@ -380,25 +405,26 @@ instance PrettyPitch MusicL where
     prettyPitch lang (Assign as) = prettyPitch lang as
     prettyPitch lang (With a) = "\\with {" <+> (prettyPitch lang a) <+> "}"
     prettyPitch lang (Voice name x) = "\\new Voice" <+> pretty name <//> prettyPitch lang x
-    prettyPitch lang (Staff name x) = "\\new Staff" <+> pretty name <//> prettyPitch lang x
+    prettyPitch lang (NewStaff staff Nothing x) = "\\new" <+> pretty staff <//> prettyPitch lang x
+    prettyPitch lang (NewStaff staff (Just name) x) = "\\new" <+> pretty staff <+> "=" <+> pretty name <//> prettyPitch lang x
     prettyPitch lang (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> prettyPitch lang x
     prettyPitch lang (New typ name x) = "\\new" <+> string typ <+> pretty name <//> prettyPitch lang x
-    prettyPitch lang (Context typ name x) = "\\context" <+> string typ <+> pretty name <//> prettyPitch lang x
-    prettyPitch _ (Var v) = "\\" <> string v
+    prettyPitch lang (Ctx context) = prettyPitch lang context
+    prettyPitch _ (Var v) = pretty v
     prettyPitchList lang = hsep . fmap (prettyPitch lang)
 
 instance FromPitch MusicL where
     fromPitch p = Note (NotePitch p Nothing) (Just (1 / 4)) []
 
 instance AdditiveGroup MusicL where
-    zeroV   = Rest StdRest (Just $ 1 / 4)
+    zeroV   = Rest StdRest (Just $ 1 / 4) []
     a ^+^ b = Sequential [a, b]
     negateV = error "No Music.Lilypond.Music.negateV"
 
 instance VectorSpace MusicL where
     type Scalar MusicL = Duration
     a *^ (Note n (Just d) p)   = Note n (Just $ a * d) p
-    a *^ (Rest typ (Just d))   = Rest typ (Just $ a * d)
+    a *^ (Rest typ (Just d) p) = Rest typ (Just $ a * d) p
     a *^ (Chord ns (Just d) p) = Chord ns (Just $ a * d) p
     a *^ x                     = x
 

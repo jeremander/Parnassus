@@ -32,8 +32,10 @@ lilypondVersion = do
 writeLy :: (ToLilypond a) => a -> FilePath -> IO ()
 writeLy mus path = do
     let path' = if (".ly" `isSuffixOf` (toLower <$> path)) then path else path <.> "ly"
-    version <- lilypondVersion
-    let content = "\\version " <+> doubleQuotes (string version) <//> pretty (toLilypond mus)
+    -- TODO: prepend version only if no version element included
+    -- version <- lilypondVersion
+    -- let content = "\\version " <+> doubleQuotes (string version) <//> pretty (toLilypond mus)
+    let content = pretty $ toLilypond mus
     writeFile path' $ show content
 
 -- | Output file format

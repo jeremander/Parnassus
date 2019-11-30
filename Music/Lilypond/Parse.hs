@@ -10,7 +10,7 @@ module Music.Lilypond.Parse where
 
 import Control.Monad (ap, void)
 import Control.Monad.Trans (lift)
-import Data.Char (isSpace, toLower, toUpper)
+import Data.Char (isAlphaNum, isAscii, isSpace, toLower, toUpper)
 import Data.Default (Default(..))
 import qualified Data.Map as M
 import Data.Maybe (fromMaybe)
@@ -20,7 +20,8 @@ import Data.Tuple (swap)
 import Euterpea (Mode(..), Pitch, PitchClass(..))
 import System.Directory (findFile)
 import Text.Parsec
-import Text.Parsec.Number (floating, int, sign)
+import Text.Parsec.Number (floating, floating2, int, sign)
+import Text.Parsec.Pos (initialPos)
 import Text.Parsec.Token (float, integer, stringLiteral)
 import qualified Text.Pretty as P
 import Text.Pretty (Pretty(..))
@@ -40,17 +41,17 @@ import System.FilePath.Posix
 
 data LilypondState = LilypondState {
     includePaths :: [FilePath],
-    language :: Language
+    language :: Language,
+    hdrAssignments :: M.Map String Literal
 } deriving (Eq, Show)
 
 -- Mac OSX specific include path
 defaultLilypondState :: LilypondState
 defaultLilypondState = LilypondState {
     includePaths = ["/Applications/LilyPond.app/Contents/Resources/share/lilypond/current/ly"],
-    language = def
+    language = def,
+    hdrAssignments = M.empty
 }
-
--- * Utilities
 
 -- consumes spaces or comments
 sorc :: (Stream s m Char) => ParsecT s u m ()
@@ -65,85 +66,14 @@ bracket' c1 c2 = between (char c1 <* sorc) (sorc *> char c2)
 braces' :: (Stream s m Char) => ParsecT s u m a -> ParsecT s u m a
 braces' = bracket' '{' '}'
 
--- * Identifier
-
-parseIdent :: (Stream s m Char) => ParsecT s u m String -> ParsecT s u m Identifier
-parseIdent p = Identifier <$> ((char '\\') *> p)
-
-validIdentifiers = ['a'..'z'] ++ ['A'..'Z'] ++ ['.', '-']
-
-parseToken :: (Stream s m Char) => ParsecT s u m String
-parseToken = many1 $ oneOf validIdentifiers
-
--- parses an arbitrary identifier
-parseIdentifier :: (Stream s m Char) => ParsecT s u m Identifier
-parseIdentifier = parseIdent parseToken
-
--- * Symbol
-
-parseSymbol :: (Stream s m Char) => ParsecT s u m Symbol
-parseSymbol = fmap Symbol $ string "#'" *> ((parens' $ manyTill anyChar (lookAhead $ char ')')) <|> parseToken)
-
--- * Markup
-
-parseSize :: (Stream s m Char) => ParsecT s u m Size
-parseSize = char '\\' *> (read . cap . getIdentifier <$> parseIdentifier)
-
-parseAlignment :: (Stream s m Char) => ParsecT s u m Alignment
-parseAlignment =
-        alignParser1 CenterAlign "center-align"
-    <|> alignParser1 LeftAlign "left-align"
-    <|> alignParser1 RightAlign "right-align"
-    <|> alignParser1 Vcenter "vcenter"
-    <|> try (Combine <$> (parseIdent (string "combine") *> sorc *> parseMarkupExpr) <*> (sorc *> parseMarkupExpr))
-    <|> alignParser2 CenterColumn "center-column"
-    <|> alignParser2 Column "column"
-    <|> alignParser2 Concat "concat"
-    <|> alignParser2 DirColumn "dir-column"
-    <|> alignParser2 FillLine "fill-line"
-    <|> alignParser2 Justify "justify"
-    <|> alignParser2 LeftColumn "left-column"
-    <|> alignParser2 Line "line"
-    <|> alignParser2 RightColumn "right-column"
-    <|> alignParser2 Wordwrap "wordwrap"
-    where
-        alignParser1 con s = try $ con <$> (parseIdent (string s) *> sorc *> parseMarkupExpr)
-        alignParser2 con s = try $ con <$> braces' (many1 $ parseMarkupExpr <* sorc)
-
-parseMarkupExpr :: (Stream s m Char) => ParsecT s u m MarkupExpr
-parseMarkupExpr = MarkupQuote <$> parseString
-            <|> MarkupTweak <$> parseTweak
-            <|> Alignment <$> parseAlignment
-            <|> markupParser Bold "bold"
-            <|> markupParser Box "box"
-            <|> markupParser Caps "caps"
-            <|> markupParser DynamicsFont "dynamics"
-            <|> markupParser FingeringFont "fingering"
-            <|> floatParser Fontsize "fontsize"
-            <|> markupParser Italic "italic"
-            <|> floatParser Magnify "magnify"
-            <|> markupParser Medium "medium"
-            <|> markupParser Roman "roman"
-            <|> markupParser Sans "sans"
-            <|> markupParser Sub "sub"
-            <|> markupParser Super "super"
-            <|> markupParser TextFont "text"
-            <|> markupParser TypewriterFont "typewriter"
-            <|> markupParser Upright "upright"
-            <|> Size <$> parseSize <*> (sorc *> parseMarkup)
-            <|> MarkupText <$> parseToken
-        where
-            floatParser con s = try $ con <$> (parseIdent (string s) *> sorc *> char '#' *> ap sign floating <* sorc) <*> parseMarkup
-            markupParser con s = try $ con <$> (parseIdent (string s) *> sorc *> parseMarkup)
-
-parseMarkup :: (Stream s m Char) => ParsecT s u m Markup
-parseMarkup =   MarkupList <$> braces' (many1 $ parseMarkup <* sorc)
-            <|> MarkupExpr <$> parseMarkupExpr
-
--- * Literal
-
 parseBool :: (Stream s m Char) => ParsecT s u m Bool
 parseBool = try (True <$ string "#t") <|> (False <$ string "#f")
+
+parseFloat :: (Stream s m Char) => ParsecT s u m Double
+parseFloat = char '#' *> ap sign (floating2 False)
+
+parseInt :: (Stream s m Char) => ParsecT s u m Int
+parseInt = char '#' *> int
 
 escape :: (Stream s m Char) => ParsecT s u m String
 escape = do
@@ -164,35 +94,230 @@ parseString = do
     char '"'
     return $ concat strings
 
+parseString' :: (Stream s m Char) => ParsecT s u m String
+parseString' = char '#' *> parseString
+
 parens' :: (Stream s m Char) => ParsecT s u m a -> ParsecT s u m a
 parens'  = between (char '(' <* spaces) (spaces *> char ')')
 
-sexpChars = validIdentifiers ++ ['0'..'9'] ++ [' ', '-', '\'', '\"', ':', '#'] -- ???? TODO: fix
+-- parses an arbitrary string prefixed by a backslash, wrapping the result in an Identifier
+parseIdent :: (Stream s m Char) => ParsecT s u m String -> ParsecT s u m Identifier
+parseIdent p = Identifier <$> ((char '\\') *> p)
+
+-- parses a specific string prefixed by a backslash, wrapping the result in an Identifier
+parseIdent' :: (Stream s m Char) => String -> ParsecT s u m Identifier
+parseIdent' = parseIdent . string
+
+validIdentifiers = ['a'..'z'] ++ ['A'..'Z'] ++ ",.;:-+/"
+
+parseToken :: (Stream s m Char) => ParsecT s u m String
+parseToken = many1 $ oneOf validIdentifiers <|> satisfy (not . isAscii)
+
+-- parses an arbitrary identifier
+parseIdentifier :: (Stream s m Char) => ParsecT s u m Identifier
+parseIdentifier = parseIdent parseToken
+
+parseSymbol :: (Stream s m Char) => ParsecT s u m Symbol
+parseSymbol = fmap Symbol $ string "#'" *> ((parens' $ manyTill anyChar (lookAhead $ char ')')) <|> parseToken)
+
+parseAxis :: (Stream s m Char) => ParsecT s u m Axis
+parseAxis = char '#' *> ((X <$ char 'X') <|> (Y <$ char 'Y'))
+
+parseAxisDir :: (Stream s m Char) => ParsecT s u m AxisDir
+parseAxisDir = do
+    ax <- parseAxis
+    dir <- sorc *> char '#' *>
+            ((0 <$ string "CENTER") <|>
+            case ax of
+                X -> (-1 <$ string "LEFT") <|> (1 <$ string "RIGHT")
+                Y -> (-1 <$ string "DOWN") <|> (1 <$ string "UP"))
+    return $ AxisDir ax dir
+
+parseNumPair :: (Stream s m Char) => ParsecT s u m NumPair
+parseNumPair = string "#'(" *> sorc *> (NumPair <$> floating2 False <*> (sorc *> char '.' *> sorc *> floating2 False)) <* sorc <* char ')'
+
+parseFont :: (Stream s m Char) => ParsecT s LilypondState m Font
+parseFont =
+        fontParser2 AbsFontsize "abs-fontsize"
+    <|> fontParser Bold "bold"
+    <|> fontParser Box "box"
+    <|> fontParser Caps "caps"
+    <|> fontParser Dynamic "dynamic"
+    <|> fontParser Finger "finger"
+    <|> fontParser FontCaps "fontCaps"
+    <|> fontParser2 Fontsize "fontsize"
+    <|> fontParser Huge "huge"
+    <|> fontParser Italic "italic"
+    <|> fontParser Large "large"
+    <|> fontParser Larger "larger"
+    <|> fontParser2 Magnify "magnify"
+    <|> fontParser Medium "medium"
+    <|> fontParser NormalSizeSub "normal-size-sub"
+    <|> fontParser NormalSizeSuper "normal-size-super"
+    <|> fontParser NormalText "normal-text"
+    <|> fontParser Normalsize "normalsize"
+    <|> fontParser Number "number"
+    <|> fontParser3 Replace "replace"
+    <|> fontParser Roman "roman"
+    <|> fontParser Sans "sans"
+    <|> fontParser Simple "simple"
+    <|> fontParser Small "small"
+    <|> fontParser SmallCaps "smallCaps"
+    <|> fontParser Smaller "smaller"
+    <|> fontParser Sub "sub"
+    <|> fontParser Super "super"
+    <|> fontParser Teeny "teeny"
+    <|> fontParser TextFont "text"
+    <|> fontParser Tiny "tiny"
+    <|> fontParser Typewriter "typewriter"
+    <|> fontParser Underline "underline"
+    <|> fontParser Upright "upright"
+    where
+        fontParser con s = try $ con <$> (parseIdent' s *> sorc *> parseMarkup)
+        fontParser2 con s = try $ con <$> (parseIdent' s *> sorc *> floating2 False) <*> (sorc *> parseMarkup)
+        fontParser3 con s = try $ con <$> (parseIdent' s *> sorc *> parseSymbol) <*> (sorc *> parseMarkup)
+
+parseAlignment :: (Stream s m Char) => ParsecT s LilypondState m Alignment
+parseAlignment =
+        alignParser1 CenterAlign "center-align"
+    <|> alignParser2 CenterColumn "center-column"
+    <|> alignParser2 Column "column"
+    <|> try (Combine <$> (parseIdent' "combine" *> sorc *> parseMarkupExpr) <*> (sorc *> parseMarkupExpr))
+    <|> alignParser2 Concat "concat"
+    <|> alignParser2 DirColumn "dir-column"
+    <|> alignParser2 FillLine "fill-line"
+    <|> try (FillWithPattern <$> (parseIdent' "fill-with-pattern" *> sorc *> parseFloat) <*> (sorc *> parseInt) <*> (sorc *> parseMarkupExpr) <*> (sorc *> parseMarkupExpr) <*> (sorc *> parseMarkupExpr))
+    <|> try (GeneralAlign <$> (parseIdent' "general-align" *> sorc *> parseAxisDir) <*> (sorc *> parseMarkup))
+    <|> try (Halign <$> (parseIdent' "halign" *> sorc *> parseInt) <*> (sorc *> parseMarkup))
+    <|> alignParser3 HcenterIn "hcenter-in"
+    <|> try (Hspace <$> (parseIdent' "hspace" *> sorc *> parseFloat))
+    <|> try (JustifyField <$> (parseIdent' "justify-field" *> sorc *> parseSymbol))
+    <|> alignParser2 Justify "justify"
+    <|> try (JustifyString <$> (parseIdent' "justify-string" *> sorc *> parseString'))
+    <|> alignParser1 LeftAlign "left-align"
+    <|> alignParser2 LeftColumn "left-column"
+    <|> alignParser2 Line "line"
+    <|> alignParser3 Lower "lower"
+    <|> alignParser3 PadAround "pad-around"
+    <|> alignParser3 PadMarkup "pad-markup"
+    <|> try (PadToBox <$> (parseIdent' "padToBox" *> sorc *> parseNumPair) <*> (sorc *> parseNumPair) <*> (sorc *> parseMarkup))
+    <|> alignParser3 PadX "pad-x"
+    <|> try (PutAdjacent <$> (parseIdent' "put-adjacent" *> sorc *> parseAxisDir) <*> (sorc *> parseMarkupExpr) <*> (sorc *> parseMarkupExpr))
+    <|> alignParser3 Raise "raise"
+    <|> alignParser1 RightAlign "right-align"
+    <|> alignParser2 RightColumn "right-column"
+    <|> alignParser3 Rotate "rotate"
+    <|> try (Translate <$> (parseIdent' "translate" *> sorc *> parseNumPair) <*> (sorc *> parseMarkup))
+    <|> try (TranslateScaled <$> (parseIdent' "translate-scaled" *> sorc *> parseNumPair) <*> (sorc *> parseMarkup))
+    <|> alignParser1 Vcenter "vcenter"
+    <|> try (Vspace <$> (parseIdent' "vspace" *> sorc *> parseFloat))
+    <|> try (WordwrapField <$> (parseIdent' "wordwrap-field" *> sorc *> parseSymbol))
+    <|> alignParser2 Wordwrap "wordwrap"
+    <|> try (WordwrapString <$> (parseIdent' "wordwrap-string" *> sorc *> parseString'))
+    where
+        alignParser1 con s = try $ con <$> (parseIdent' s *> sorc *> parseMarkup)
+        alignParser2 con s = try $ con <$> (parseIdent' s *> sorc *> braces' (many1 $ parseMarkup <* sorc))
+        alignParser3 con s = try $ con <$> (parseIdent' s *> sorc *> parseFloat) <*> (sorc *> parseMarkup)
+
+parseGraphic :: (Stream s m Char) => ParsecT s LilypondState m Graphic
+parseGraphic =
+        try (ArrowHead <$> (parseIdent' "arrow-head" *> sorc *> parseAxisDir) <*> (sorc *> parseBool))
+    <|> try (BeamG <$> parseFloat <*> (sorc *> parseFloat) <*> (sorc *> parseFloat))
+    <|> graphicParser Bracket "bracket"
+    <|> graphicParser Circle "circle"
+    <|> try (DrawCircle <$> parseFloat <*> (sorc *> parseFloat) <*> (sorc *> parseBool))
+    <|> try (DrawDashedLine <$> (parseIdent' "draw-dashed-line" *> sorc *> parseNumPair))
+    <|> try (DrawDottedLine <$> (parseIdent' "draw-dotted-line" *> sorc *> parseNumPair))
+    <|> try (DrawHline <$ parseIdent' "draw-hline")
+    <|> try (DrawLine <$> (parseIdent' "draw-line" *> sorc *> parseNumPair))
+    <|> graphicParser Ellipse "ellipse"
+    <|> try (Epsfile <$> (parseIdent' "epsfile" *> sorc *> parseAxis) <*> (sorc *> parseFloat) <*> (sorc *> parseString'))
+    <|> try (FilledBox <$> (parseIdent' "filled-box" *> sorc *> parseNumPair) <*> (sorc *> parseNumPair) <*> (sorc *> parseFloat))
+    <|> graphicParser Hbracket "hbracket"
+    <|> graphicParser Oval "oval"
+    <|> graphicParser Parenthesize "parenthesize"
+    <|> try (Path <$> (parseIdent' "path" *> sorc *> parseFloat) <*> (sorc *> sepBy parseString' sorc))
+    <|> try (Postscript <$> (parseIdent' "postscript" *> sorc *> parseString'))
+    <|> graphicParser RoundedBox "rounded-box"
+    <|> try (Scale <$> (parseIdent' "scale" *> sorc *> parseNumPair) <*> (sorc *> parseMarkup))
+    <|> try (Triangle <$> (parseIdent' "triangle" *> sorc *> parseBool))
+    <|> try (WithUrl <$> (parseIdent' "with-url" *> sorc *> parseString') <*> (sorc *> parseMarkup))
+    where
+        graphicParser con s = try $ con <$> (parseIdent' s *> sorc *> parseMarkup)
+
+parseTweak :: (Stream s m Char) => ParsecT s LilypondState m Tweak
+parseTweak =
+        try (parseIdent' "override" *> sorc *> (
+                (try $ OverrideSym <$> parseSymbol)
+            <|> (try $ OverrideSym' <$> parseToken <*> (sorc *> parseSymbol) <*> parseVal)
+            <|> (Override <$> parseToken <*> parseVal)))
+         <|> try (Revert <$> (parseIdent' "revert" *> sorc *> parseToken))
+         <|> try (parseIdent' "tweak" *> sorc *> ((try $ TweakSym <$> parseSymbol) <|> (Tweak <$> parseToken <*> (sorc *> optional (char '=') *> sorc *> parseLiteral))))
+    where
+        parseVal = sorc *> char '=' *> sorc *> parseLiteral
+
+parseMarkupVar :: (Stream s m Char) => ParsecT s LilypondState m MarkupExpr
+parseMarkupVar = do
+    name <- getIdentifier <$> parseIdentifier
+    assignments <- hdrAssignments <$> getState
+    let val = M.lookup name assignments
+    case val of
+        Nothing   -> fail $ "no variable \\" ++ name
+        Just val' -> return $ MarkupVar $ LitAssignment name val'
+
+parseMarkupExpr :: (Stream s m Char) => ParsecT s LilypondState m MarkupExpr
+parseMarkupExpr =
+        MarkupQuote <$> parseString
+    <|> try (MarkupAlign <$> parseAlignment)
+    <|> try (MarkupFont <$> parseFont)
+    <|> try (MarkupGraphic <$> parseGraphic)
+    <|> try (MarkupTweak <$> parseTweak)
+    <|> try parseMarkupVar
+    <|> MarkupText <$> parseToken
+
+
+
+parseMarkup :: (Stream s m Char) => ParsecT s LilypondState m Markup
+parseMarkup =   MarkupList <$> braces' (many1 $ parseMarkup <* sorc)
+            <|> MarkupExpr <$> parseMarkupExpr
 
 parseSexp :: (Stream s m Char) => ParsecT s u m String
-parseSexp = parens' $ many $ oneOf sexpChars
+parseSexp = tail . init <$> parseWithParens
+    where
+        parseWithParens = (:) <$> char '(' <*> parseRest
+        parseRest = do
+            c <- lookAhead anyChar
+            case c of
+                '(' -> (++) <$> parseWithParens <*> parseRest
+                ')' -> string ")"
+                _   -> (:) <$> anyChar <*> parseRest
 
-parseLiteral :: (Stream s m Char) => ParsecT s u m Literal
-parseLiteral = try (MarkupL <$> (string "\\markup" *> sorc *> parseMarkup))
+parseMeasureUnit :: (Stream s m Char) => ParsecT s u m MeasureUnit
+parseMeasureUnit = choice [try $ u <$ string (show $ pretty u) | u <- enumerate]
+
+parseLiteral :: (Stream s m Char) => ParsecT s LilypondState m Literal
+parseLiteral = try (MarkupL <$> (parseIdent' "markup" *> sorc *> parseMarkup))
             <|> try (BoolL <$> parseBool)
-            <|> try (FloatL <$> ap sign floating)
+            <|> try (MeasureL <$> floating2 False <*> parseMeasureUnit)
+            <|> try (FloatL <$> parseFloat)
             <|> try (IntL <$> ap sign int)
             <|> try (StringL <$> parseString)
             <|> try (SymbolL <$> parseSymbol)
-            <|> try (SexpL <$> parseSexp)
+            <|> try (SexpL <$> (char '#' *> parseSexp))
             <|> (char '#' *> parseLiteral)
 
--- * Tweaks
-
-parseTweak :: (Stream s m Char) => ParsecT s u m Tweak
-parseTweak = try (string "\\override" *> sorc *> ((try $ OverrideSym <$> parseSymbol) <|> (Override <$> parseToken <*> (sorc *> optional (char '=') *> sorc *> parseLiteral))))
-         <|> try (Revert <$> (string "\\revert" *> sorc *> parseToken))
-         <|> try (string "\\tweak" *> sorc *> ((try $ TweakSym <$> parseSymbol) <|> (Tweak <$> parseToken <*> (sorc *> optional (char '=') *> sorc *> parseLiteral))))
+parseLitAssignment :: (Stream s m Char) => ParsecT s LilypondState m LitAssignment
+parseLitAssignment = do
+    name <- parseToken
+    sorc *> parseEq *> sorc
+    val <- parseLiteral
+    modifyState $ \st -> st {hdrAssignments = M.insert name val (hdrAssignments st)}
+    return $ LitAssignment name val
 
 -- * Musical Notation
 
 parseBarline :: (Stream s m Char) => ParsecT s u m BarLine
-parseBarline = (BarCheck <$ char '|') <|> (BarLine <$> (string "\\bar" *> sorc *> parseString))
+parseBarline = (BarCheck <$ char '|') <|> (BarLine <$> (parseIdent' "bar" *> sorc *> parseString))
 
 parseBeam :: (Stream s m Char) => ParsecT s u m Beam
 parseBeam = (BeamOn <$ char '[') <|> (BeamOff <$ char ']')
@@ -299,14 +424,20 @@ parseDynamicMotion = go . getIdentifier <$> (parseIdent $ choice $ string <$> ["
 parseDynamics :: (Stream s m Char) => ParsecT s u m Dynamics
 parseDynamics = (try $ DynMotion <$> parseDynamicMotion) <|> (DynFixed <$> parseDynamicFixed)
 
-parseExpressive :: (Stream s m Char) => ParsecT s u m Expressive
-parseExpressive =   Tie <$ char '~'
+parseExpressive :: (Stream s m Char) => ParsecT s LilypondState m Expressive
+parseExpressive =   Tie <$ (char '~' <* sorc)
                 <|> try (Beam <$> parseBeam)
                 <|> try (Slur <$> parseSlur)
                 <|> try (Glissando <$ string "\\glissando")
                 <|> do
-                        d <- option Default (parseDirection <* sorc)
-                        try (Articulation d <$> parseArticulation) <|> try (Dynamics d <$> parseDynamics) <|> try (Text d <$> parseString) <|> Markup d <$> (string "\\markup" *> sorc *> parseMarkup)
+                        d <- optionMaybe $ parseDirection <* sorc
+                        let d' = fromMaybe Default d
+                        -- d <- option Default (parseDirection <* sorc)
+                        try (Articulation d' <$> parseArticulation)
+                            <|> try (Dynamics d' <$> parseDynamics)
+                            <|> try (Text d' <$> parseString)
+                            <|> try (Text d' <$> maybe (fail "") (const parseToken) d)
+                            <|> Markup d' <$> (string "\\markup" *> sorc *> parseMarkup)
 
 -- * Duration
 
@@ -359,20 +490,22 @@ parseStdClef = go <$> parseToken
 parseClef :: (Stream s m Char) => ParsecT s u m Clef
 parseClef = try (CustomClef <$> parseString) <|> (StdClef <$> parseStdClef)
 
-reservedVariables = ["incipitwidth", "htitle", "hcomposer", "title",
-                     "subtitle", "subsubtitle", "composer", "opus",
-                     "poet", "copyright"]
+parseTempo :: (Stream s m Char) => ParsecT s u m Tempo
+parseTempo = string "\\tempo" *> sorc *> (Tempo <$> (optionMaybe parseToken <* sorc) <*> (optionMaybe $ (,) <$> (parseDuration <* sorc) <*> (parseEq *> sorc *> int)))
+
+parseStaff :: (Stream s m Char) => ParsecT s u m Staff
+parseStaff = read <$> (choice $ try . string . show <$> (enumerate::[Staff]))
+
+reservedVars = sortOn (negate . length) ["alternative" ,"book", "bookpart", "clef", "context", "header", "key", "language", "lyricsto", "markup", "new", "once", "override", "relative", "repeat", "revert", "set", "tempo", "time", "times", "version", "width", "with"]
 
 parseReservedVar :: (Stream s m Char) => ParsecT s u m String
-parseReservedVar = choice $ try . string <$> reservedVariables
+parseReservedVar = char '\\' *> choice (try . string <$> reservedVars) <* notFollowedBy (satisfy isAlphaNum)
+
+parseVar :: (Stream s m Char) => ParsecT s u m Variable
+parseVar = Variable <$> (notFollowedBy parseReservedVar *> char '\\' *> parseToken)
 
 parsePitch :: (Stream s m Char) => ParsecT s LilypondState m Pitch
 parsePitch = (toPitch :: (NotePitch -> Pitch)) <$> parseNotePitch
-
-staffNames = ["Staff", "PianoStaff", "ChoirStaff"]
-
-parseStaffName :: (Stream s m Char) => ParsecT s u m String
-parseStaffName = choice $ try . string <$> staffNames
 
 parseEq :: (Stream s m Char) => ParsecT s u m ()
 parseEq = void $ char '='
@@ -383,21 +516,31 @@ parseAssignment =
     <|> try (Once <$> (string "\\once" *> sorc *> parseAssignment))
     <|> try (SymbAssignment <$> (parseToken <* sorc) <*> (parseLiteral <* sorc) <*> (parseEq *> sorc *> parseMusic))
     <|> try (PropAssignment <$> parseTweak)
-    <|> try (Assignment <$> (parseReservedVar <* sorc) <*> (Lit . IntL <$> int))
-    <|> try (Assignment <$> (parseReservedVar <* sorc) <*> (Lit . StringL <$> parseString))
+    -- <|> try (Assignment <$> (parseReservedVar <* sorc) <*> (Lit . IntL <$> int))
+    -- <|> try (Assignment <$> (parseReservedVar <* sorc) <*> (Lit . StringL <$> parseString))
     <|> try (Assignment <$> (parseToken <* sorc) <*> (parseEq *> sorc *> parseMusic))
+
+parseContext :: (Stream s m Char) => ParsecT s LilypondState m Context
+parseContext = do
+    string "\\context" *> sorc
+    c <- lookAhead anyChar
+    pref <- if c == '{'
+                then return Nothing
+                else Just <$> ((,) <$> parseToken <*> (sorc *> optionMaybe (parseEq *> sorc *> parseString)))
+    mus <- sorc *> parseMusic
+    return $ Context pref mus
 
 parseMusic :: (Stream s m Char) => ParsecT s LilypondState m MusicL
 parseMusic =
         try (Assign <$> parseAssignment)
     <|> try (Note <$> parseNotePitch <*> optionMaybe (try parseDuration) <*> (many $ try parseExpressive))
-    <|> try (Rest <$> parseRestType <*> optionMaybe parseDuration)
+    <|> try (Rest <$> parseRestType <*> optionMaybe (try parseDuration) <*> (many $ try parseExpressive))
     <|> try (Chord <$> (bracket' '<' '>' (endBy parseNotePitch sorc)) <*> optionMaybe parseDuration <*> many parseExpressive)
     <|> try (Bar <$> parseBarline)
     <|> try (string "\\clef" *> sorc *> (Clef <$> parseClef))
     <|> try (string "\\key" *> sorc *> (Key <$> ((,) <$> (parsePitchClass <* sorc) <*> parseMode)))
     <|> try (string "\\time" *> sorc *> (Time <$> ((,) <$> int <*> (char '/' *> int))))
-    <|> try (string "\\tempo" *> sorc *> (Tempo <$> (optionMaybe parseToken <* sorc) <*> (optionMaybe $ (,) <$> (parseDuration <* sorc) <*> (parseEq *> sorc *> int))))
+    <|> try (Tmp <$> parseTempo)
     <|> try (Sequential <$> braces' (endBy parseMusic sorc))
     <|> try (Simultaneous True <$> brackSim (sepBy (parseMusic <* sorc) (string "\\\\" <* sorc)))
     <|> try (Simultaneous False <$> brackSim (endBy parseMusic sorc))
@@ -411,37 +554,55 @@ parseMusic =
     <|> try (string "\\with" *> sorc *> (With <$> braces' parseAssignment))
     <|> try (string "\\new" *> sorc *> choice [
             string "Voice" *> sorc *> (Voice <$> (optionMaybe $ parseEq *> sorc *> parseString) <*> (sorc *> parseMusic)),
-            parseStaffName *> sorc *> (Staff <$> (optionMaybe $ sorc *> parseString) <*> (sorc *> parseMusic)),
+            NewStaff <$> parseStaff <*> (sorc *> optional (parseEq *> sorc) *> optionMaybe parseString) <*> (sorc *> parseMusic),
             string "Lyrics" *> sorc *> string "\\lyricsto" *> (Lyrics <$> (sorc *> parseString) <*> (sorc *> parseMusic)),
             New <$> (sorc *> parseToken <* sorc) <*> (optionMaybe $ parseEq *> sorc *> parseString) <*> (sorc *> parseMusic)
         ])
-    <|> try (string "\\context" *> sorc *> (Context <$> (sorc *> parseToken <* sorc) <*> (optionMaybe $ parseEq *> sorc *> parseString) <*> (sorc *> parseMusic)))
-    <|> try (char '\\' *> notFollowedBy (string "markup") *> (Var <$> parseToken))
+    <|> try (Ctx <$> parseContext)
+    <|> try (Var <$> parseVar)
     <|> try (Lit <$> parseLiteral)
     where
         brackSim = between (string "<<" <* sorc) (sorc *> string ">>")
         parseFrac = (%) <$> int <*> (char '/' *> int)
 
-parseScore :: (Stream s m Char) => ParsecT s LilypondState m Score
-parseScore = try (string "\\score" *> sorc *> (Score <$> braces' parseMusic))
-         <|> Score <$> parseMusic
+parseHeader :: (Stream s m Char) => ParsecT s LilypondState m Header
+parseHeader = string "\\header" *> sorc *> braces' (Header <$> endBy parseLitAssignment sorc)
 
-parseHeader :: (Stream s m Char) => ParsecT s u m Header
-parseHeader = string "\\header" *> sorc *> braces' (Header <$> endBy parseHeaderLine sorc)
-    where
-        parseHeaderLine = do
-            name <- sorc *> parseToken
-            sorc *> parseEq *> sorc
-            val <- parseLiteral
-            return (name, val)
+parseMaybeHeader :: (Stream s m Char) => ParsecT s LilypondState m (Maybe Header)
+parseMaybeHeader = try (Just <$> parseHeader) <|> return Nothing
+
+parseLayoutItem :: (Stream s m Char) => ParsecT s LilypondState m LayoutItem
+parseLayoutItem =   try (LayoutAssignment <$> parseLitAssignment)
+                <|> try (LayoutVar <$> parseVar)
+                <|> (LayoutContext <$> parseContext)
+
+parseLayout :: (Stream s m Char) => ParsecT s LilypondState m Layout
+parseLayout = string "\\layout" *> sorc *> braces' (Layout <$> endBy parseLayoutItem sorc)
+
+parseMidiItem :: (Stream s m Char) => ParsecT s LilypondState m MidiItem
+parseMidiItem =   try (MidiTempo <$> parseTempo)
+              <|> (MidiContext <$> parseContext)
+
+parseMidi :: (Stream s m Char) => ParsecT s LilypondState m Midi
+parseMidi = string "\\midi" *> sorc *> braces' (Midi <$> endBy parseMidiItem sorc)
+
+parseScoreItem :: (Stream s m Char) => ParsecT s LilypondState m ScoreItem
+parseScoreItem =    try (ScoreMusic <$> parseMusic)
+                <|> try (ScoreHeader <$> parseHeader)
+                <|> try (ScoreLayout <$> parseLayout)
+                <|> (ScoreMidi <$> parseMidi)
+
+parseScore :: (Stream s m Char) => ParsecT s LilypondState m Score
+parseScore =    try (string "\\score" *> sorc *> braces' (Score <$> endBy parseScoreItem sorc))
+            <|> Score . pure . ScoreMusic <$> parseMusic
 
 parseBookPart :: (Stream s m Char) => ParsecT s LilypondState m BookPart
-parseBookPart = (try (string "\\bookpart") *> sorc *> braces' (BookPart <$> optionMaybe parseHeader <*> sepBy parseScore sorc))
-            <|> (BookPart Nothing <$> sepBy1 parseScore sorc)
+parseBookPart = try (string "\\bookpart" *> sorc *> braces' (BookPart <$> parseMaybeHeader <*> endBy parseScore sorc))
+                <|> (BookPart Nothing <$> endBy1 parseScore sorc)
 
 parseBook :: (Stream s m Char) => ParsecT s LilypondState m Book
-parseBook = (try (string "\\book") *> sorc *> braces' (Book <$> optionMaybe parseHeader <*> sepBy parseBookPart sorc))
-        <|> (Book Nothing <$> (sepBy1 parseBookPart sorc))
+parseBook = (try (string "\\book") *> sorc *> braces' (Book <$> parseMaybeHeader <*> endBy parseBookPart sorc))
+        <|> (Book Nothing <$> (endBy1 parseBookPart sorc))
 
 parseTopLevel :: ParsecT String LilypondState IO TopLevel
 parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
@@ -463,9 +624,12 @@ parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
                 Nothing -> fail $ "Failed to locate included file \"" ++ path ++ "\""
                 (Just path'') -> do
                     incl <- lift $ readFile path''
+                    curPosition <- getPosition
                     curInput <- getInput
+                    setPosition $ initialPos path''
                     setInput incl
                     lp <- parseLilypond <* eof
+                    setPosition curPosition
                     setInput curInput
                     return $ Include path lp
 
@@ -473,6 +637,8 @@ parseLilypond :: ParsecT String LilypondState IO Lilypond
 parseLilypond = Lilypond <$> (sorc *> endBy parseTopLevel sorc <* eof)
 
 ----
+
+-- TESTING
 
 inPath :: FilePath
 inPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/SonataIV.ly"
@@ -485,17 +651,29 @@ outPath = replaceBaseName inPath (base ++ "2")
 parsePath :: FilePath -> IO (Either ParseError Lilypond)
 parsePath path = readFile path >>= runParserT parseLilypond defaultLilypondState path
 
-lp :: IO (Either ParseError Lilypond)
-lp = parsePath inPath
+lp :: Lilypond
+lp = unsafePerformIO $ do
+    s <- readFile inPath
+    let st = defaultLilypondState {includePaths = takeDirectory inPath : includePaths defaultLilypondState}
+    res <- runParserT parseLilypond st inPath s
+    case res of
+        Left err -> error "parse error"
+        Right lp -> do
+            let lp' = lp
+            -- let lp' = spliceIncludes lp
+            return lp'
 
 main :: IO ()
 main = do
     s <- readFile inPath
-    res <- runParserT parseLilypond defaultLilypondState inPath s
+    let st = defaultLilypondState {includePaths = takeDirectory inPath : includePaths defaultLilypondState}
+    res <- runParserT parseLilypond st inPath s
     case res of
-        (Left err) -> print err
-        (Right lp) -> do
-            writeLilypond lp outPath
+        Left err -> print err
+        Right lp -> do
+            -- let lp' = lp
+            let lp' = spliceIncludes lp
+            writeLilypond lp' outPath
             putStrLn $ "Successfully saved to " ++ outPath
 
 testPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/test.ly"

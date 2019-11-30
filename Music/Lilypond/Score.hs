@@ -1,15 +1,6 @@
 {-# LANGUAGE OverloadedStrings #-}
 
-module Music.Lilypond.Score (
-    Score(..),
-    Header(..),
-    BookPart(..),
-    Book(..),
-    TopLevel(..),
-    Lilypond(..),
-    HasHeader(..),
-    ToLilypond(..)
-) where
+module Music.Lilypond.Score where
 
 import Data.Default (Default(..))
 import Data.Maybe (fromMaybe)
@@ -17,31 +8,65 @@ import Data.Foldable (foldl')
 import Data.List (intersperse)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
-import Music.Lilypond.Literal (Literal(..))
-import Music.Lilypond.Music (Assignment(..), MusicL(..))
-import Music.Pitch (Language(..), PrettyPitch(..))
+import Music.Lilypond.Literal
+import Music.Lilypond.Music
+import Music.Pitch
 
 
 mkSection :: String -> Printer -> Printer
 mkSection name p = string (name ++ "{") <//> nest 4 p <//> string "}"
 
--- | A Score is a compound musical expression.
-newtype Score = Score MusicL
-    deriving (Eq, Show)
-
-instance PrettyPitch Score where
-    prettyPitch lang (Score m) = mkSection "\\score" $ prettyPitch lang m
-
 -- | LilyPond score header with various information about the score.
--- TODO: enable markup text in the fields
-newtype Header = Header [(String, Literal)]
+newtype Header = Header [LitAssignment]
     deriving (Eq, Show)
 
 instance Pretty Header where
-    pretty (Header hdr) = mkSection "\\header" $ vcat [string name <+> "=" <+> pretty val | (name, val) <- hdr]
+    pretty (Header assignments) = mkSection "\\header" $ vcat (pretty <$> assignments)
 
 instance Default Header where
     def = Header []
+
+data LayoutItem = LayoutAssignment LitAssignment | LayoutVar Variable | LayoutContext Context
+    deriving (Eq, Show)
+
+instance PrettyPitch LayoutItem where
+    prettyPitch lang (LayoutAssignment assignment) = pretty assignment
+    prettyPitch lang (LayoutVar v)                 = pretty v
+    prettyPitch lang (LayoutContext context)       = prettyPitch lang context
+
+newtype Layout = Layout [LayoutItem]
+    deriving (Eq, Show)
+
+instance PrettyPitch Layout where
+    prettyPitch lang (Layout items) = mkSection "\\layout" $ vcat (prettyPitch lang <$> items)
+
+data MidiItem = MidiTempo Tempo | MidiContext Context
+    deriving (Eq, Show)
+
+instance PrettyPitch MidiItem where
+    prettyPitch _    (MidiTempo tempo) = pretty tempo
+    prettyPitch lang (MidiContext ctx) = prettyPitch lang ctx
+
+newtype Midi = Midi [MidiItem]
+    deriving (Eq, Show)
+
+instance PrettyPitch Midi where
+    prettyPitch lang (Midi items) = mkSection "\\midi" $ vcat (prettyPitch lang <$> items)
+
+data ScoreItem = ScoreMusic MusicL | ScoreHeader Header | ScoreLayout Layout | ScoreMidi Midi
+    deriving (Eq, Show)
+
+instance PrettyPitch ScoreItem where
+    prettyPitch lang (ScoreMusic mus)     = prettyPitch lang mus
+    prettyPitch _    (ScoreHeader hdr)    = pretty hdr
+    prettyPitch lang (ScoreLayout layout) = prettyPitch lang layout
+    prettyPitch lang (ScoreMidi midi)     = prettyPitch lang midi
+
+newtype Score = Score [ScoreItem]
+    deriving (Eq, Show)
+
+instance PrettyPitch Score where
+    prettyPitch lang (Score items) = mkSection "\\score" $ vcat (prettyPitch lang <$> items)
 
 -- | A BookPart consists of an optional header and one or more Scores.
 data BookPart = BookPart (Maybe Header) [Score]
@@ -70,7 +95,7 @@ data TopLevel = Version String
 
 instance PrettyPitch TopLevel where
     prettyPitch _ (Version v)          = "\\version" <+> (string $ show v)
-    prettyPitch _ (Lang lang)          = "\\language" <+> pretty lang
+    prettyPitch _ (Lang lang)          = "\\language" <+> ("\"" <> pretty lang <> "\"")
     prettyPitch _ (Include p _ )       = "\\include" <+> (string $ show p)
     prettyPitch lang (AssignmentTop a) = prettyPitch lang a
     prettyPitch _ (HeaderTop h)        = pretty h
@@ -88,10 +113,8 @@ detectLanguage (Lilypond elts) = foldl' combine Nothing (detectLang' <$> elts)
             Lang lang    -> Just lang
             Include _ lp -> detectLanguage lp  -- recursively call on included file
             _            -> Nothing
-        combine Nothing Nothing = Nothing
-        combine Nothing lang'   = lang'
         combine lang Nothing    = lang
-        combine lang lang'      = error "Multiple languages detected in Lilypond file."
+        combine _ lang'         = lang'  -- override with more recent language
 
 instance Pretty Lilypond where
     pretty lp@(Lilypond elts) = vcat $ intersperse (string "") (prettyPitch lang <$> elts)
@@ -125,4 +148,13 @@ instance ToLilypond Score where
     toLilypond score = toLilypond $ BookPart Nothing [score]
 
 instance ToLilypond MusicL where
-    toLilypond mus = toLilypond $ Score mus
+    toLilypond mus = toLilypond $ Score [ScoreMusic mus]
+
+-- | Eliminates all \includes by substituting the corresponding Lilypond code
+spliceIncludes :: Lilypond -> Lilypond
+spliceIncludes (Lilypond tops) = Lilypond (go tops)
+    where
+        go []         = []
+        go (x:xs) = case x of
+            Include _ (Lilypond tops') -> go tops' ++ go xs
+            _                          -> x : go xs
