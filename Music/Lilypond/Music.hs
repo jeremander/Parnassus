@@ -328,6 +328,21 @@ instance PrettyPitch Assignment where
     prettyPitch lang (Set a) = "\\set" <+> prettyPitch lang a
     prettyPitch lang (Once a) = "\\once" <+> prettyPitch lang a
 
+newtype WithBlock = WithBlock Assignment
+    deriving (Eq, Show)
+
+instance PrettyPitch WithBlock where
+    prettyPitch lang (WithBlock a) = "\\with {" <+> (prettyPitch lang a) <+> "}"
+
+data NewItem = Voice | NewStaff Staff | Lyrics | NewItem String
+    deriving (Eq, Show)
+
+instance Pretty NewItem where
+    pretty Voice            = "Voice"
+    pretty (NewStaff staff) = pretty staff
+    pretty Lyrics           = "Lyrics \\lyricsto"
+    pretty (NewItem s)      = string s
+
 data Context = Context (Maybe (String, (Maybe String))) MusicL
     deriving (Eq, Show)
 
@@ -356,19 +371,17 @@ data MusicL
     | Tmp Tempo                                        -- ^ Tempo mark.
     | Sequential [MusicL]                              -- ^ Sequential composition.
     | Simultaneous Bool [MusicL]                       -- ^ Parallel composition (split voices?).
+    | PartCombine MusicL MusicL                        -- ^ Combines two musical expressions into single staff
     | Repeat Bool Int MusicL (Maybe [MusicL])          -- ^ Repetition (unfold?, times, music, alternatives).
     | Tremolo Int MusicL                               -- ^ Tremolo (multiplier).
     | Times Rational MusicL                            -- ^ Stretch music (multiplier).
     | Tuplet Rational MusicL                           -- ^ Tuplet.
+    | TupletSpan (Maybe Duration)                      -- \tupletSpan (duration)
     | Transpose Pitch Pitch MusicL                     -- ^ Transpose music (from to).
     | Relative (Maybe Pitch) MusicL                    -- ^ Use relative octave (octave).
     | Lit Literal                                      -- ^ Single literal.
     | Assign Assignment                                -- ^ Single assignment.
-    | With Assignment                                  -- ^ \with { alignAboveContext = #"main" }
-    | Voice (Maybe String) MusicL                      -- ^ \new Voice
-    | NewStaff Staff (Maybe String) MusicL             -- ^ \new Staff, etc.
-    | Lyrics String MusicL                             -- ^ \new Lyrics \lyricsto "foo" { bar }
-    | New String (Maybe String) MusicL                 -- ^ New expression.
+    | New NewItem (Maybe String) (Maybe WithBlock) MusicL  -- ^ \new (Voice/Staff/Lyrics, etc.)
     | Ctx Context                                      -- ^ Context expression.
     | Var Variable                                     -- ^ Variable occurrence.
     deriving (Eq, Show)
@@ -391,6 +404,7 @@ instance PrettyPitch MusicL where
     prettyPitch lang (Sequential xs) = "{" <+> (hsep . fmap (prettyPitch lang)) xs <+> "}"
     prettyPitch lang (Simultaneous b xs) = "<<" <//> nest 2 ((sepFunc . fmap (prettyPitch lang)) xs) <//> ">>"
         where sepFunc = if b then sepByS " \\\\" else vcat
+    prettyPitch lang (PartCombine x1 x2) = "\\partcombine" <+> prettyPitch lang x1 <+> prettyPitch lang x2
     prettyPitch lang (Repeat unfold times x alts) = "\\repeat" <=> unf unfold <=> int times <=> prettyPitch lang x <=> alt alts
         where
             unf p = if p then "unfold" else "volta"
@@ -399,16 +413,15 @@ instance PrettyPitch MusicL where
     prettyPitch lang (Tremolo n x) = "\\repeat tremolo" <+> pretty n <=> prettyPitch lang x
     prettyPitch lang (Times r x) = "\\times" <+> fracPrinter r <+> prettyPitch lang x
     prettyPitch lang (Tuplet r x) = "\\tuplet" <+> fracPrinter r <=> prettyPitch lang x
+    prettyPitch _ (TupletSpan d) = "\\tupletSpan" <+> maybe "\\default" pretty d
     prettyPitch lang (Transpose from to x) = "\\transpose" <+> prettyPitch lang from <=> prettyPitch lang to <=> prettyPitch lang x
-    prettyPitch lang (Relative p x) = "\\relative" <=> prettyPitch lang p <=> prettyPitch lang x
+    prettyPitch lang (Relative p x) = "\\relative" <+> prettyPitch lang p <+> prettyPitch lang x
     prettyPitch _ (Lit lit) = pretty lit
     prettyPitch lang (Assign as) = prettyPitch lang as
-    prettyPitch lang (With a) = "\\with {" <+> (prettyPitch lang a) <+> "}"
-    prettyPitch lang (Voice name x) = "\\new Voice" <+> pretty name <//> prettyPitch lang x
-    prettyPitch lang (NewStaff staff Nothing x) = "\\new" <+> pretty staff <//> prettyPitch lang x
-    prettyPitch lang (NewStaff staff (Just name) x) = "\\new" <+> pretty staff <+> "=" <+> pretty name <//> prettyPitch lang x
-    prettyPitch lang (Lyrics name x) = "\\new Lyrics \\lyricsto" <+> pretty name <//> prettyPitch lang x
-    prettyPitch lang (New typ name x) = "\\new" <+> string typ <+> pretty name <//> prettyPitch lang x
+    prettyPitch lang (New item name block x) = "\\new" <+> pretty item <+> maybe "" (\s -> maybeEq item <+> pretty s) name <+> pretty block <//> prettyPitch lang x
+        where
+            maybeEq Lyrics = ""
+            maybeEq _      = "="
     prettyPitch lang (Ctx context) = prettyPitch lang context
     prettyPitch _ (Var v) = pretty v
     prettyPitchList lang = hsep . fmap (prettyPitch lang)
@@ -427,30 +440,6 @@ instance VectorSpace MusicL where
     a *^ (Rest typ (Just d) p) = Rest typ (Just $ a * d) p
     a *^ (Chord ns (Just d) p) = Chord ns (Just $ a * d) p
     a *^ x                     = x
-
--- TODO: generic fold (have func return Maybe, then apply default folding behavior when Nothing?)
-
--- -- | Construct a rest of default duration @1/4@.
--- --
--- --   Use the 'VectorSpace' methods to change duration.
--- --
--- rest :: MusicL
--- rest = Rest StdRest (Just $ 1 / 4)
-
--- -- | Construct a note of default duration @1/4@.
--- --
--- --   Use the 'VectorSpace' methods to change duration.
--- --
--- note :: Note -> Music
--- note n = Note n (Just $ 1/4) []
-
--- -- | Construct a chord of default duration @1/4@.
--- --
--- --   Use the 'VectorSpace' methods to change duration.
--- --
--- chord :: [Note] -> Music
--- chord ns = Chord (fmap (, []) ns) (Just $ 1/4) []
-
 
 sequential :: MusicL -> MusicL -> MusicL
 Sequential as `sequential` Sequential bs = Sequential (as <> bs)

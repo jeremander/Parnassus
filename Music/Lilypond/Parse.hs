@@ -35,9 +35,6 @@ import Music.Lilypond.Literal
 import Music.Lilypond.Music
 import Music.Lilypond.Score
 
-import System.IO.Unsafe
-import System.FilePath.Posix
-
 
 data LilypondState = LilypondState {
     includePaths :: [FilePath],
@@ -496,7 +493,7 @@ parseTempo = string "\\tempo" *> sorc *> (Tempo <$> (optionMaybe parseToken <* s
 parseStaff :: (Stream s m Char) => ParsecT s u m Staff
 parseStaff = read <$> (choice $ try . string . show <$> (enumerate::[Staff]))
 
-reservedVars = sortOn (negate . length) ["alternative" ,"book", "bookpart", "clef", "context", "header", "key", "language", "lyricsto", "markup", "new", "once", "override", "relative", "repeat", "revert", "set", "tempo", "time", "times", "version", "width", "with"]
+reservedVars = sortOn (negate . length) ["alternative" ,"book", "bookpart", "clef", "context", "header", "key", "language", "lyricsto", "markup", "new", "once", "override", "partcombine", "relative", "repeat", "revert", "set", "tempo", "time", "times", "version", "width", "with"]
 
 parseReservedVar :: (Stream s m Char) => ParsecT s u m String
 parseReservedVar = char '\\' *> choice (try . string <$> reservedVars) <* notFollowedBy (satisfy isAlphaNum)
@@ -516,9 +513,17 @@ parseAssignment =
     <|> try (Once <$> (string "\\once" *> sorc *> parseAssignment))
     <|> try (SymbAssignment <$> (parseToken <* sorc) <*> (parseLiteral <* sorc) <*> (parseEq *> sorc *> parseMusic))
     <|> try (PropAssignment <$> parseTweak)
-    -- <|> try (Assignment <$> (parseReservedVar <* sorc) <*> (Lit . IntL <$> int))
-    -- <|> try (Assignment <$> (parseReservedVar <* sorc) <*> (Lit . StringL <$> parseString))
     <|> try (Assignment <$> (parseToken <* sorc) <*> (parseEq *> sorc *> parseMusic))
+
+parseWithBlock :: (Stream s m Char) => ParsecT s LilypondState m WithBlock
+parseWithBlock = string "\\with" *> sorc *> (WithBlock <$> braces' parseAssignment)
+
+parseNewItem :: (Stream s m Char) => ParsecT s LilypondState m NewItem
+parseNewItem =
+        try (Voice <$ string "Voice")
+    <|> try (Lyrics <$ (string "Lyrics" *> sorc *> string "\\lyricsto"))
+    <|> try (NewStaff <$> parseStaff)
+    <|> NewItem <$> parseToken
 
 parseContext :: (Stream s m Char) => ParsecT s LilypondState m Context
 parseContext = do
@@ -547,17 +552,13 @@ parseMusic =
     <|> try (string "\\repeat" *> sorc *>
             ((Repeat <$> ((== "unfold") <$> (string "unfold" <|> string "volta") <* sorc) <*> (int <* sorc) <*> (parseMusic <* sorc) <*> (optionMaybe $ string "\\alternative" *> sorc *> sepBy parseMusic sorc))
             <|> (Tremolo <$> (string "tremolo" *> sorc *> int <* sorc) <*> parseMusic)))
+    <|> try (string "\\partcombine" *> sorc *> (PartCombine <$> parseMusic <*> (sorc *> parseMusic)))
     <|> try (string "\\times" *> sorc *> (Times <$> (parseFrac <* sorc) <*> parseMusic))
     <|> try (string "\\tuplet" *> sorc *> (Tuplet <$> (parseFrac <* sorc) <*> parseMusic))
+    <|> try (string "\\tupletSpan" *> sorc *> (TupletSpan <$> ((Just <$> (try parseDuration)) <|> Nothing <$ string "\\default")))
     <|> try (string "\\transpose" *> sorc *> (Transpose <$> parsePitch <*> (sorc *> parsePitch) <*> (sorc *> parseMusic)))
     <|> try (string "\\relative" *> sorc *> (Relative <$> (optionMaybe parsePitch) <*> (sorc *> parseMusic)))
-    <|> try (string "\\with" *> sorc *> (With <$> braces' parseAssignment))
-    <|> try (string "\\new" *> sorc *> choice [
-            string "Voice" *> sorc *> (Voice <$> (optionMaybe $ parseEq *> sorc *> parseString) <*> (sorc *> parseMusic)),
-            NewStaff <$> parseStaff <*> (sorc *> optional (parseEq *> sorc) *> optionMaybe parseString) <*> (sorc *> parseMusic),
-            string "Lyrics" *> sorc *> string "\\lyricsto" *> (Lyrics <$> (sorc *> parseString) <*> (sorc *> parseMusic)),
-            New <$> (sorc *> parseToken <* sorc) <*> (optionMaybe $ parseEq *> sorc *> parseString) <*> (sorc *> parseMusic)
-        ])
+    <|> try (string "\\new" *> sorc *> (New <$> parseNewItem <*> (sorc *> optional (parseEq *> sorc) *> optionMaybe parseString) <*> (sorc *> optionMaybe parseWithBlock) <*> (sorc *> parseMusic)))
     <|> try (Ctx <$> parseContext)
     <|> try (Var <$> parseVar)
     <|> try (Lit <$> parseLiteral)
@@ -635,46 +636,3 @@ parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
 
 parseLilypond :: ParsecT String LilypondState IO Lilypond
 parseLilypond = Lilypond <$> (sorc *> endBy parseTopLevel sorc <* eof)
-
-----
-
--- TESTING
-
-inPath :: FilePath
-inPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/SonataIV.ly"
-
-outPath :: FilePath
-outPath = replaceBaseName inPath (base ++ "2")
-    where
-        base = takeBaseName inPath
-
-parsePath :: FilePath -> IO (Either ParseError Lilypond)
-parsePath path = readFile path >>= runParserT parseLilypond defaultLilypondState path
-
-lp :: Lilypond
-lp = unsafePerformIO $ do
-    s <- readFile inPath
-    let st = defaultLilypondState {includePaths = takeDirectory inPath : includePaths defaultLilypondState}
-    res <- runParserT parseLilypond st inPath s
-    case res of
-        Left err -> error "parse error"
-        Right lp -> do
-            let lp' = lp
-            -- let lp' = spliceIncludes lp
-            return lp'
-
-main :: IO ()
-main = do
-    s <- readFile inPath
-    let st = defaultLilypondState {includePaths = takeDirectory inPath : includePaths defaultLilypondState}
-    res <- runParserT parseLilypond st inPath s
-    case res of
-        Left err -> print err
-        Right lp -> do
-            -- let lp' = lp
-            let lp' = spliceIncludes lp
-            writeLilypond lp' outPath
-            putStrLn $ "Successfully saved to " ++ outPath
-
-testPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/test.ly"
-testStr = unsafePerformIO $ readFile testPath
