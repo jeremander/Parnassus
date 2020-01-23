@@ -55,6 +55,9 @@ safeDiv x y = x / y
 
 -- MISC --
 
+notImpl :: String -> a
+notImpl a = error $ "Not implemented: " ++ a
+
 -- enumerates a Bounded Enum type
 enumerate :: forall a . (Bounded a, Enum a) => [a]
 enumerate = toEnum <$> [0..(fromEnum (maxBound::a))]

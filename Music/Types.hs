@@ -15,10 +15,10 @@ import qualified Data.List
 import Euterpea (Control(..), Music(..), Note1, Pitch, Primitive(..))
 
 import Music.Pitch (ToPitch(..))
-import Music.Rhythm (Quantizable(..))
 import Music.Types.MusicT
 import Music.Types.MusicD
 import Music.Types.MusicU
+import Music.Lilypond.MusicL
 
 
 -- Types --
@@ -52,19 +52,13 @@ unConjD f = fromMusicD . f . toMusicD
 instance (Ord a, ToPitch a) => Quantizable MusicU a where
     -- improve memory efficiency by quantizing parallel sections separately
     quantize :: Rational -> MusicU a -> MusicU a
-    --quantize q = unConjD $ quantize q  -- inefficient version
     quantize q mus = case mus of
         Empty            -> Empty
         ParU ms          -> chord $ quantize' <$> ms
         ModifyU ctl mus' -> ModifyU ctl $ quantize q mus'
         _                -> quantize' mus  -- TODO: make more efficient
         where quantize' = (unConjD $ quantize q)
-    split :: Rational -> MusicU a -> [MusicU a]
-    split d mus = fst <$> takeWhile (\(prev, _) -> not $ isEmpty prev) (tail pairs)
-        where pairs = (Empty, mus) : [bisect d prev | (_, prev) <- pairs]
 
 instance (Ord a, ToPitch a) => Quantizable Music a where
     quantize :: Rational -> Music a -> Music a
     quantize q = fromMusicU . quantize q . toMusicU
-    split :: Rational -> Music a -> [Music a]
-    split d = (fromMusicU <$>) . split d . toMusicU

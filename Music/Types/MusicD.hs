@@ -23,8 +23,7 @@ import GHC.Exts (groupWith)
 import Euterpea (AbsPitch, Control(..), Dur, Music(..), Primitive(..), absPitch, mFold)
 import Misc.Utils (chunkListWithDefault, composeFuncs, divides, padListWithDefault, quantizeTime, rationalGCD, transposeWithDefault, unDistribute)
 import Music.Pitch (ToPitch(..))
-import Music.Rhythm (Quantizable(..))
-import Music.Types.MusicT (Controls, MusicT(..), ToMidi(..), durP, extractTempo)
+import Music.Types.MusicT (Controls, MusicT(..), Quantizable(..), ToMidi(..), durP, extractTempo)
 
 
 data Tied a = Untied Controls a | Tied a | RestD
@@ -180,14 +179,14 @@ instance (Ord a, ToPitch a) => MusicT MusicD a where
             f (ctl', p) = composeFuncs (Modify <$> ctl') $ Prim p
             lines' = [line $ f <$> ln | ln <- lines]
     fromMusic :: Music a -> MusicD a
-    fromMusic mus = MusicD q ctl m''
+    fromMusic mus = MusicD q ctl m'
         where
-            g :: Control -> MusicD a -> MusicD a
-            g c (MusicD q' ctl' x') = MusicD q' (c : ctl') x'
-            (MusicD q ctl m') = mFold (primD $ durGCD mus) (/+/) (/=/) g mus
-            m'' = Data.List.nub . filter (not . isRest) <$> m'  -- dedupe identical notes, eliminate rests in a chord
+            (MusicD q ctl m) = mFold (primD $ durGCD mus) (/+/) (/=/) modify mus
+            m' = Data.List.nub . filter (not . isRest) <$> m  -- dedupe identical notes, eliminate rests in a chord
     prim :: Primitive a -> MusicD a
     prim p = primD (durP p) p
+    empty :: MusicD a
+    empty = MusicD 0 [] []
     modify :: Control -> MusicD a -> MusicD a
     modify c (MusicD q ctl m) = MusicD q (c:ctl) m
     (/+/) :: MusicD a -> MusicD a -> MusicD a
@@ -225,14 +224,18 @@ instance (Ord a, ToPitch a) => MusicT MusicD a where
         where tempoFactor = product (getTempo <$> ctl)
     durGCD :: MusicD a -> Rational
     durGCD (MusicD q _ _) = q
-    scaleDurations :: Rational -> MusicD a -> MusicD a
-    scaleDurations c (MusicD q ctl m) = MusicD (q / c) ctl m
+    (*^) :: Rational -> MusicD a -> MusicD a
+    (*^) c (MusicD q ctl m) = MusicD (q * c) ctl m
     bisect :: Eq a => Dur -> MusicD a -> (MusicD a, MusicD a)
     bisect d (MusicD q ctl m) = (MusicD q ctl mhead, MusicD q ctl mtail)
         where
             t = product (extractTempo <$> ctl)
             d' = d / t  -- scale duration by the tempo
             (mhead, mtail) = splitAt (round (d' / q)) m
+    split :: Eq a => Rational -> MusicD a -> [MusicD a]
+    split d mus@(MusicD q ctl m)
+        | q `divides` d = [MusicD q ctl group | group <- chunkListWithDefault (truncate (d / q)) [RestD] m]
+        | otherwise = split d (quantize (rationalGCD q d) mus)
     pad :: Dur -> MusicD a -> MusicD a
     pad d (MusicD q ctl m) = MusicD q ctl (padArr q d m)
     stripControls :: MusicD a -> (Controls, MusicD a)
@@ -341,7 +344,3 @@ instance (Ord a, ToPitch a) => Quantizable MusicD a where
                                 parGroups = map (foldr1 aggPar) . groupWith (extractTied . fst) . restructure <$> gp'
                                 noteGroup = map (foldr1 aggSeq) . groupWith (extractTied . fst) . join $ parGroups
                         pairs = gatherNotes gp
-    split :: Rational -> MusicD a -> [MusicD a]
-    split d mus@(MusicD q ctl m)
-        | q `divides` d = [MusicD q ctl group | group <- chunkListWithDefault (truncate (d / q)) [RestD] m]
-        | otherwise = split d (quantize (rationalGCD q d) mus)

@@ -1,6 +1,10 @@
 old/
 tunes/
 tmp*
+*.pdf
+*.ly
+*.mid
+*.wav
 
 dist
 dist-*

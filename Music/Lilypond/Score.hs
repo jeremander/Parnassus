@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Music.Lilypond.Score where
@@ -9,7 +11,7 @@ import Data.List (intersperse)
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), nest, string, vcat)
 
 import Music.Lilypond.Literal
-import Music.Lilypond.Music
+import Music.Lilypond.MusicL
 import Music.Pitch
 
 
@@ -26,74 +28,74 @@ instance Pretty Header where
 instance Default Header where
     def = Header []
 
-data LayoutItem = LayoutAssignment LitAssignment | LayoutVar Variable | LayoutContext Context
+data LayoutItem a = LayoutAssignment LitAssignment | LayoutVar Variable | LayoutContext (Context a)
     deriving (Eq, Show)
 
-instance PrettyPitch LayoutItem where
+instance (PrettyPitch a) => PrettyPitch (LayoutItem a) where
     prettyPitch lang (LayoutAssignment assignment) = pretty assignment
     prettyPitch lang (LayoutVar v)                 = pretty v
     prettyPitch lang (LayoutContext context)       = prettyPitch lang context
 
-newtype Layout = Layout [LayoutItem]
+newtype Layout a = Layout [LayoutItem a]
     deriving (Eq, Show)
 
-instance PrettyPitch Layout where
+instance (PrettyPitch a) => PrettyPitch (Layout a) where
     prettyPitch lang (Layout items) = mkSection "\\layout" $ vcat (prettyPitch lang <$> items)
 
-data MidiItem = MidiTempo Tempo | MidiContext Context
+data MidiItem a = MidiTempo Tempo | MidiContext (Context a)
     deriving (Eq, Show)
 
-instance PrettyPitch MidiItem where
+instance (PrettyPitch a) => PrettyPitch (MidiItem a) where
     prettyPitch _    (MidiTempo tempo) = pretty tempo
     prettyPitch lang (MidiContext ctx) = prettyPitch lang ctx
 
-newtype Midi = Midi [MidiItem]
+newtype Midi a = Midi [MidiItem a]
     deriving (Eq, Show)
 
-instance PrettyPitch Midi where
+instance (PrettyPitch a) => PrettyPitch (Midi a) where
     prettyPitch lang (Midi items) = mkSection "\\midi" $ vcat (prettyPitch lang <$> items)
 
-data ScoreItem = ScoreMusic MusicL | ScoreHeader Header | ScoreLayout Layout | ScoreMidi Midi
+data ScoreItem a = ScoreMusic (MusicL a) | ScoreHeader Header | ScoreLayout (Layout a) | ScoreMidi (Midi a)
     deriving (Eq, Show)
 
-instance PrettyPitch ScoreItem where
+instance (PrettyPitch a) => PrettyPitch (ScoreItem a) where
     prettyPitch lang (ScoreMusic mus)     = prettyPitch lang mus
     prettyPitch _    (ScoreHeader hdr)    = pretty hdr
     prettyPitch lang (ScoreLayout layout) = prettyPitch lang layout
     prettyPitch lang (ScoreMidi midi)     = prettyPitch lang midi
 
-newtype Score = Score [ScoreItem]
+newtype Score a = Score [ScoreItem a]
     deriving (Eq, Show)
 
-instance PrettyPitch Score where
+instance (PrettyPitch a) => PrettyPitch (Score a) where
     prettyPitch lang (Score items) = mkSection "\\score" $ vcat (prettyPitch lang <$> items)
 
 -- | A BookPart consists of an optional header and one or more Scores.
-data BookPart = BookPart (Maybe Header) [Score]
+data BookPart a = BookPart (Maybe Header) [Score a]
     deriving (Eq, Show)
 
-instance PrettyPitch BookPart where
+instance (PrettyPitch a) => PrettyPitch (BookPart a) where
     prettyPitch lang (BookPart hdr scores) = mkSection "\\bookpart" $ pretty hdr <//> vcat (prettyPitch lang <$> scores)
 
 -- | A Book consists of an optional header and one or more BookParts.
-data Book = Book (Maybe Header) [BookPart]
+data Book a = Book (Maybe Header) [BookPart a]
     deriving (Eq, Show)
 
-instance PrettyPitch Book where
+instance (PrettyPitch a) => PrettyPitch (Book a) where
     prettyPitch lang (Book hdr bookParts) = mkSection "\\book" $ pretty hdr <//> vcat (pretty' <$> bookParts)
         where
             pretty' (BookPart Nothing [score]) = prettyPitch lang score
             pretty' bookPart                   = prettyPitch lang bookPart
 
-data TopLevel = Version String
+data TopLevel a = Version String
               | Lang Language
-              | Include FilePath Lilypond
-              | AssignmentTop Assignment
+              | Include FilePath (Lilypond a)
+              | AssignmentTop (Assignment a)
               | HeaderTop Header
-              | BookTop Book
+              | BookTop (Book a)
     deriving (Eq, Show)
 
-instance PrettyPitch TopLevel where
+instance (PrettyPitch a) => PrettyPitch (TopLevel a) where
     prettyPitch _ (Version v)          = "\\version" <+> (string $ show v)
     prettyPitch _ (Lang lang)          = "\\language" <+> ("\"" <> pretty lang <> "\"")
     prettyPitch _ (Include p _ )       = "\\include" <+> (string $ show p)
@@ -102,11 +104,11 @@ instance PrettyPitch TopLevel where
     prettyPitch lang (BookTop b)       = prettyPitch lang b
 
 -- | Lilypond object is the root element of a LilyPond file.
-newtype Lilypond = Lilypond [TopLevel]
+newtype Lilypond a = Lilypond [TopLevel a]
     deriving (Eq, Show)
 
 -- | Attempts to detect the language of a Lilypond file
-detectLanguage :: Lilypond -> Maybe Language
+detectLanguage :: Lilypond a -> Maybe Language
 detectLanguage (Lilypond elts) = foldl' combine Nothing (detectLang' <$> elts)
     where
         detectLang' elt = case elt of
@@ -116,45 +118,56 @@ detectLanguage (Lilypond elts) = foldl' combine Nothing (detectLang' <$> elts)
         combine lang Nothing    = lang
         combine _ lang'         = lang'  -- override with more recent language
 
-instance Pretty Lilypond where
+instance (PrettyPitch a) => Pretty (Lilypond a) where
     pretty lp@(Lilypond elts) = vcat $ intersperse (string "") (prettyPitch lang <$> elts)
         where lang = fromMaybe def (detectLanguage lp)
 
 class HasHeader a where
     setHeader :: Header -> a -> a
 
-instance HasHeader BookPart where
+instance HasHeader (BookPart a) where
     setHeader hdr (BookPart _ scores) = BookPart (Just hdr) scores
 
-instance HasHeader Book where
+instance HasHeader (Book a) where
     setHeader hdr (Book _ bookParts) = Book (Just hdr) bookParts
 
-instance HasHeader Lilypond where
+instance HasHeader (Lilypond a) where
     setHeader hdr (Lilypond topLevels) = Lilypond (HeaderTop hdr : topLevels)
 
-class ToLilypond a where
-    toLilypond :: a -> Lilypond
+class ToLilypond m a where
+    toLilypond :: m a -> Lilypond a
 
-instance ToLilypond Lilypond where
+instance ToLilypond Lilypond a where
     toLilypond = id
 
-instance ToLilypond Book where
+instance ToLilypond Book a where
     toLilypond book = Lilypond [BookTop book]
 
-instance ToLilypond BookPart where
+instance ToLilypond BookPart a where
     toLilypond bookPart = toLilypond $ Book Nothing [bookPart]
 
-instance ToLilypond Score where
+instance ToLilypond Score a where
     toLilypond score = toLilypond $ BookPart Nothing [score]
 
-instance ToLilypond MusicL where
+instance ToLilypond MusicL a where
     toLilypond mus = toLilypond $ Score [ScoreMusic mus]
 
 -- | Eliminates all \includes by substituting the corresponding Lilypond code
-spliceIncludes :: Lilypond -> Lilypond
+spliceIncludes :: Lilypond a -> Lilypond a
 spliceIncludes (Lilypond tops) = Lilypond (go tops)
     where
         go []         = []
         go (x:xs) = case x of
             Include _ (Lilypond tops') -> go tops' ++ go xs
             _                          -> x : go xs
+
+-- convenience aliases
+
+type MidiItem' = MidiItem NotePitch
+type Midi' = Midi NotePitch
+type ScoreItem' = ScoreItem NotePitch
+type Score' = Score NotePitch
+type BookPart' = BookPart NotePitch
+type Book' = Book NotePitch
+type TopLevel' = TopLevel NotePitch
+type Lilypond' = Lilypond NotePitch

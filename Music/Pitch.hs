@@ -15,6 +15,7 @@ import qualified Music.Pitch.Literal.Pitch
 import Music.Pitch.Literal.Pitch hiding (IsPitch(..))
 import Text.Pretty hiding (Mode)
 
+import qualified Euterpea as E
 import Euterpea (Mode(..), Note1, PitchClass(..), Pitch, absPitch, pitch)
 
 
@@ -39,6 +40,9 @@ class ToPitch a where
 
 class FromPitch a where
     fromPitch :: Pitch -> a
+
+trans :: (FromPitch a, ToPitch a) => Int -> a -> a
+trans n = fromPitch . E.trans n . toPitch
 
 instance ToPitch Pitch where toPitch = id
 instance FromPitch Pitch where fromPitch = id

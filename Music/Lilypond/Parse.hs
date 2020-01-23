@@ -32,8 +32,9 @@ import Music.Pitch
 import Music.Rhythm
 import Music.Lilypond.IO
 import Music.Lilypond.Literal
-import Music.Lilypond.Music
+import Music.Lilypond.MusicL
 import Music.Lilypond.Score
+import Music.Lilypond.Symbols
 
 
 data LilypondState = LilypondState {
@@ -507,7 +508,7 @@ parsePitch = (toPitch :: (NotePitch -> Pitch)) <$> parseNotePitch
 parseEq :: (Stream s m Char) => ParsecT s u m ()
 parseEq = void $ char '='
 
-parseAssignment :: (Stream s m Char) => ParsecT s LilypondState m Assignment
+parseAssignment :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (Assignment a)
 parseAssignment =
         try (Set <$> (string "\\set" *> sorc *> parseAssignment))
     <|> try (Once <$> (string "\\once" *> sorc *> parseAssignment))
@@ -515,7 +516,7 @@ parseAssignment =
     <|> try (PropAssignment <$> parseTweak)
     <|> try (Assignment <$> (parseToken <* sorc) <*> (parseEq *> sorc *> parseMusic))
 
-parseWithBlock :: (Stream s m Char) => ParsecT s LilypondState m WithBlock
+parseWithBlock :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (WithBlock a)
 parseWithBlock = string "\\with" *> sorc *> (WithBlock <$> braces' parseAssignment)
 
 parseNewItem :: (Stream s m Char) => ParsecT s LilypondState m NewItem
@@ -525,7 +526,7 @@ parseNewItem =
     <|> try (NewStaff <$> parseStaff)
     <|> NewItem <$> parseToken
 
-parseContext :: (Stream s m Char) => ParsecT s LilypondState m Context
+parseContext :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (Context a)
 parseContext = do
     string "\\context" *> sorc
     c <- lookAhead anyChar
@@ -535,12 +536,12 @@ parseContext = do
     mus <- sorc *> parseMusic
     return $ Context pref mus
 
-parseMusic :: (Stream s m Char) => ParsecT s LilypondState m MusicL
+parseMusic :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (MusicL a)
 parseMusic =
         try (Assign <$> parseAssignment)
-    <|> try (Note <$> parseNotePitch <*> optionMaybe (try parseDuration) <*> (many $ try parseExpressive))
+    <|> try (Note <$> parseNotePitch' <*> optionMaybe (try parseDuration) <*> (many $ try parseExpressive))
     <|> try (Rest <$> parseRestType <*> optionMaybe (try parseDuration) <*> (many $ try parseExpressive))
-    <|> try (Chord <$> (bracket' '<' '>' (endBy parseNotePitch sorc)) <*> optionMaybe parseDuration <*> many parseExpressive)
+    <|> try (Chord <$> (bracket' '<' '>' (endBy parseNotePitch' sorc)) <*> optionMaybe parseDuration <*> many parseExpressive)
     <|> try (Bar <$> parseBarline)
     <|> try (string "\\clef" *> sorc *> (Clef <$> parseClef))
     <|> try (string "\\key" *> sorc *> (Key <$> ((,) <$> (parsePitchClass <* sorc) <*> parseMode)))
@@ -565,6 +566,7 @@ parseMusic =
     where
         brackSim = between (string "<<" <* sorc) (sorc *> string ">>")
         parseFrac = (%) <$> int <*> (char '/' *> int)
+        parseNotePitch' = fromPitch . toPitch <$> parseNotePitch
 
 parseHeader :: (Stream s m Char) => ParsecT s LilypondState m Header
 parseHeader = string "\\header" *> sorc *> braces' (Header <$> endBy parseLitAssignment sorc)
@@ -572,40 +574,40 @@ parseHeader = string "\\header" *> sorc *> braces' (Header <$> endBy parseLitAss
 parseMaybeHeader :: (Stream s m Char) => ParsecT s LilypondState m (Maybe Header)
 parseMaybeHeader = try (Just <$> parseHeader) <|> return Nothing
 
-parseLayoutItem :: (Stream s m Char) => ParsecT s LilypondState m LayoutItem
+parseLayoutItem :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (LayoutItem a)
 parseLayoutItem =   try (LayoutAssignment <$> parseLitAssignment)
                 <|> try (LayoutVar <$> parseVar)
                 <|> (LayoutContext <$> parseContext)
 
-parseLayout :: (Stream s m Char) => ParsecT s LilypondState m Layout
+parseLayout :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (Layout a)
 parseLayout = string "\\layout" *> sorc *> braces' (Layout <$> endBy parseLayoutItem sorc)
 
-parseMidiItem :: (Stream s m Char) => ParsecT s LilypondState m MidiItem
+parseMidiItem :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (MidiItem a)
 parseMidiItem =   try (MidiTempo <$> parseTempo)
               <|> (MidiContext <$> parseContext)
 
-parseMidi :: (Stream s m Char) => ParsecT s LilypondState m Midi
+parseMidi :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (Midi a)
 parseMidi = string "\\midi" *> sorc *> braces' (Midi <$> endBy parseMidiItem sorc)
 
-parseScoreItem :: (Stream s m Char) => ParsecT s LilypondState m ScoreItem
+parseScoreItem :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (ScoreItem a)
 parseScoreItem =    try (ScoreMusic <$> parseMusic)
                 <|> try (ScoreHeader <$> parseHeader)
                 <|> try (ScoreLayout <$> parseLayout)
                 <|> (ScoreMidi <$> parseMidi)
 
-parseScore :: (Stream s m Char) => ParsecT s LilypondState m Score
+parseScore :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (Score a)
 parseScore =    try (string "\\score" *> sorc *> braces' (Score <$> endBy parseScoreItem sorc))
             <|> Score . pure . ScoreMusic <$> parseMusic
 
-parseBookPart :: (Stream s m Char) => ParsecT s LilypondState m BookPart
+parseBookPart :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (BookPart a)
 parseBookPart = try (string "\\bookpart" *> sorc *> braces' (BookPart <$> parseMaybeHeader <*> endBy parseScore sorc))
                 <|> (BookPart Nothing <$> endBy1 parseScore sorc)
 
-parseBook :: (Stream s m Char) => ParsecT s LilypondState m Book
+parseBook :: (FromPitch a, Stream s m Char) => ParsecT s LilypondState m (Book a)
 parseBook = (try (string "\\book") *> sorc *> braces' (Book <$> parseMaybeHeader <*> endBy parseBookPart sorc))
         <|> (Book Nothing <$> (endBy1 parseBookPart sorc))
 
-parseTopLevel :: ParsecT String LilypondState IO TopLevel
+parseTopLevel :: (FromPitch a) => ParsecT String LilypondState IO (TopLevel a)
 parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
             <|> (try (string "\\language") *> sorc *> parseLang)
             <|> (try (string "\\include") *> sorc *> parseInclude)
@@ -634,5 +636,5 @@ parseTopLevel = try (string "\\version" *> sorc *> (Version <$> parseString))
                     setInput curInput
                     return $ Include path lp
 
-parseLilypond :: ParsecT String LilypondState IO Lilypond
+parseLilypond :: (FromPitch a) => ParsecT String LilypondState IO (Lilypond a)
 parseLilypond = Lilypond <$> (sorc *> endBy parseTopLevel sorc <* eof)

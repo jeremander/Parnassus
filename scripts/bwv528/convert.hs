@@ -14,7 +14,7 @@ outPath :: FilePath
 outPath = replaceBaseName inPath (base ++ "-twohands")
     where base = takeBaseName inPath
 
-parseBwv528 :: IO Lilypond
+parseBwv528 :: IO (Lilypond NotePitch)
 parseBwv528 = do
     s <- readFile inPath
     let st = defaultLilypondState {includePaths = takeDirectory inPath : includePaths defaultLilypondState}
@@ -26,15 +26,15 @@ parseBwv528 = do
             let lp' = spliceIncludes lp
             return lp'
 
-isClef :: MusicL -> Bool
+isClef :: MusicL' -> Bool
 isClef (Clef _) = True
 isClef _        = False
 
-makeBassClef :: MusicL -> MusicL
+makeBassClef :: MusicL' -> MusicL'
 makeBassClef (Clef _) = Clef $ StdClef Bass
 makeBassClef x = x
 
-stripClefs :: MusicL -> MusicL
+stripClefs :: MusicL' -> MusicL'
 stripClefs (Sequential xs) = Sequential $ filter (not . isClef) (stripClefs <$> xs)
 -- define only the recursive cases that are needed
 stripClefs (Simultaneous b xs) = Simultaneous b $ filter (not . isClef) (stripClefs <$> xs)
@@ -43,7 +43,7 @@ stripClefs (Times r x) = Times r $ stripClefs x
 stripClefs (Relative p x) = Relative p $ stripClefs x
 stripClefs x = x
 
-splitMeasures :: MusicL -> [MusicL]
+splitMeasures :: MusicL' -> [MusicL']
 splitMeasures (Relative p x) = Relative p <$> splitMeasures x
 splitMeasures (Sequential xs) = Sequential <$> splitOn [Bar BarCheck] xs
 -- have a fallback
@@ -75,7 +75,7 @@ splitMeasures x = [x]
 --     | Var Variable                                     -- ^ Variable occurrence.
 --     deriving (Eq, Show)
 
-threeToTwo :: [MusicL] -> [MusicL]
+threeToTwo :: [MusicL'] -> [MusicL']
 threeToTwo parts = twoParts
     where
         [bass, alto, sop] = take 3 parts
@@ -90,10 +90,10 @@ threeToTwo parts = twoParts
         -- twoParts = [stripClefs $ PartCombine alto' bass, sop]
         -- TODO: split alto into two voices, glue one to bass, one to sop
 
-getAssignment :: TopLevel -> (String, MusicL)
+getAssignment :: TopLevel' -> (String, MusicL')
 getAssignment (AssignmentTop (Assignment name val)) = (name, val)
 
-threeToTwo' :: [TopLevel] -> [TopLevel]
+threeToTwo' :: [TopLevel'] -> [TopLevel']
 threeToTwo' tops = [leftPart, rightPart]
     where
         [sop, alto, bass] = take 3 tops
@@ -108,12 +108,12 @@ slice :: Int -> Int -> [a] -> [a]
 slice start end = take (end - start) . drop start
 
 -- reduces staves from three to two
-reduceStaves :: Score -> Score
+reduceStaves :: Score' -> Score'
 reduceStaves (Score scoreItems) = Score $ ScoreMusic (Simultaneous False manualElts) : tail scoreItems
     where
         (ScoreMusic (Simultaneous _ elts)) = head scoreItems
         -- convert treble to bass clef in left hand
-        processStaffElt :: MusicL -> Maybe MusicL
+        processStaffElt :: MusicL' -> Maybe MusicL'
         processStaffElt (New (NewStaff GrandStaff) _ _ (Simultaneous _ staves)) = Just elt'
             where
                 leftStaff = staves !! 2
@@ -128,7 +128,7 @@ reduceStaves (Score scoreItems) = Score $ ScoreMusic (Simultaneous False manualE
         processStaffElt elt = Just elt
         manualElts = mapMaybe processStaffElt elts
 
-convertBwv528 :: Lilypond -> Lilypond
+convertBwv528 :: Lilypond' -> Lilypond'
 convertBwv528 lp = lp'
     where
         (Lilypond tops) = lp

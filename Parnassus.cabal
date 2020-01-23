@@ -26,9 +26,11 @@ library
     Music.Dynamics,
     Music.Lilypond,
       Music.Lilypond.IO,
-      Music.Lilypond.Music,
+      Music.Lilypond.Literal,
+      Music.Lilypond.MusicL,
       Music.Lilypond.Parse,
-      Music.Lilypond.Score
+      Music.Lilypond.Score,
+      Music.Lilypond.Symbols,
     Music.Pitch,
     Music.Rhythm,
     Music.Species.Base

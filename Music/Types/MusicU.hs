@@ -54,18 +54,16 @@ combineU f con = combine
 
 -- general fold for MusicU
 mFoldU :: b -> (Primitive a -> b) -> ([b] -> b) -> ([b] -> b) -> (Control -> b -> b) -> MusicU a -> b
-mFoldU empty f seqFold parFold g m = case m of
-    Empty        -> empty
+mFoldU base f seqFold parFold g m = case m of
+    Empty        -> base
     PrimU p      -> f p
-    SeqU ms      -> seqFold (map rec ms)
-    ParU ms      -> parFold (map rec ms)
-    ModifyU c m' -> g c (rec m')
+    SeqU ms      -> seqFold (go <$> ms)
+    ParU ms      -> parFold (go <$> ms)
+    ModifyU c m' -> g c (go m')
     where
-        rec = mFoldU empty f seqFold parFold g
+        go = mFoldU base f seqFold parFold g
 
 instance MusicT MusicU a where
-    fromMusic :: Music a -> MusicU a
-    fromMusic = mFold prim (/+/) (/=/) ModifyU
     toMusic :: MusicU a -> Music a
     toMusic = mFoldU (Prim $ Rest 0) Prim (foldr1 (:+:)) (foldr1 (:=:)) Modify
     prim :: Primitive a -> MusicU a
@@ -76,21 +74,11 @@ instance MusicT MusicU a where
     (/+/) :: MusicU a -> MusicU a -> MusicU a
     (/+/) m1 Empty = m1
     (/+/) Empty m2 = m2
-    (/+/) m1 m2 = SeqU (extractSeq m1 ++ extractSeq m2)
-        where
-            extractSeq :: MusicU a -> [MusicU a]
-            extractSeq m = case m of
-                SeqU ms -> ms
-                _       -> [m]
+    (/+/) m1 m2 = SeqU (unLine m1 ++ unLine m2)
     (/=/) :: MusicU a -> MusicU a -> MusicU a
     (/=/) m1 Empty = m1
     (/=/) Empty m2 = m2
-    (/=/) m1 m2 = ParU (extractPar m1 ++ extractPar m2)
-        where
-            extractPar :: MusicU a -> [MusicU a]
-            extractPar m = case m of
-                ParU ms -> ms
-                _       -> [m]
+    (/=/) m1 m2 = ParU (unChord m1 ++ unChord m2)
     line :: Eq a => [MusicU a] -> MusicU a
     line ms = combine $ filter (not . isEmpty) $ concatMap unLine ms
         where combine = combineU unLine SeqU
@@ -98,11 +86,11 @@ instance MusicT MusicU a where
     chord :: Eq a => [MusicU a] -> MusicU a
     chord ms = combine $ Data.List.nub $ filter (not . isEmpty) $ concatMap unChord ms
         where combine = combineU unChord ParU
-    unLine :: Eq a => MusicU a -> [MusicU a]
+    unLine :: MusicU a -> [MusicU a]
     unLine (SeqU ms) = ms
     unLine (ModifyU ctl m) = (ModifyU ctl) <$> (unLine m)
     unLine m = [m]
-    unChord :: Eq a => MusicU a -> [MusicU a]
+    unChord :: MusicU a -> [MusicU a]
     unChord (ParU ms) = ms
     unChord (ModifyU ctl m) = (ModifyU ctl) <$> (unChord m)
     unChord m = [m]
@@ -110,8 +98,8 @@ instance MusicT MusicU a where
     dur Empty = 0
     dur (PrimU (Note d _)) = d
     dur (PrimU (Rest d)) = d
-    dur (SeqU ms) = sum (map dur ms)
-    dur (ParU ms) = maximum (map dur ms)
+    dur (SeqU ms) = sum (dur <$> ms)
+    dur (ParU ms) = maximum (dur <$> ms)
     dur (ModifyU (Tempo r) m) = dur m / r
     dur (ModifyU _ m) = dur m
     isEmpty :: MusicU a -> Bool
@@ -123,8 +111,8 @@ instance MusicT MusicU a where
     bisect :: Eq a => Dur -> MusicU a -> (MusicU a, MusicU a)
     bisect d m | d <= 0            = (Empty, m)
     bisect _ Empty                 = (Empty, Empty)
-    bisect d (PrimU (Note oldD p)) = (prim $ Note (min oldD d) p, prim $ Note (oldD - d) p)
-    bisect d (PrimU (Rest oldD))   = (prim $ Rest (min oldD d), prim $ Rest (oldD - d))
+    bisect d (PrimU (Note d' p)) = (prim $ Note (min d' d) p, prim $ Note (d' - d) p)
+    bisect d (PrimU (Rest d'))   = (prim $ Rest (min d' d), prim $ Rest (d' - d))
     bisect d (SeqU ms)             = (line left', line right')
         where
             durs = dur <$> ms
@@ -139,7 +127,7 @@ instance MusicT MusicU a where
             right' = midRight : (if emptyRight then [] else tail right)
     bisect d (ParU ms)             = (chord lefts, chord rights)
         where
-            (lefts, rights) = unzip $ (bisect d) <$> ms
+            (lefts, rights) = unzip $ bisect d <$> ms
     bisect d (ModifyU (Tempo r) m) = (ModifyU (Tempo r) mhead, ModifyU (Tempo r) mtail)
         where (mhead, mtail) = bisect (d * r) m
     bisect d (ModifyU ctl m)        = (ModifyU ctl mhead, ModifyU ctl mtail)
@@ -176,7 +164,7 @@ instance MusicT MusicU a where
     distributeTempos = mFoldU Empty prim SeqU ParU g
         where
             g :: Control -> MusicU a -> MusicU a
-            g (Tempo t) m = scaleDurations t m
+            g (Tempo t) m = (1 / t) *^ m
             g ctl m = ModifyU ctl m
     -- transposes the music by some interval
     transpose :: AbsPitch -> MusicU a -> MusicU a

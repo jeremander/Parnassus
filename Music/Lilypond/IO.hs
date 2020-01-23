@@ -14,6 +14,7 @@ import System.Process (callProcess, readProcess)
 import Text.Pretty ((<+>), (<//>), doubleQuotes, pretty, string)
 
 import Music.Lilypond.Score (ToLilypond(..))
+import Music.Pitch (PrettyPitch(..))
 
 
 safeTail :: [a] -> [a]
@@ -29,7 +30,7 @@ lilypondVersion = do
     return $ last $ words $ head $ lines versionOutput
 
 -- | Writes a Lilypond expression to a .ly file.
-writeLy :: (ToLilypond a) => a -> FilePath -> IO ()
+writeLy :: (PrettyPitch a, ToLilypond m a) => m a -> FilePath -> IO ()
 writeLy mus path = do
     let path' = if (".ly" `isSuffixOf` (toLower <$> path)) then path else path <.> "ly"
     -- TODO: prepend version only if no version element included
@@ -51,7 +52,7 @@ engraveLilypond fmt infile = case fmt of
 -- | Saves a Lilypond expression to an LY, PDF, PNG, or PS file.
 --   Always creates an LY file as an intermediate step.
 --   Uses the file extension to determine what type of file to create.
-writeLilypond :: (ToLilypond a) => a -> FilePath -> IO ()
+writeLilypond :: (PrettyPitch a, ToLilypond m a) => m a -> FilePath -> IO ()
 writeLilypond mus path = do
     let ext = safeTail $ toUpper <$> takeExtension path
     let fmt = if (ext `elem` (show <$> enumFrom (toEnum 0 :: FileFormat)))

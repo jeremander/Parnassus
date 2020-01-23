@@ -3,10 +3,14 @@
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE UndecidableInstances #-}
+
 
 module Music.Types.MusicT (
     Controls,
     MusicT(..),
+    Quantizable(..),
     ToMidi(..),
     changeTimeSig,
     durP,
@@ -21,15 +25,15 @@ import Data.Default (def)
 import Data.Either (partitionEithers)
 import Data.List (partition)
 import Data.Ratio
+import Data.VectorSpace (AdditiveGroup(..))
 import qualified Euterpea
-import Euterpea (AbsPitch, Control(..), Dur, InstrMap, InstrumentName(..), Music(..), Music1(..), Note1, NoteAttribute(..), PitchClass(..), Primitive(..), ToMusic1, absPitch, exportMidiFile, instrument, mFold, note, perform, pitch, rest, tempo, writeWavNorm)
+import Euterpea (AbsPitch, Control(..), Dur, InstrMap, InstrumentName(..), Music(..), Music1(..), Note1, NoteAttribute(..), Pitch, PitchClass(..), Primitive(..), ToMusic1, absPitch, exportMidiFile, instrument, mFold, note, perform, pitch, rest, tempo, writeWavNorm)
 import qualified Euterpea.IO.MIDI.FromMidi
 import qualified Euterpea.IO.MIDI.ToMidi
 
 import Misc.Utils (composeFuncs, rationalGCD, unDistribute)
-import qualified Music.Lilypond as LP
-import Music.Pitch (Key, ToPitch(..), simplifyMode)
-import Music.Rhythm (Quantizable(..), TimeSig)
+import Music.Pitch (Key, FromPitch(..), ToPitch(..), simplifyMode)
+import Music.Rhythm (TimeSig)
 import Music.Wave (AudSig, sineInstrMap)
 
 
@@ -108,6 +112,8 @@ distributeTempos' = mFold Prim (:+:) (:=:) g
         g ctl m = Modify ctl m
 
 infixr 5 /+/, /=/
+infixr 7 *^
+infixl 7 ^*
 
 -- Type class for basic music interface
 class MusicT m a where
@@ -115,6 +121,7 @@ class MusicT m a where
     toMusic :: m a -> Music a
     -- converts from Euterpea's Music type
     fromMusic :: Music a -> m a
+    fromMusic = mFold prim (/+/) (/=/) modify
     -- if possible, convert to Music1
     toMusic1 :: ToMusic1 a => m a -> Music1
     toMusic1 = Euterpea.toMusic1 . toMusic
@@ -142,6 +149,9 @@ class MusicT m a where
     -- smart constructor out of a Primitive element
     prim :: Primitive a -> m a
     prim = fromMusic . Prim
+    -- empty element (duration 0)
+    empty :: m a
+    empty = fromMusic $ Prim $ Rest 0
     -- modifies the music with a Control
     modify :: Control -> m a -> m a
     modify ctl = unConj $ Modify ctl
@@ -161,10 +171,10 @@ class MusicT m a where
     chord :: Eq a => [m a] -> m a
     chord = unConjF1 chord'
     -- splits music into time-sequential segments
-    unLine :: Eq a => m a -> [m a]
+    unLine :: m a -> [m a]
     unLine = unConjF2 unLine'
     -- splits music into separate lines in parallel
-    unChord :: Eq a => m a -> [m a]
+    unChord :: m a -> [m a]
     unChord = unConjF2 unChord'
     -- computes the duration of the music
     dur :: m a -> Dur
@@ -175,11 +185,20 @@ class MusicT m a where
     -- computes the least common denominator of the time intervals occurring in the music, ignoring tempo modifiers
     durGCD :: m a -> Rational
     durGCD = gcd' . toMusic
-    -- scales durations down by a constant
-    scaleDurations :: Rational -> m a -> m a
-    scaleDurations c = unConj $ Euterpea.scaleDurations c
+    -- scales durations by a constant (pre-multiplication)
+    (*^) :: Rational -> m a -> m a
+    (*^) 0 x = empty
+    (*^) c x = unConj (Euterpea.scaleDurations c) x
+    -- scales durations by a constant (post-multiplication)
+    (^*) :: m a -> Rational -> m a
+    (^*) = flip (*^)
     -- bisects music into two sections
     bisect :: Eq a => Dur -> m a -> (m a, m a)
+    -- splits the music into segments of the same length
+    -- by default, does this by recursively calling 'bisect'
+    split :: Eq a => Rational -> m a -> [m a]
+    split d mus = fst <$> takeWhile (\(prev, _) -> not $ isEmpty prev) (tail pairs)
+        where pairs = (empty, mus) : [bisect d prev | (_, prev) <- pairs]
     -- cuts music to at most the given duration
     cut :: Eq a => Dur -> m a -> m a
     cut d = fst . bisect d
@@ -235,7 +254,11 @@ class (MusicT m Note1) => ToMidi m where
     toMidiFile :: m Note1 -> FilePath -> IO ()
     toMidiFile m path = exportMidiFile path $ toMidi m
 
--- Class instances for Music
+instance {-# OVERLAPPABLE #-} (FromPitch a, MusicT m a) => FromPitch (m a) where
+    fromPitch :: Pitch -> m a
+    fromPitch p = prim $ Note (1 % 4) (fromPitch p)
+
+-- class instances for Music
 
 instance MusicT Music a where
     toMusic = id
@@ -284,7 +307,13 @@ withMetronome ts mus = mus /=/ metro'
         -- modify metronome's tempo with the music's global tempo
         metro' = distributeTempos $ modify tempo metro
 
+
 -- * Quantization
+
+class Quantizable m a where
+    -- quantizes the music so that every note/rest is a multiple of the given duration
+    -- NB: convention will be to ignore tempo modifiers
+    quantize :: Dur -> m a -> m a
 
 -- | Changes time signature of the music.
 changeTimeSig :: (MusicT m a, Quantizable m a, Eq a) => TimeSig -> TimeSig -> m a -> m a
@@ -297,43 +326,11 @@ changeTimeSig (n1, d1) (n2, d2) mus = modify ctl $ line measures'
         q' = foldr1 rationalGCD [q, r1, r2]
         mus' = quantize q' mus
         measures = split r1 mus'  -- split the measures
-        measures' = quantize q' . scaleDurations (r1 / r2) <$> measures
+        measures' = quantize q' . ((r2 / r1) *^) <$> measures
+        -- measures' = quantize q' . scaleDurations (r1 / r2) <$> measures
         -- rescale tempo externally so that the music's total duration is invariant
         -- (strip this off to make note durations invariant)
         ctl = Tempo (r2 / r1)
-
--- * Lilypond conversion
-
-toLilypond' :: (ToPitch a) => Music a -> LP.MusicL
-toLilypond' = mFold f combineSeq combinePar g
-    where
-        f :: (ToPitch a) => Primitive a -> LP.MusicL
-        f (Note d x) = LP.Note (LP.NotePitch (toPitch x) Nothing) (Just $ fromRational d) []
-        f (Rest d) = LP.Rest LP.StdRest (Just $ fromRational d) []
-        combineSeq :: LP.MusicL -> LP.MusicL -> LP.MusicL
-        combineSeq = LP.sequential
-        combinePar :: LP.MusicL -> LP.MusicL -> LP.MusicL
-        combinePar = LP.simultaneous
-        g :: Control -> LP.MusicL -> LP.MusicL
-        g (Tempo r) m = LP.Sequential [t, m]
-            where
-                bpm = round $ 120 * r
-                t = LP.Tmp $ LP.Tempo Nothing (Just $ (fromRational $ 1 % 4, bpm))
-        g (Transpose d) m = LP.Transpose p p' m
-            where
-                p = (C, 4)
-                p' = pitch $ absPitch p + d
-        g (Instrument inst) m = LP.Sequential [LP.Assign $ LP.Set $ LP.Assignment "Staff.instrumentName" $ LP.Lit $ LP.StringL $ show inst, m]
-        -- g (Instrument inst) m = LP.Sequential [LP.Assign $ LP.Set "Staff.instrumentName" $ LP.StringL $ show inst, m]
-        g (KeySig p mode) m   = LP.Sequential [LP.Key $ simplifyMode (p, mode), m]
-        g _ m                 = m  -- TODO: PhraseAttribute
-
--- | Converts a Parnassus musical object to a Lilypond object.
-toLilypond :: (MusicT m a, ToPitch a) => m a -> String -> TimeSig -> LP.Lilypond
-toLilypond mus title (n, d) = LP.setHeader hdr $ LP.toLilypond mus'
-    where
-        mus' = LP.Sequential [LP.Time (n, d), toLilypond' $ toMusic mus]
-        hdr = LP.Header [LP.LitAssignment "title" (LP.StringL title)]
 
 
 -- * WAV conversion
