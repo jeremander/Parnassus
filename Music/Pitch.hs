@@ -41,8 +41,13 @@ class ToPitch a where
 class FromPitch a where
     fromPitch :: Pitch -> a
 
+-- given a function modifying a Pitch, conjugates that function by conversion to/from Pitch
+modPitch :: (FromPitch a, ToPitch a) => (Pitch -> Pitch) -> a -> a
+modPitch f = fromPitch . f . toPitch
+
+-- transposes a pitch
 trans :: (FromPitch a, ToPitch a) => Int -> a -> a
-trans n = fromPitch . E.trans n . toPitch
+trans = modPitch . E.trans
 
 instance ToPitch Pitch where toPitch = id
 instance FromPitch Pitch where fromPitch = id
@@ -52,19 +57,31 @@ instance FromPitch Note1 where fromPitch = (, [])
 instance ToPitch PitchL where
     toPitch pc = pitch $ fromIntegral (Music.Pitch.Literal.Pitch.fromPitch pc :: Integer) + 48
 
-fromPitch' :: Pitch -> PitchL
-fromPitch' (pc, oct) = PitchL (pc'', Just $ fromIntegral acc, oct)
+-- ordinal position on the diatonic staff, C = 0, D = 1, ..., B = 6
+-- accidentals are not allowed
+diatonicPosition :: PitchClass -> Int
+diatonicPosition pc = case pc of
+    C -> 0
+    D -> 1
+    E -> 2
+    F -> 3
+    G -> 4
+    A -> 5
+    B -> 6
+    _ -> error "invalid pitch"
+
+-- diatonic staff distance between two pitches
+staffDistance :: (ToPitch a) => a -> a -> Int
+staffDistance p1 p2 = n2 - n1
     where
-        (pc', acc) = noteMapping pc
-        pc'' = case pc' of
-            C -> 0
-            D -> 1
-            E -> 2
-            F -> 3
-            G -> 4
-            A -> 5
-            B -> 6
-            _ -> error "invalid pitch"
+        ((pc1, oct1), (pc2, oct2)) = (toPitch p1, toPitch p2)
+        ((dpc1, _), (dpc2, _)) = (noteMapping pc1, noteMapping pc2)
+        n1 = 7 * oct1 + diatonicPosition dpc1
+        n2 = 7 * oct2 + diatonicPosition dpc2
+
+fromPitch' :: Pitch -> PitchL
+fromPitch' (pc, oct) = PitchL (diatonicPosition pc', Just $ fromIntegral acc, oct)
+    where (pc', acc) = noteMapping pc
 
 instance FromPitch PitchL where
     fromPitch = fromPitch'

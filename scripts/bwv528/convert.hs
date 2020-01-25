@@ -15,7 +15,7 @@ import System.IO.Unsafe
 
 
 inPath :: FilePath
-inPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/SonataIV-tmp.ly"
+inPath = "/Users/jeremander/Programming/Music/Parnassus/tunes/lilypond/BWV528/conv/SonataIV.ly"
 
 outPath :: FilePath
 outPath = replaceBaseName inPath (base ++ "-twohands")
@@ -90,6 +90,20 @@ choosePart :: MusicL' -> MusicL' -> MusicL' -> Bool
 choosePart bass alto sop = pitchRangeDistance br ar <= pitchRangeDistance ar sr
     where [br, ar, sr] = pitchRange <$> [bass, alto, sop]
 
+-- checks if the given music is a rest
+isRest :: MusicL a -> Bool
+isRest (Rest {})           = True
+isRest (Sequential xs)     = all isRest xs
+isRest (Simultaneous _ xs) = all isRest xs
+isRest _                   = False
+
+-- glues two musical items together simultaneously
+glue :: MusicL a -> MusicL a -> MusicL a
+glue x y
+    | isRest x  = y
+    | isRest y  = x
+    | otherwise = Simultaneous False [x, y]
+
 -- combines three voices into two (acting on MusicL')
 threeToTwo :: Dur -> [MusicL'] -> [MusicL']
 threeToTwo d parts = [left, right]
@@ -99,11 +113,15 @@ threeToTwo d parts = [left, right]
         -- (triplets only occur in allegro section)
         tupletSettings = [TupletSpan $ Just $ fromRational (1 % 8), Assign $ PropAssignment $ OverrideSym' "TupletNumber" (Symbol "transparent") (BoolL True)]
         (Relative p (Sequential altoElts)) = alto
-        -- split parts by measure, glue alto measures to their closest (bass or soprano) measure in terms of pitch distance
         alto' = Relative p (Sequential $ tupletSettings ++ (stripClefs <$> altoElts))
-        [bassMeasures, altoMeasures, sopMeasures] = split d . fillDurations <$> [bass, alto', sop]
+        -- first convert \relative pitches to absolute pitches
+        -- then fill in omitted durations
+        -- then split the parts by measure
+        -- finally, glue the alto measures to their closest (bass or soprano) measure, choosing the side that minimizes the pitch range for that measure
+        -- TODO: assign good clef to each measure; quantize, form chords, and join back; use durGCD?
+        [bassMeasures, altoMeasures, sopMeasures] = split d . fillDurations . unRelative <$> [bass, alto', sop]
         measures = zip3 bassMeasures altoMeasures sopMeasures
-        measures' = [if choosePart b a s then (Simultaneous True [b, a], s) else (b, Simultaneous True [a, s]) | (b, a, s) <- measures]
+        measures' = [if choosePart b a s then (glue b a, s) else (b, glue a s) | (b, a, s) <- measures]
         (leftMeasures, rightMeasures) = unzip measures'
         (left, right) = (line leftMeasures, line rightMeasures)
 
@@ -180,13 +198,8 @@ test = ()
     where
         lp = unsafePerformIO parseBwv528
         (Lilypond tops) = lp
-        [sop, alto, bass] = snd . getAssignment <$> slice 22 25 tops
-        -- TODO: memory of last duration must be better preserved
-        (Relative _ (Sequential bad')) = sop
-        bad = Sequential $ slice 26 33 bad'
-        items = unLine bad
-        bad2 = Sequential [items !! 0, items !! 6]
-        [bassMeasures, altoMeasures, sopMeasures] = split (3 % 8) . fillDurations <$> [bass, alto, sop]
+        [sop, alto, bass] = snd . getAssignment <$> slice 9 12 tops
+        [bassMeasures, altoMeasures, sopMeasures] = split (3 % 4) . fillDurations . unRelative <$> [bass, alto, sop]
         measures = zip3 bassMeasures altoMeasures sopMeasures
-        measures' = [if choosePart b a s then (Simultaneous True [b, a], s) else (b, Simultaneous True [a, s]) | (b, a, s) <- measures]
+        measures' = [if choosePart b a s then (glue b a, s) else (b, glue a s) | (b, a, s) <- measures]
 

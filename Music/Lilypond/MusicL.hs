@@ -19,7 +19,7 @@ import Euterpea (Music(..), Pitch, PitchClass(..), mFold)
 import Misc.Utils (notImpl)
 import Music.Lilypond.Literal (Literal(..), Markup(..), MarkupExpr(..), Tweak)
 import Music.Lilypond.Symbols (BarLine, Clef, Expressive(..), Staff)
-import Music.Pitch (FromPitch(..), PrettyPitch(..), ToPitch(..), Key, trans)
+import Music.Pitch (FromPitch(..), PrettyPitch(..), ToPitch(..), Key, staffDistance, trans)
 import Music.Rhythm (Duration(..), TimeSig, splitDur)
 import Music.Types.MusicT (MusicT(..), ToMidi(..))
 
@@ -293,12 +293,22 @@ instance MusicT MusicL a where
     dur _ = 0
     bisect :: Eq a => E.Dur -> MusicL a -> (MusicL a, MusicL a)
     bisect d m | d <= 0            = (empty, m)
-    bisect d (Note x d' exprs) = (Note x (f1 <$> d') exprs, Note x (f2 <$> d') exprs)
-        where (f1, f2) = (fromRational . min d . toRational, fromRational . max 0 . (-) d . toRational)
+    bisect d (Note x d' exprs) = (Note x (f1 <$> d') exprs', Note x (fromRational <$> d'') exprs)
+        where
+            f1 = fromRational . min d . toRational
+            d'' = max 0 . subtract d . toRational <$> d'
+            exprs' = case d'' of
+                Nothing -> exprs
+                Just d2 -> if (d2 > 0) then Tie : exprs else exprs
     bisect d (Rest rt d' exprs) = (Rest rt (f1 <$> d') exprs, Rest rt (f2 <$> d') exprs)
-        where (f1, f2) = (fromRational . min d . toRational, fromRational . max 0 . (-) d . toRational)
-    bisect d (Chord xs d' exprs) = (Chord xs (f1 <$> d') exprs, Chord xs (f2 <$> d') exprs)
-        where (f1, f2) = (fromRational . min d . toRational, fromRational . max 0 . (-) d . toRational)
+        where (f1, f2) = (fromRational . min d . toRational, fromRational . max 0 . subtract d . toRational)
+    bisect d (Chord xs d' exprs) = (Chord xs (f1 <$> d') exprs', Chord xs (fromRational <$> d'') exprs)
+        where
+            f1 = fromRational . min d . toRational
+            d'' = max 0 . subtract d . toRational <$> d'
+            exprs' = case d'' of
+                Nothing -> exprs
+                Just d2 -> if (d2 > 0) then Tie : exprs else exprs
     bisect d (Sequential []) = (empty, empty)
     bisect d (Sequential ms) = (line left', line right')
         where
@@ -326,6 +336,7 @@ instance MusicT MusicL a where
         where (left, right) = bisect (d * r) mus
     bisect d (Transpose p1 p2 mus) = (Transpose p1 p2 left, Transpose p1 p2 right)
         where (left, right) = bisect d mus
+    -- TODO: detect last note on left side to set correct relative pitch on right side
     bisect d (Relative p mus) = (Relative p left, Relative p right)
         where (left, right) = bisect d mus
     bisect d x = (x, empty)
@@ -337,62 +348,16 @@ instance MusicT MusicL a where
 
 instance ToMidi MusicL
 
--- function that acts on MusicL elements
-type Transform a = MusicL a -> MusicL a
--- function that optionally acts on some MusicL elements, emitting a flag indicating whether it did so
-type OptTransform a = MusicL a -> (Bool, MusicL a)
-
--- function that recursively applies a Transform to a MusicL
-mapTransform :: Transform a -> MusicL a -> MusicL a
--- recursive application
-mapTransform f (Sequential xs) = Sequential $ mapTransform f <$> xs
-mapTransform f (Simultaneous b xs) = Simultaneous b $ mapTransform f <$> xs
-mapTransform f (PartCombine x1 x2) = PartCombine (mapTransform f x1) (mapTransform f x2)
-mapTransform f (Repeat b n x xs) = Repeat b n (mapTransform f x) (fmap (mapTransform f) <$> xs)
-mapTransform f (Tremolo n x) = Tremolo n (mapTransform f x)
-mapTransform f (Times r x) = Times r (mapTransform f x)
-mapTransform f (Tuplet r x) = Tuplet r (mapTransform f x)
-mapTransform f (Transpose p1 p2 x) = Transpose p1 p2 (mapTransform f x)
-mapTransform f (Relative p x) = Relative p (mapTransform f x)
--- ignore other cases
-mapTransform f x = x
-
--- given a Transform that acts only on primitive elements (notes, rests, chords), recursively aplies it to the MusicL
-mapPrimTransform :: Transform a -> MusicL a -> MusicL a
-mapPrimTransform f x@(Note _ _ _) = f x
-mapPrimTransform f x@(Rest _ _ _) = f x
-mapPrimTransform f x@(Chord _ _ _) = f x
-mapPrimTransform f x = mapTransform (mapPrimTransform f) x
-
--- given an OptTransform, recursively applies it to the MusicL
-mapOptTransform :: OptTransform a -> MusicL a -> MusicL a
-mapOptTransform f x = go x
-    where
-        go x = if flag then x' else go' x
-            where (flag, x') = f x
-        go' (Sequential xs) = Sequential $ go <$> xs
-        go' (Simultaneous b xs) = Simultaneous b $ go <$> xs
-        go' (PartCombine x1 x2) = PartCombine (go x1) (go x2)
-        go' (Repeat b n x xs) = Repeat b n (go x) (fmap go <$> xs)
-        go' (Tremolo n x) = Tremolo n (go x)
-        go' (Times r x) = Times r (go x)
-        go' (Tuplet r x) = Tuplet r (go x)
-        go' (Transpose p1 p2 x) = Transpose p1 p2 (go x)
-        go' (Relative p x) = Relative p (go x)
-        go' x = x
-
 -- durations are optional for notes and rests, but they can be inferred from the preceding note
 -- this function fills in the missing durations
--- TODO: deal with times appropriately
 fillDurations :: MusicL a -> MusicL a
--- fillDurations = mapOptTransform fillDurations'
-fillDurations = snd . fillDur Nothing
+fillDurations = go Nothing
     where
+        go d = snd . fillDur d
         dur' (Note _ d _) = d
         dur' (Rest _ d _) = d
         dur' (Chord _ d _) = d
         dur' x = Nothing
-        go d = snd . fillDur d
         fillDur d (Note p Nothing exprs) = (d, Note p d exprs)
         fillDur d (Rest rt Nothing exprs) = (d, Rest rt d exprs)
         fillDur d (Chord ys Nothing exprs) = (d, Chord ys d exprs)
@@ -416,19 +381,43 @@ fillDurations = snd . fillDur Nothing
             where (d', x') = fillDur d x
         fillDur d x = (d', x)
             where d' = fromMaybe d $ return <$> dur' x
-        -- fillDurations' x@(Note _ _ _) = (True, x)
-        -- fillDurations' x@(Rest _ _ _) = (True, x)
-        -- fillDurations' x@(Chord _ _ _) = (True, x)
-        -- fillDurations' (Sequential xs) = (True, Sequential $ snd <$> scanl1 fill [(dur' x, x) | x <- xs'])
-        --     where
-        --         fillPrim d (Note p Nothing exprs) = Note p (Just d) exprs
-        --         fillPrim d (Rest rt Nothing exprs) = Rest rt (Just d) exprs
-        --         fillPrim d (Chord ys Nothing exprs) = Chord ys (Just d) exprs
-        --         fillPrim d x = x
-        --         fillPrim' d = mapPrimTransform $ fillPrim d
-        --         fill (Nothing, _) x = x
-        --         fill (Just d, _) (Nothing, x) = (Just d, fillPrim' d x)
-        --         fill (Just d, _) (Just d', x) = (Just d', x)
-        --         xs' = fillDurations <$> xs
-        -- fillDurations' x = (False, x)
 
+-- given a possible relative pitch context, and a pitch, returns the corresponding pitch whose octave is nearest to the pitch context, in terms of staff distance
+-- this replicates the functionality of Lilypond's \relative mode
+nearestRelPitch :: Maybe Pitch -> Pitch -> Pitch
+nearestRelPitch Nothing p2 = p2
+nearestRelPitch (Just p1) (pc2, oct2) = (pc2, oct2')
+    where
+        d = staffDistance p1 (pc2, oct2)  -- oct 3 has no octave marker
+        shift = round $ toRational d / 7
+        oct2' = oct2 - shift + (oct2 - 3)
+
+-- converts all pitches to absolute pitches
+-- TODO: use staffDistance to do this (unique note <= distance 3 from previous)
+-- TODO: apply this when bisecting a Relative
+unRelative :: (FromPitch a, ToPitch a) => MusicL a -> MusicL a
+unRelative = go Nothing
+    where
+        go p = snd . unRel p
+        pitch' (Note p _ _) = Just $ toPitch p
+        pitch' x = Nothing
+        unRel p (Note p' d exprs) = (Just p'', Note (fromPitch p'') d exprs)
+            where p'' = nearestRelPitch p (toPitch p')
+        unRel p (Sequential xs) = (p', Sequential $ snd <$> pairs)
+            where
+                unRel' (p, _) x = unRel p x
+                pairs = tail $ scanl unRel' (p, empty) xs
+                p' = fst $ last pairs
+        unRel p (Simultaneous b xs) = (Nothing, Simultaneous b $ go p <$> xs)
+        unRel p (PartCombine x1 x2) = (Nothing, PartCombine (go p x1) (go p x2))
+        unRel p (Repeat b n x xs) = (Nothing, Repeat b n (go p x) (fmap (go p) <$> xs))
+        unRel p (Tremolo n x) = (p', Tremolo n x')
+            where (p', x') = unRel p x
+        unRel p (Times r x) = (p', Times r x')
+            where (p', x') = unRel p x
+        unRel p (Tuplet r x) = (p', Tuplet r x')
+            where (p', x') = unRel p x
+        unRel p (Transpose p1 p2 x) = (p', Transpose p1 p2 x')
+            where (p', x') = unRel p x
+        unRel _ (Relative p x) = unRel p x
+        unRel p x = (p, x)
