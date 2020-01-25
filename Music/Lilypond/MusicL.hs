@@ -299,6 +299,7 @@ instance MusicT MusicL a where
         where (f1, f2) = (fromRational . min d . toRational, fromRational . max 0 . (-) d . toRational)
     bisect d (Chord xs d' exprs) = (Chord xs (f1 <$> d') exprs, Chord xs (f2 <$> d') exprs)
         where (f1, f2) = (fromRational . min d . toRational, fromRational . max 0 . (-) d . toRational)
+    bisect d (Sequential []) = (empty, empty)
     bisect d (Sequential ms) = (line left', line right')
         where
             durs = dur <$> ms
@@ -335,3 +336,99 @@ instance MusicT MusicL a where
             pc2 = E.pitch $ E.absPitch pc1 + i
 
 instance ToMidi MusicL
+
+-- function that acts on MusicL elements
+type Transform a = MusicL a -> MusicL a
+-- function that optionally acts on some MusicL elements, emitting a flag indicating whether it did so
+type OptTransform a = MusicL a -> (Bool, MusicL a)
+
+-- function that recursively applies a Transform to a MusicL
+mapTransform :: Transform a -> MusicL a -> MusicL a
+-- recursive application
+mapTransform f (Sequential xs) = Sequential $ mapTransform f <$> xs
+mapTransform f (Simultaneous b xs) = Simultaneous b $ mapTransform f <$> xs
+mapTransform f (PartCombine x1 x2) = PartCombine (mapTransform f x1) (mapTransform f x2)
+mapTransform f (Repeat b n x xs) = Repeat b n (mapTransform f x) (fmap (mapTransform f) <$> xs)
+mapTransform f (Tremolo n x) = Tremolo n (mapTransform f x)
+mapTransform f (Times r x) = Times r (mapTransform f x)
+mapTransform f (Tuplet r x) = Tuplet r (mapTransform f x)
+mapTransform f (Transpose p1 p2 x) = Transpose p1 p2 (mapTransform f x)
+mapTransform f (Relative p x) = Relative p (mapTransform f x)
+-- ignore other cases
+mapTransform f x = x
+
+-- given a Transform that acts only on primitive elements (notes, rests, chords), recursively aplies it to the MusicL
+mapPrimTransform :: Transform a -> MusicL a -> MusicL a
+mapPrimTransform f x@(Note _ _ _) = f x
+mapPrimTransform f x@(Rest _ _ _) = f x
+mapPrimTransform f x@(Chord _ _ _) = f x
+mapPrimTransform f x = mapTransform (mapPrimTransform f) x
+
+-- given an OptTransform, recursively applies it to the MusicL
+mapOptTransform :: OptTransform a -> MusicL a -> MusicL a
+mapOptTransform f x = go x
+    where
+        go x = if flag then x' else go' x
+            where (flag, x') = f x
+        go' (Sequential xs) = Sequential $ go <$> xs
+        go' (Simultaneous b xs) = Simultaneous b $ go <$> xs
+        go' (PartCombine x1 x2) = PartCombine (go x1) (go x2)
+        go' (Repeat b n x xs) = Repeat b n (go x) (fmap go <$> xs)
+        go' (Tremolo n x) = Tremolo n (go x)
+        go' (Times r x) = Times r (go x)
+        go' (Tuplet r x) = Tuplet r (go x)
+        go' (Transpose p1 p2 x) = Transpose p1 p2 (go x)
+        go' (Relative p x) = Relative p (go x)
+        go' x = x
+
+-- durations are optional for notes and rests, but they can be inferred from the preceding note
+-- this function fills in the missing durations
+-- TODO: deal with times appropriately
+fillDurations :: MusicL a -> MusicL a
+-- fillDurations = mapOptTransform fillDurations'
+fillDurations = snd . fillDur Nothing
+    where
+        dur' (Note _ d _) = d
+        dur' (Rest _ d _) = d
+        dur' (Chord _ d _) = d
+        dur' x = Nothing
+        go d = snd . fillDur d
+        fillDur d (Note p Nothing exprs) = (d, Note p d exprs)
+        fillDur d (Rest rt Nothing exprs) = (d, Rest rt d exprs)
+        fillDur d (Chord ys Nothing exprs) = (d, Chord ys d exprs)
+        fillDur d (Sequential xs) = (d', Sequential $ snd <$> pairs)
+            where
+                fillDur' (d, _) x = fillDur d x
+                pairs = tail $ scanl fillDur' (d, empty) xs
+                d' = fst $ last pairs
+        fillDur d (Simultaneous b xs) = (Nothing, Simultaneous b $ go d <$> xs)
+        fillDur d (PartCombine x1 x2) = (Nothing, PartCombine (go d x1) (go d x2))
+        fillDur d (Repeat b n x xs) = (Nothing, Repeat b n (go d x) (fmap (go d) <$> xs))
+        fillDur d (Tremolo n x) = (d', Tremolo n x')
+            where (d', x') = fillDur d x
+        fillDur d (Times r x) = (d', Times r x')
+            where (d', x') = fillDur d x
+        fillDur d (Tuplet r x) = (d', Tuplet r x')
+            where (d', x') = fillDur d x
+        fillDur d (Transpose p1 p2 x) = (d', Transpose p1 p2 x')
+            where (d', x') = fillDur d x
+        fillDur d (Relative p x) = (d', Relative p x')
+            where (d', x') = fillDur d x
+        fillDur d x = (d', x)
+            where d' = fromMaybe d $ return <$> dur' x
+        -- fillDurations' x@(Note _ _ _) = (True, x)
+        -- fillDurations' x@(Rest _ _ _) = (True, x)
+        -- fillDurations' x@(Chord _ _ _) = (True, x)
+        -- fillDurations' (Sequential xs) = (True, Sequential $ snd <$> scanl1 fill [(dur' x, x) | x <- xs'])
+        --     where
+        --         fillPrim d (Note p Nothing exprs) = Note p (Just d) exprs
+        --         fillPrim d (Rest rt Nothing exprs) = Rest rt (Just d) exprs
+        --         fillPrim d (Chord ys Nothing exprs) = Chord ys (Just d) exprs
+        --         fillPrim d x = x
+        --         fillPrim' d = mapPrimTransform $ fillPrim d
+        --         fill (Nothing, _) x = x
+        --         fill (Just d, _) (Nothing, x) = (Just d, fillPrim' d x)
+        --         fill (Just d, _) (Just d', x) = (Just d', x)
+        --         xs' = fillDurations <$> xs
+        -- fillDurations' x = (False, x)
+

@@ -1,8 +1,4 @@
-TODO
-----
-- reintroduce overloaded pitch literals (separate Pitched into FromPitch/ToPitch)
-- Use Euterpea pitches/modes in Lilypond section (remove Music.Pitch.Literal / Music.Dynamic.Literal)
-- move tests into their own modules
+- split up packages?
 - generalized stochastic DFS (if limit to one sample, can get stuck)
 - simulated annealing
 - generation order
