@@ -7,7 +7,7 @@ module Music.Species.Base where
 import Data.Char (isDigit)
 import qualified Data.Map as M
 import Data.Maybe (fromJust, isJust)
-import Data.Range.Range (inRange, Range (SpanRange))
+import Data.Range (Bound(..), BoundType(..), inRange, Range (SpanRange))
 import Data.List (inits)
 import Data.List.Split (splitOn)
 
@@ -72,12 +72,15 @@ maxRepeats xs = maximum $ 0 : (snd <$> filter (isJust . fst) (foldRepeats xs))
 data Voice = Bass | Tenor | Alto | Soprano
     deriving (Enum, Eq, Ord, Show)
 
+incBnd :: a -> Bound a
+incBnd bnd = Bound bnd Inclusive
+
 -- vocal range for each voice part
 voiceRange :: Voice -> Range AbsPitch
-voiceRange Bass    = SpanRange (absPitch (E, 2)) (absPitch (E, 4))
-voiceRange Tenor   = SpanRange (absPitch (C, 3)) (absPitch (A, 4))
-voiceRange Alto    = SpanRange (absPitch (F, 3)) (absPitch (F, 5))
-voiceRange Soprano = SpanRange (absPitch (C, 4)) (absPitch (A, 5))
+voiceRange Bass    = SpanRange (incBnd $ absPitch (E, 2)) (incBnd $ absPitch (E, 4))
+voiceRange Tenor   = SpanRange (incBnd $ absPitch (C, 3)) (incBnd $ absPitch (A, 4))
+voiceRange Alto    = SpanRange (incBnd $ absPitch (F, 3)) (incBnd $ absPitch (F, 5))
+voiceRange Soprano = SpanRange (incBnd $ absPitch (C, 4)) (incBnd $ absPitch (A, 5))
 
 -- returns True if the voice can sing the note
 voiceCanSing :: Voice -> Pitch -> Bool

@@ -10,7 +10,7 @@ import Control.Monad (join)
 import Control.Monad.Random (evalRandIO, Rand)
 import Data.List (sortOn, zip4)
 import Data.Maybe (fromJust, fromMaybe, isJust, isNothing, listToMaybe)
-import Data.Range.Range (fromRanges)
+import Data.Range (fromRanges)
 import qualified Data.Vector as V
 import Debug.Trace (trace)
 import System.Random (RandomGen)

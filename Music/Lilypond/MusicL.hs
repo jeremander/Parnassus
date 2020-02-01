@@ -8,7 +8,9 @@
 module Music.Lilypond.MusicL where
 
 import Data.Char (isAlpha, toUpper)
+import Data.List (nub, sort)
 import Data.Maybe (fromMaybe)
+import Control.Monad (liftM2)
 import Data.Ratio ((%), denominator, numerator)
 import Data.Tuple.Select (sel3)
 import qualified Text.Pretty as P
@@ -29,6 +31,9 @@ import Music.Types.MusicT (MusicT(..), ToMidi(..))
 -- capitalizes the first letter of a string
 cap :: String -> String
 cap cs = [if (i == 0) then toUpper c else c | (i, c) <- zip [0..] cs]
+
+nubSort :: (Ord a) => [a] -> [a]
+nubSort = nub . sort
 
 data OctaveCheck = OctaveCheck
     deriving (Eq, Show)
@@ -154,7 +159,7 @@ fracPrinter r = pretty (numerator r) <> "/" <> pretty (denominator r)
 instance (PrettyPitch a) => PrettyPitch (MusicL a) where
     prettyPitch lang (Note p d exps) = prettyPitch lang p <> pretty d <> prettyList exps
     prettyPitch _  (Rest t d exps) = pretty t <> pretty d <> prettyList exps
-    prettyPitch lang (Chord ns d exps) = (char '<' <+> nest 2 (sepByS "" $ prettyPitch lang <$> ns) <+> char '>') <> prettyList exps
+    prettyPitch lang (Chord ns d exps) = (char '<' <+> nest 2 (sepByS "" $ prettyPitch lang <$> ns) <+> char '>') <> pretty d <> prettyList exps
     prettyPitch _ (Bar b) = pretty b
     prettyPitch _ (Clef c) = "\\clef" <+> pretty c
     prettyPitch lang (Key (p, m)) = "\\key" <+> prettyPitch lang p <+> pretty m
@@ -199,7 +204,13 @@ getNoteData :: MusicL a -> Maybe (a, Maybe E.Dur, Bool)
 getNoteData (Note x d exprs) = Just (x, toRational <$> d, Tie `elem` exprs)
 getNoteData m                = Nothing
 
-instance MusicT MusicL a where
+dur' :: MusicL a -> Maybe Duration
+dur' (Note _ d _) = d
+dur' (Rest _ d _) = d
+dur' (Chord _ d _) = d
+dur' x = Nothing
+
+instance (FromPitch a, ToPitch a) => MusicT MusicL a where
     toMusic :: MusicL a -> Music a
     toMusic note@(Note {}) = E.Prim $ E.Note (toRational d') x
         where
@@ -261,9 +272,77 @@ instance MusicT MusicL a where
     (/*/) :: MusicL a -> Int -> MusicL a
     (/*/) x n = Repeat False n x Nothing
     line :: Eq a => [MusicL a] -> MusicL a
-    line xs = Sequential $ filter (not . isEmpty) $ concatMap unLine xs
+    line xs = Sequential $ foldr go [] xs'
+        where
+            xs' = filter (not . isEmpty) $ concatMap unLine xs
+            pitchSet ps = nubSort $ toPitch <$> ps
+            removeTies = filter (not . (== Tie))
+            maybePlus = liftM2 (+)
+            -- gets initial set of pitches
+            pitches (Note p _ _) = [toPitch p]
+            pitches (Chord ps _ _) = pitchSet ps
+            pitches (Simultaneous _ ys) = nubSort $ concatMap pitches ys
+            pitches _ = []
+            -- whether element is tied to the next one
+            isTied (Note _ _ exprs) = Tie `elem` exprs
+            isTied (Chord _ _ exprs) = Tie `elem` exprs
+            isTied (Sequential ys@(_:_)) = isTied $ last ys
+            isTied (Simultaneous _ ys) = all isTied ys
+            isTied _ = False
+            -- extends the duration of the first note of a musical element
+            extend d1 (Note p d2 exprs) = Note p (maybePlus d1 d2) exprs
+            extend d1 (Rest rt d2 exprs) = Rest rt (maybePlus d1 d2) exprs
+            extend d1 (Chord ps d2 exprs) = Chord ps (maybePlus d1 d2) exprs
+            extend d1 (Simultaneous b ys) = Simultaneous b (extend d1 <$> ys)
+            -- if same note or chord is tied to another, extend its duration
+            go x@(Note p1 d1 exprs1) (y@(Note p2 d2 exprs2):ys) = if isTied x && (p1 == p2)
+                then (Note p2 (maybePlus d1 d2) (nubSort $ removeTies exprs1 ++ exprs2)) : ys
+                else x : y : ys
+            go x@(Chord ps1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if isTied x && (pitchSet ps1 == pitchSet ps2)
+                then (Chord ps1 (maybePlus d1 d2) (nubSort $ removeTies exprs1 ++ exprs2)) : ys
+                else x : y : ys
+            go x@(Chord ps1 d1 exprs1) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
+                then extend d1 y : ys
+                else x : y : ys
+            -- TODO: fix this?
+            go x@(Simultaneous {}) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
+                then extend (dur' x) y : ys
+                else x : y : ys
+            -- if two rests are in succession, join them
+            go x@(Rest t1 d1 exprs1) (y@(Rest t2 d2 exprs2):ys) = if (t1 == t2)
+                then (Rest t1 (maybePlus d1 d2) (nubSort $ exprs1 ++ exprs2)) : ys
+                else x : y : ys
+            -- default
+            go x ys = x : ys
     chord :: Eq a => [MusicL a] -> MusicL a
-    chord xs = Simultaneous False $ filter (not . isEmpty) $ concatMap unChord xs
+    chord xs = chord' $ foldr go [] xs'
+        where
+            xs' = filter (not . isEmpty) $ concatMap unChord xs
+            mkNoteChord [p] d exprs = Note (fromPitch p) d exprs
+            mkNoteChord ps d exprs  = Chord (fromPitch <$> ps) d exprs
+            -- if two notes/chords have the same duration & expressives, merge them into a chord
+            go x@(Note p1 d1 exprs1) (y@(Note p2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
+                then mkNoteChord (nubSort $ toPitch <$> [p1, p2]) d1 exprs1 : ys
+                else x : y : ys
+            go x@(Note p1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
+                then mkNoteChord (nubSort $ toPitch <$> p1 : ps2) d1 exprs1 : ys
+                else x : y : ys
+            go x@(Chord ps1 d1 exprs1) (y@(Note p2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
+                then mkNoteChord (nubSort $ toPitch <$> p2 : ps1) d1 exprs1 : ys
+                else x : y : ys
+            go x@(Chord ps1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
+                then mkNoteChord (nubSort $ toPitch <$> ps1 ++ ps2) d1 exprs1 : ys
+                else x : y : ys
+            -- if a rest overlaps something with the same duration, remove the rest
+            go x@(Rest {}) (y:ys) = if (dur x == dur y) then y : ys else x : y : ys
+            go x (y@(Rest {}):ys) = if (dur x == dur y) then x : ys else x : y : ys
+            -- extract singleton Sequentials
+            go (Sequential [x]) ys = go x ys
+            -- default
+            go x ys = x : ys
+            chord' [] = empty
+            chord' [y] = y
+            chord' ys = Simultaneous False ys
     unLine :: MusicL a -> [MusicL a]
     unLine (Sequential xs) = xs
     unLine x = [x]
@@ -337,8 +416,7 @@ instance MusicT MusicL a where
     bisect d (Transpose p1 p2 mus) = (Transpose p1 p2 left, Transpose p1 p2 right)
         where (left, right) = bisect d mus
     -- TODO: detect last note on left side to set correct relative pitch on right side
-    bisect d (Relative p mus) = (Relative p left, Relative p right)
-        where (left, right) = bisect d mus
+    bisect d x@(Relative _ _) = bisect d $ unRelative x
     bisect d x = (x, empty)
     transpose :: E.AbsPitch -> MusicL a -> MusicL a
     transpose i = Transpose pc1 pc2
@@ -350,14 +428,10 @@ instance ToMidi MusicL
 
 -- durations are optional for notes and rests, but they can be inferred from the preceding note
 -- this function fills in the missing durations
-fillDurations :: MusicL a -> MusicL a
+fillDurations :: (FromPitch a, ToPitch a) => MusicL a -> MusicL a
 fillDurations = go Nothing
     where
         go d = snd . fillDur d
-        dur' (Note _ d _) = d
-        dur' (Rest _ d _) = d
-        dur' (Chord _ d _) = d
-        dur' x = Nothing
         fillDur d (Note p Nothing exprs) = (d, Note p d exprs)
         fillDur d (Rest rt Nothing exprs) = (d, Rest rt d exprs)
         fillDur d (Chord ys Nothing exprs) = (d, Chord ys d exprs)
@@ -393,8 +467,6 @@ nearestRelPitch (Just p1) (pc2, oct2) = (pc2, oct2')
         oct2' = oct2 - shift + (oct2 - 3)
 
 -- converts all pitches to absolute pitches
--- TODO: use staffDistance to do this (unique note <= distance 3 from previous)
--- TODO: apply this when bisecting a Relative
 unRelative :: (FromPitch a, ToPitch a) => MusicL a -> MusicL a
 unRelative = go Nothing
     where

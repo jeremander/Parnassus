@@ -68,7 +68,7 @@ library
     process >=1.6,
     QuickCheck >=2.13,
     random >=1.1,
-    range >=0.2,
+    range >=0.3,
     search-algorithms >=0.3,
     sort >=1.0,
     split >=0.2,

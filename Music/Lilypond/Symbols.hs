@@ -12,21 +12,21 @@ import Music.Rhythm (Duration(..))
 
 
 data BarLine = BarCheck | BarLine String
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty BarLine where
     pretty BarCheck    = "|"
     pretty (BarLine s) = "\\bar" <+> (string $ show s)
 
 data Beam = BeamOn | BeamOff
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Beam where
     pretty BeamOn  = "["
     pretty BeamOff = "]"
 
 data Slur = SlurOn | SlurOff | PhraseSlurOn | PhraseSlurOff
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Slur where
     pretty SlurOn = "("
@@ -86,7 +86,7 @@ data Articulation
     | Segno
     | Coda
     | VarCoda
-    deriving (Bounded, Enum, Eq, Read, Show)
+    deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
 instance Pretty Articulation where
     pretty Accent             = ">"
@@ -140,7 +140,7 @@ data Expressive
     | Slur Slur
     | Text Direction String    -- ^quoted string markup
     | Markup Direction Markup  -- ^\markup
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Expressive where
     pretty (Articulation d a)   = pretty d <> pretty a
@@ -178,7 +178,7 @@ instance Pretty StdClef where
     pretty = string . fmap toLower . show
 
 data Clef = StdClef StdClef | CustomClef String
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Clef where
     pretty (StdClef std)  = pretty std
@@ -193,7 +193,7 @@ data Staff =  Staff
             | ChoirStaff
             | GrandStaff
             | PianoStaff
-    deriving (Bounded, Enum, Eq, Read, Show)
+    deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
 instance Pretty Staff where
     pretty = string . show

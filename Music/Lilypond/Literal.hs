@@ -18,13 +18,13 @@ prettySeq xs = "{" <+> hsep (pretty <$> xs) <+> "}"
 -- Types
 
 newtype Identifier = Identifier { getIdentifier :: String }  -- \foo
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Identifier where
     pretty (Identifier s) = char '\\' <> string s
 
 newtype Symbol = Symbol { getSymbol :: String }  -- #'something
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Symbol where
     pretty (Symbol s) = case words s of
@@ -55,7 +55,7 @@ instance Pretty AxisDir where
                         _       -> error "invalid AxisDir"
 
 data NumPair = NumPair Double Double
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty NumPair where
     pretty (NumPair x y) = string $ "#'(" ++ show x ++ " . " ++ show y ++ ")"
@@ -95,7 +95,7 @@ data Font
     | Typewriter Markup
     | Underline Markup
     | Upright Markup
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Font where
     pretty (AbsFontsize sz e)   = "\\abs-fontsize" <+> pretty (FloatL sz) <+> pretty e
@@ -169,7 +169,7 @@ data Alignment
     | WordwrapField Symbol
     | Wordwrap [Markup]
     | WordwrapString String
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Alignment where
     pretty (CenterAlign e)            = "\\center-align" <+> pretty e
@@ -230,7 +230,7 @@ data Graphic
     | Scale NumPair Markup
     | Triangle Bool
     | WithUrl String Markup
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Graphic where
     pretty (ArrowHead axdir fill)     = "\\arrow-head" <+> pretty axdir <+> pretty (BoolL fill)
@@ -264,7 +264,7 @@ data Tweak =
     | Revert String
     | Tweak String Literal
     | TweakSym Symbol
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Tweak where
     pretty (Override s val) = "\\override" <+> string s <+> char '=' <+> pretty val
@@ -282,7 +282,7 @@ data MarkupExpr
     | MarkupText String
     | MarkupTweak Tweak
     | MarkupVar LitAssignment
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty MarkupExpr where
     pretty (MarkupAlign a)   = pretty a
@@ -296,7 +296,7 @@ instance Pretty MarkupExpr where
 data Markup
     = MarkupExpr MarkupExpr
     | MarkupList [Markup]
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Markup where
     pretty (MarkupExpr expr)    = pretty expr
@@ -332,7 +332,7 @@ data Literal =
             | SymbolL Symbol -- etc.
             | SexpL String -- Scheme expression (just stores it as a flat string)
             | MarkupL Markup  -- \markup { }
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty Literal where
     pretty (FloatL d) = string $ "#" ++ show d
@@ -346,7 +346,7 @@ instance Pretty Literal where
     pretty (MarkupL m) = "\\markup" <+> (char '{' <+> pretty m <+> char '}')
 
 data LitAssignment = LitAssignment String Literal
-    deriving (Eq, Show)
+    deriving (Eq, Ord, Show)
 
 instance Pretty LitAssignment where
     pretty (LitAssignment name val) = string name <+> "=" <+> pretty val

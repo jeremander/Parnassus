@@ -90,19 +90,25 @@ choosePart :: MusicL' -> MusicL' -> MusicL' -> Bool
 choosePart bass alto sop = pitchRangeDistance br ar <= pitchRangeDistance ar sr
     where [br, ar, sr] = pitchRange <$> [bass, alto, sop]
 
--- checks if the given music is a rest
-isRest :: MusicL a -> Bool
-isRest (Rest {})           = True
-isRest (Sequential xs)     = all isRest xs
-isRest (Simultaneous _ xs) = all isRest xs
-isRest _                   = False
+-- glues two musical elements simultaneously
+glue :: MusicL' -> MusicL' -> MusicL'
+glue x y = chord [x, y]
 
--- glues two musical items together simultaneously
-glue :: MusicL a -> MusicL a -> MusicL a
-glue x y
-    | isRest x  = y
-    | isRest y  = x
-    | otherwise = Simultaneous False [x, y]
+-- given (bass, alto, soprano), glues alto to the nearest part
+glueAlto :: (MusicL', MusicL', MusicL') -> (MusicL', MusicL')
+glueAlto (b, a, s) = if choosePart b a s then (glue b a, s) else (b, glue a s)
+
+-- given a measure (bass, alto, soprano), splits it into smallest duration segments
+splitMeasure :: (MusicL', MusicL', MusicL') -> [(MusicL', MusicL', MusicL')]
+splitMeasure (b, a, s) = zip3' (split d' b, split d' a, split d' s)
+    where
+        d' = durGCD $ Sequential [b, a, s]
+        zip3' (xs, ys, zs) = zip3 xs ys zs
+
+-- given a measure (bass, alto, soprano), splits it into smallest duration segments, glues the segments appropriately, then joins them back together
+mkMeasure :: (MusicL', MusicL', MusicL') -> (MusicL', MusicL')
+mkMeasure (b, a, s) = (line left, line right)
+    where (left, right) = unzip $ glueAlto <$> splitMeasure (b, a, s)
 
 -- combines three voices into two (acting on MusicL')
 threeToTwo :: Dur -> [MusicL'] -> [MusicL']
@@ -121,9 +127,10 @@ threeToTwo d parts = [left, right]
         -- TODO: assign good clef to each measure; quantize, form chords, and join back; use durGCD?
         [bassMeasures, altoMeasures, sopMeasures] = split d . fillDurations . unRelative <$> [bass, alto', sop]
         measures = zip3 bassMeasures altoMeasures sopMeasures
-        measures' = [if choosePart b a s then (glue b a, s) else (b, glue a s) | (b, a, s) <- measures]
+        measures' = mkMeasure <$> measures
         (leftMeasures, rightMeasures) = unzip measures'
-        (left, right) = (line leftMeasures, line rightMeasures)
+        (left, right) = (Sequential leftMeasures, Sequential rightMeasures)
+        -- (left, right) = (line leftMeasures, line rightMeasures)
 
 getAssignment :: TopLevel' -> (String, MusicL')
 getAssignment (AssignmentTop (Assignment name val)) = (name, val)
@@ -198,7 +205,11 @@ test = ()
     where
         lp = unsafePerformIO parseBwv528
         (Lilypond tops) = lp
-        [sop, alto, bass] = snd . getAssignment <$> slice 9 12 tops
+        section = slice 6 9 tops
+        [sop, alto, bass] = snd . getAssignment <$> section
+        parts = [bass, alto, sop]
+        d = 1
+        [left, right] = threeToTwo d parts
         [bassMeasures, altoMeasures, sopMeasures] = split (3 % 4) . fillDurations . unRelative <$> [bass, alto, sop]
         measures = zip3 bassMeasures altoMeasures sopMeasures
         measures' = [if choosePart b a s then (glue b a, s) else (b, glue a s) | (b, a, s) <- measures]
