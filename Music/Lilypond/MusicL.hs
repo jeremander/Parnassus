@@ -208,6 +208,8 @@ dur' :: MusicL a -> Maybe Duration
 dur' (Note _ d _) = d
 dur' (Rest _ d _) = d
 dur' (Chord _ d _) = d
+dur' (Sequential xs) = sum <$> (sequence $ dur' <$> xs)
+dur' (Simultaneous _ xs) = maximum <$> (sequence $ dur' <$> xs)
 dur' x = Nothing
 
 instance (FromPitch a, ToPitch a) => MusicT MusicL a where
@@ -289,6 +291,11 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             isTied (Sequential ys@(_:_)) = isTied $ last ys
             isTied (Simultaneous _ ys) = all isTied ys
             isTied _ = False
+            addExprs exprs (Note p d exprs') = Note p d (nubSort $ exprs ++ exprs')
+            addExprs exprs (Rest rt d exprs') = Rest rt d (nubSort $ exprs ++ exprs')
+            addExprs exprs (Chord ps d exprs') = Chord ps d (nubSort $ exprs ++ exprs')
+            addExprs exprs (Sequential xs) = Sequential $ addExprs exprs <$> xs
+            addExprs exprs (Simultaneous b xs) = Simultaneous b $ addExprs exprs <$> xs
             -- extends the duration of the first note of a musical element
             extend d1 (Note p d2 exprs) = Note p (maybePlus d1 d2) exprs
             extend d1 (Rest rt d2 exprs) = Rest rt (maybePlus d1 d2) exprs
@@ -304,7 +311,6 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             go x@(Chord ps1 d1 exprs1) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
                 then extend d1 y : ys
                 else x : y : ys
-            -- TODO: fix this?
             go x@(Simultaneous {}) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
                 then extend (dur' x) y : ys
                 else x : y : ys
@@ -321,9 +327,12 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             mkNoteChord [p] d exprs = Note (fromPitch p) d exprs
             mkNoteChord ps d exprs  = Chord (fromPitch <$> ps) d exprs
             -- if two notes/chords have the same duration & expressives, merge them into a chord
+            -- if they have the same pitch, merge them into a note
             go x@(Note p1 d1 exprs1) (y@(Note p2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
                 then mkNoteChord (nubSort $ toPitch <$> [p1, p2]) d1 exprs1 : ys
-                else x : y : ys
+                else if (d1 == d2) && (p1 == p2)
+                    then Note p1 d1 (nubSort $ exprs1 ++ exprs2) : ys
+                    else x : y : ys
             go x@(Note p1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
                 then mkNoteChord (nubSort $ toPitch <$> p1 : ps2) d1 exprs1 : ys
                 else x : y : ys

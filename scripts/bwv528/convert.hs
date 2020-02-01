@@ -1,5 +1,5 @@
 import Data.Foldable (foldl')
-import Data.List.Split (splitOn)
+import Data.List.Split (chunksOf, splitOn)
 import Data.Maybe
 import Data.Ratio
 import System.FilePath.Posix
@@ -9,6 +9,7 @@ import Euterpea (AbsPitch, absPitch, Dur, Note1)
 
 import Music.Lilypond
 import Music.Pitch (toPitch)
+import Music.Rhythm (TimeSig)
 import Music.Types.MusicT (MusicT(..))
 
 import System.IO.Unsafe
@@ -98,21 +99,33 @@ glue x y = chord [x, y]
 glueAlto :: (MusicL', MusicL', MusicL') -> (MusicL', MusicL')
 glueAlto (b, a, s) = if choosePart b a s then (glue b a, s) else (b, glue a s)
 
--- given a measure (bass, alto, soprano), splits it into smallest duration segments
+glueAltoSeg :: [(MusicL', MusicL', MusicL')] -> (MusicL', MusicL')
+glueAltoSeg xs = if choosePart b' a' s' then (line $ glue' <$> zip b a, line s) else (line b, line $ glue' <$> zip a s)
+    where
+        (b, a, s) = unzip3 xs
+        (b', a', s') = (Sequential b, Sequential a, Sequential s)
+        glue' = uncurry glue
+
+-- given a measure (bass, alto, soprano), splits it into atoms (smallest duration segments)
 splitMeasure :: (MusicL', MusicL', MusicL') -> [(MusicL', MusicL', MusicL')]
 splitMeasure (b, a, s) = zip3' (split d' b, split d' a, split d' s)
     where
         d' = durGCD $ Sequential [b, a, s]
         zip3' (xs, ys, zs) = zip3 xs ys zs
 
--- given a measure (bass, alto, soprano), splits it into smallest duration segments, glues the segments appropriately, then joins them back together
-mkMeasure :: (MusicL', MusicL', MusicL') -> (MusicL', MusicL')
-mkMeasure (b, a, s) = (line left, line right)
-    where (left, right) = unzip $ glueAlto <$> splitMeasure (b, a, s)
+-- given a measure (bass, alto, soprano), splits it into smaller segments, glues the alto to either the soprano or bass, then joins the segments back together
+mkMeasure :: Int -> (MusicL', MusicL', MusicL') -> (MusicL', MusicL')
+mkMeasure n (b, a, s) = (Sequential left, Sequential right)
+    where
+        atoms = splitMeasure (b, a, s)
+        numAtoms = length atoms
+        segs = if (numAtoms > n) then chunksOf (numAtoms `quot` n) atoms else [atoms]
+        gluedSegs = glueAltoSeg <$> segs
+        (left, right) = unzip gluedSegs
 
 -- combines three voices into two (acting on MusicL')
-threeToTwo :: Dur -> [MusicL'] -> [MusicL']
-threeToTwo d parts = [left, right]
+threeToTwo :: Dur -> Dur -> [MusicL'] -> [MusicL']
+threeToTwo measureDur systemDur parts = [left, right]
     where
         [bass, alto, sop] = take 3 parts
         -- fix tuplet settings, which somehow break during part combination
@@ -125,9 +138,10 @@ threeToTwo d parts = [left, right]
         -- then split the parts by measure
         -- finally, glue the alto measures to their closest (bass or soprano) measure, choosing the side that minimizes the pitch range for that measure
         -- TODO: assign good clef to each measure; quantize, form chords, and join back; use durGCD?
-        [bassMeasures, altoMeasures, sopMeasures] = split d . fillDurations . unRelative <$> [bass, alto', sop]
+        [bassMeasures, altoMeasures, sopMeasures] = split measureDur . fillDurations . unRelative <$> [bass, alto', sop]
         measures = zip3 bassMeasures altoMeasures sopMeasures
-        measures' = mkMeasure <$> measures
+        numSystems = floor $ measureDur / systemDur
+        measures' = mkMeasure numSystems <$> measures
         (leftMeasures, rightMeasures) = unzip measures'
         (left, right) = (Sequential leftMeasures, Sequential rightMeasures)
         -- (left, right) = (line leftMeasures, line rightMeasures)
@@ -136,14 +150,14 @@ getAssignment :: TopLevel' -> (String, MusicL')
 getAssignment (AssignmentTop (Assignment name val)) = (name, val)
 
 -- combines three voices into two (acting on TopLevel')
-threeToTwo' :: Dur -> [TopLevel'] -> [TopLevel']
-threeToTwo' d tops = [leftPart, rightPart]
+threeToTwo' :: Dur -> Dur -> [TopLevel'] -> [TopLevel']
+threeToTwo' measureDur systemDur tops = [leftPart, rightPart]
     where
         [sop, alto, bass] = take 3 tops
         (sopName, sopPart) = getAssignment sop
         (altoName, altoPart) = getAssignment alto
         (_, bassPart) = getAssignment bass
-        [left, right] = threeToTwo d [bassPart, altoPart, sopPart]
+        [left, right] = threeToTwo measureDur systemDur [bassPart, altoPart, sopPart]
         leftPart = AssignmentTop $ Assignment altoName left
         rightPart = AssignmentTop $ Assignment sopName right
 
@@ -177,16 +191,16 @@ convertBwv528 lp = lp'
         (Lilypond tops) = lp
         -- merge bass and alto parts for each section
         -- varIndices = [[6, 7, 8], [9, 10, 11], [15, 16, 17], [22, 23, 24]]
-        introParts = threeToTwo' 1 $ slice 6 9 tops
-        adagioParts = threeToTwo' (3 % 4) $ slice 9 12 tops
-        andanteParts = threeToTwo' 1 $ slice 15 18 tops
-        allegroParts = threeToTwo' (3 % 8) $ slice 22 25 tops
+        introParts = threeToTwo' 1 (1 % 4) $ slice 6 9 tops
+        adagioParts = threeToTwo' (3 % 4) (1 % 4) $ slice 9 12 tops
+        andanteParts = threeToTwo' 1 (1 % 4) $ slice 15 18 tops
+        allegroParts = threeToTwo' (3 % 8) (1 % 8) $ slice 22 25 tops
         -- reduce staves from three to two
         (BookTop (Book _ [BookPart _ scores])) = last tops
-        -- bookTop = BookTop (Book Nothing [BookPart Nothing $ reduceStaves <$> scores])
-        bookTop = BookTop (Book Nothing [BookPart Nothing $ reduceStaves <$> slice 0 1 scores])
-        -- tops' = slice 0 6 tops ++ introParts ++ adagioParts ++ slice 12 15 tops ++ andanteParts ++ slice 18 22 tops ++ allegroParts ++ slice 25 27 tops ++ [bookTop]
-        tops' = slice 0 6 tops ++ introParts ++ adagioParts ++ slice 25 27 tops ++ [bookTop]
+        bookTop = BookTop (Book Nothing [BookPart Nothing $ reduceStaves <$> scores])
+        -- bookTop = BookTop (Book Nothing [BookPart Nothing $ reduceStaves <$> slice 0 1 scores])
+        tops' = slice 0 6 tops ++ introParts ++ adagioParts ++ slice 12 15 tops ++ andanteParts ++ slice 18 22 tops ++ allegroParts ++ slice 25 27 tops ++ [bookTop]
+        -- tops' = slice 0 6 tops ++ introParts ++ adagioParts ++ slice 25 27 tops ++ [bookTop]
         lp' = Lilypond tops'
 
 main :: IO ()
@@ -207,10 +221,12 @@ test = ()
         (Lilypond tops) = lp
         section = slice 6 9 tops
         [sop, alto, bass] = snd . getAssignment <$> section
+        measureDur = 1
+        systemDur = 1 % 4
         parts = [bass, alto, sop]
-        d = 1
-        [left, right] = threeToTwo d parts
-        [bassMeasures, altoMeasures, sopMeasures] = split (3 % 4) . fillDurations . unRelative <$> [bass, alto, sop]
-        measures = zip3 bassMeasures altoMeasures sopMeasures
-        measures' = [if choosePart b a s then (glue b a, s) else (b, glue a s) | (b, a, s) <- measures]
+        -- d = 1
+        -- [left, right] = threeToTwo d parts
+        -- [bassMeasures, altoMeasures, sopMeasures] = split (3 % 4) . fillDurations . unRelative <$> [bass, alto, sop]
+        -- measures = zip3 bassMeasures altoMeasures sopMeasures
+        -- measures' = [if choosePart b a s then (glue b a, s) else (b, glue a s) | (b, a, s) <- measures]
 

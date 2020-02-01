@@ -42,6 +42,10 @@ splitDur r
         q = diff / b
         (n', d') = (numerator q, denominator q)
 
+-- | Returns True if a duration is valid for Lilypond output
+validDur :: Dur -> Bool
+validDur r = length (splitDur r) <= 1
+
 instance Real Duration where
     toRational (Duration r nd m) = r * ((3 / 2) ^^ nd) * (fromIntegral m)
 
