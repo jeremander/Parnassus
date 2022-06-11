@@ -21,12 +21,12 @@ import Music.Types.MusicU
 import Music.Lilypond.MusicL
 
 
--- Types --
+-- * Types
 
 type MusicU1 = MusicU Note1
 type MusicD1 = MusicD Note1
 
--- MusicT type conversions
+-- * 'MusicT' type conversions
 
 convUtoD :: (Ord a, ToPitch a) => MusicU a -> MusicD a
 convUtoD mus = MusicD q ctl m''
@@ -47,7 +47,7 @@ instance (Ord a, ToPitch a) => ToMusicD MusicU a where
 unConjD :: (MusicT m a, ToMusicD m a) => (MusicD a -> MusicD a) -> (m a -> m a)
 unConjD f = fromMusicD . f . toMusicD
 
--- Quantizable Instances --
+-- * 'Quantizable' Instances
 
 instance (Ord a, ToPitch a) => Quantizable MusicU a where
     -- improve memory efficiency by quantizing parallel sections separately

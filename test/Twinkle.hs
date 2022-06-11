@@ -1,3 +1,5 @@
+module Twinkle where
+
 import Euterpea hiding (line, play)
 
 import Music.Types

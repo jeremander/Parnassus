@@ -1,6 +1,3 @@
-
-{-# LANGUAGE OverloadedStrings #-}
-
 module Music.Dynamics where
 
 import Data.Char (toLower)

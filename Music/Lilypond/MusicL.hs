@@ -274,7 +274,7 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
     (/*/) :: MusicL a -> Int -> MusicL a
     (/*/) x n = Repeat False n x Nothing
     line :: Eq a => [MusicL a] -> MusicL a
-    line xs = Sequential $ foldr go [] xs'
+    line xs = line' $ foldr go [] xs'
         where
             xs' = filter (not . isEmpty) $ concatMap unLine xs
             pitchSet ps = nubSort $ toPitch <$> ps
@@ -320,6 +320,8 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
                 else x : y : ys
             -- default
             go x ys = x : ys
+            line' [x] = x
+            line' xs = Sequential xs
     chord :: Eq a => [MusicL a] -> MusicL a
     chord xs = chord' $ foldr go [] xs'
         where
@@ -342,9 +344,9 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             go x@(Chord ps1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
                 then mkNoteChord (nubSort $ toPitch <$> ps1 ++ ps2) d1 exprs1 : ys
                 else x : y : ys
-            -- if a rest overlaps something with the same duration, remove the rest
-            go x@(Rest {}) (y:ys) = if (dur x == dur y) then y : ys else x : y : ys
-            go x (y@(Rest {}):ys) = if (dur x == dur y) then x : ys else x : y : ys
+            -- if a bare rest overlaps something with the same duration, remove the rest
+            go x@(Rest _ _ exprs) (y:ys) = if (dur x == dur y) && (null exprs) then y : ys else x : y : ys
+            go x (y@(Rest _ _ exprs):ys) = if (dur x == dur y) && (null exprs) then x : ys else x : y : ys
             -- extract singleton Sequentials
             go (Sequential [x]) ys = go x ys
             -- default

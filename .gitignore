@@ -5,6 +5,8 @@ tmp*
 *.ly
 *.mid
 *.wav
+*.sf2
+.DS_Store
 
 dist
 dist-*

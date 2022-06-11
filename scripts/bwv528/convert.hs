@@ -106,6 +106,12 @@ glueAltoSeg xs = if choosePart b' a' s' then (line $ glue' <$> zip b a, line s) 
         (b', a', s') = (Sequential b, Sequential a, Sequential s)
         glue' = uncurry glue
 
+-- glueAltoSeg :: [(MusicL', MusicL', MusicL')] -> (MusicL', MusicL')
+-- glueAltoSeg xs = glueAlto (b', a', s')
+--     where
+--         (b, a, s) = unzip3 xs
+--         (b', a', s') = (line b, line a, line s)
+
 -- given a measure (bass, alto, soprano), splits it into atoms (smallest duration segments)
 splitMeasure :: (MusicL', MusicL', MusicL') -> [(MusicL', MusicL', MusicL')]
 splitMeasure (b, a, s) = zip3' (split d' b, split d' a, split d' s)
@@ -219,9 +225,9 @@ test = ()
     where
         lp = unsafePerformIO parseBwv528
         (Lilypond tops) = lp
-        section = slice 6 9 tops
+        section = slice 9 12 tops
         [sop, alto, bass] = snd . getAssignment <$> section
-        measureDur = 1
+        measureDur = 3 % 4
         systemDur = 1 % 4
         parts = [bass, alto, sop]
         -- d = 1

@@ -1,4 +1,4 @@
-import Control.Monad (join, liftM, mapM_, sequence)
+import Control.Monad (join, liftM, mapM_, sequence, sequence_)
 import Data.Ratio ((%))
 
 import Euterpea (Control (..))
@@ -60,7 +60,7 @@ makeFile sd@(name, _, _, _) ts@(n, d) = do
     toMidiFile (withMetronome ts mus2) outfile2
 
 main :: IO ()
-main = mapM_ id $ (join . liftM f) <$> songData --join $ f <$> sequence songData
+main = sequence_ $ join . liftM f <$> songData --join $ f <$> sequence songData
     where
         f :: SongData -> IO ()
         f sd@(_, _, (_, d), _) = mapM_ makeFile' timeSigMappings
