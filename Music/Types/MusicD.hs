@@ -250,7 +250,7 @@ instance (Ord a, ToPitch a) => MusicT MusicD a where
     transpose :: AbsPitch -> MusicD a -> MusicD a
     transpose i (MusicD q ctl m) = MusicD q ((Transpose i) : ctl) m
 
--- Quantizable Instance --
+-- ** 'Quantizable' Instance
 
 instance (Ord a, ToPitch a) => Quantizable MusicD a where
     quantize :: Rational -> MusicD a -> MusicD a

@@ -1,15 +1,10 @@
-cabal-version: 1.12
-
--- This file has been generated from package.yaml by hpack version 0.34.6.
---
--- see: https://github.com/sol/hpack
-
+cabal-version:  3.6
 name:           Parnassus
-version:        0.1.0
+version:        0.2.0
 author:         Jeremy Silver
 maintainer:     jeremys@nessiness.com
-copyright:      2018 Jeremy Silver
-license:        BSD3
+copyright:      2018-2022 Jeremy Silver
+license:        BSD-3-Clause
 license-file:   LICENSE
 build-type:     Simple
 
@@ -80,7 +75,7 @@ library
     , unix >=2.7
     , vector >=0.12
     , vector-space >=0.15
-  default-language: Haskell2010
+--   default-language: GHC2021
 
 test-suite Parnassus-test
   type: exitcode-stdio-1.0
@@ -129,4 +124,4 @@ test-suite Parnassus-test
     , unix >=2.7
     , vector >=0.12
     , vector-space >=0.15
-  default-language: Haskell2010
+--   default-language: GHC2021

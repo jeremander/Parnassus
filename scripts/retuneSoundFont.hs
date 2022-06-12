@@ -5,7 +5,7 @@ import Music.SoundFont (retuneSoundFont)
 import Music.Tuning (a440, meantoneTuningPackage)
 
 
--- loads a SoundFont file (unsafely)
+-- loads a SoundFont file
 loadSoundFont :: FilePath -> IO SoundFont
 loadSoundFont path = do
     sf <- importFile path

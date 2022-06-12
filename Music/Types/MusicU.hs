@@ -3,11 +3,7 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE ParallelListComp #-}
 
-module Music.Types.MusicU (
-    MusicU(..),
-    ToMusicU(..),
-    mFoldU
-) where
+module Music.Types.MusicU (mFoldU, MusicU(..), ToMusicU(..)) where
 
 import qualified Data.List (nub)
 import Data.Tuple.Select (sel3)
@@ -18,16 +14,16 @@ import Misc.Utils (rationalGCD, unDistribute)
 import Music.Types.MusicT (Controls, MusicT(..), ToMidi(..), durP)
 
 
--- unassociative music data structure (isomorphic to Euterpea.Music)
+-- | Unassociative music data structure (isomorphic to Euterpea.Music).
 data MusicU a = Empty | PrimU (Primitive a) | SeqU [MusicU a] | ParU [MusicU a] | ModifyU Control (MusicU a)
     deriving (Show, Eq, Ord)
 
--- strips away outer control, returning the control (if present) and the remaining MusicU
+-- | Strips away outer control, returning the control (if present) and the remaining 'MusicU'.
 stripControlU :: MusicU a -> (Maybe Control, MusicU a)
 stripControlU (ModifyU ctl m) = (Just ctl, m)
 stripControlU m = (Nothing, m)
 
--- smart constructors
+-- ** Smart constructors
 
 -- setup for smart constructors line and chord
 -- handles empty and singleton arguments appropriately
@@ -52,7 +48,7 @@ combineU f con = combine
                 (outerCtls, xs') = unzip (stripControlU <$> xs)
                 outerCtl = foldr1 op outerCtls
 
--- general fold for MusicU
+-- | General fold for 'MusicU'.
 mFoldU :: b -> (Primitive a -> b) -> ([b] -> b) -> ([b] -> b) -> (Control -> b -> b) -> MusicU a -> b
 mFoldU base f seqFold parFold g m = case m of
     Empty        -> base
@@ -153,7 +149,7 @@ instance MusicT MusicU a where
             where
                 (ctls, ms) = unzip pairs
                 (prefix, ctls') = unDistribute ctls  -- extract common controls
-                ms' = [((foldr (.) id) $ (map ModifyU) ctl') m | ctl' <- ctls' | m <- ms]
+                ms' = [foldr ModifyU m ctl' | ctl' <- ctls' | m <- ms]
     removeTempos :: MusicU a -> MusicU a
     removeTempos = mFoldU Empty PrimU SeqU ParU g
         where
@@ -172,7 +168,7 @@ instance MusicT MusicU a where
 
 instance ToMidi MusicU
 
--- MusicU conversion --
+-- * 'MusicU' conversion
 
 class ToMusicU m a where
     toMusicU :: m a -> MusicU a

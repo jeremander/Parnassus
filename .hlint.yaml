@@ -55,6 +55,7 @@
 
 # Ignore some builtin hints
 - ignore: {name: Redundant bracket}
+- ignore: {name: Redundant curry}
 - ignore: {name: Use first}
 - ignore: {name: Move brackets to avoid $}
 # - ignore: {name: Use const, within: SpecialModule} # Only within certain modules

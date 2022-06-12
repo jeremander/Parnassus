@@ -1,0 +1,9 @@
+packages: . /Users/jerm/Programming/Music/Euterpea
+with-compiler: ghc-9.0.2
+verbose: 2
+
+allow-newer: containers
+
+source-repository-package
+    type: git
+    location: https://github.com/jeremander/Euterpea

@@ -8,7 +8,7 @@ import Data.Counter (count, Counter)
 import Data.Default (Default(..))
 import Data.List (foldl', intersperse)
 import qualified Data.Map as M
-import Data.Maybe (catMaybes)
+import Data.Maybe (catMaybes, mapMaybe)
 import Data.Range (Bound(..), BoundType(..), Range(..))
 import Data.Ratio ((%))
 import qualified Data.Set as S
@@ -115,7 +115,7 @@ extendScaleTuning pc tuning = freqs
         (octave, diff) = ap `divMod` 12
         diff' = if diff == 0 then 12 else 12 - diff
         baseFreqs = cycle tuning
-        octaves = concat $ replicate 12 <$> [-(octave + 1)..]
+        octaves = concatMap (replicate 12) [-(octave + 1)..]
         freqs = take 128 $ drop diff' [freq * (2 ** fromIntegral oct) | (freq, oct) <- zip baseFreqs octaves]
 
 -- | Extends a scale to a full tuning [0..127], given a base pitch & frequency.
@@ -429,15 +429,15 @@ musicToIntervals mus = vertIntervals ++ horizIntervals
         -- gets interval between each untied note and each other note in a chord
         chordIntervals notes = intervals
             where
-                untiedPcs = sort $ ap <$> catMaybes (extractTied <$> filter (not . isTied) notes)
-                tiedPcs = sort $ ap <$> catMaybes (extractTied <$> filter isTied notes)
+                untiedPcs = sort $ ap <$> mapMaybe extractTied (filter (not . isTied) notes)
+                tiedPcs = sort $ ap <$> mapMaybe extractTied (filter isTied notes)
                 intervals = [orderPair (untiedPc, tiedPc) | untiedPc <- untiedPcs, tiedPc <- tiedPcs]
-        vertIntervals = concat $ chordIntervals <$> arr
+        vertIntervals = concatMap chordIntervals arr
         seqInterval (Untied _ p1) (Untied _ p2) = Just (ap p1, ap p2)
         seqInterval (Tied p1)     (Untied _ p2) = Just (ap p1, ap p2)
         seqInterval _             _             = Nothing
         adjChordIntervals (notes1, notes2) = catMaybes [seqInterval note1 note2 | note1 <- notes1, note2 <- notes2]
-        horizIntervals = concat $ adjChordIntervals <$> pairwise arr
+        horizIntervals = concatMap adjChordIntervals $ pairwise arr
 
 -- | Optimizes a 12-tone scale (starting on C) for a given piece of music.
 optimizeScaleForMusic :: (ToPitch a, ToMusicD m a) => TunOpt -> m a -> Scale Double
