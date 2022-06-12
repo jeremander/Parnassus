@@ -24,7 +24,7 @@ import Math.Dist (DiscreteDist(..), IndexMap, JointDiscreteDistribution(..), Pro
 import Math.Multiarray ((^!^), (^:^), MultiArray(..), multiarray)
 
 
--- MARKOV MODEL --
+-- * Markov Model
 
 data MarkovModel v a = Markov { pi0 :: DiscreteDist v a, trans :: LA.Matrix Prob }
     deriving (Eq, Show)
@@ -32,7 +32,7 @@ data MarkovModel v a = Markov { pi0 :: DiscreteDist v a, trans :: LA.Matrix Prob
 rowStochasticMatrix :: [V.Vector Double] -> LA.Matrix Prob
 rowStochasticMatrix rows = LA.fromRows $ normalizeVec <$> rows
 
--- construct a MarkovModel from an initial distribution and a transition matrix (entry i, j is probability of transition from i to j, so that the matrix is row-stochastic)
+-- | Construct a 'MarkovModel' from an initial distribution and a transition matrix (entry i, j is probability of transition from i to j, so that the matrix is row-stochastic).
 markov :: DiscreteDist v a -> [V.Vector Prob] -> MarkovModel v a
 markov dist rows
     | length rows /= n               = error $ "transition matrix must have " ++ show n ++ " rows"
@@ -97,13 +97,12 @@ markovConditionOn (Markov {pi0, trans}) t pair = Discrete {var = t, vals = vals'
         pmf' = normalizeVec pmf
         cdf' = V.scanl' (+) 0.0 pmf'
 
--- trains a Markov model from data
--- smoothing constant is how much to add to each entry of transition matrix, and to each entry of initial vector
+-- | Trains a Markov model from data.
+--   Smoothing constant is how much to add to each entry of transition matrix, and to each entry of initial vector.
 trainMarkovModel :: (Ord a, Show a) => Maybe [a] -> Double -> [[a]] -> MarkovModel Integer a
 trainMarkovModel vals smooth chains = markov pi0 (LA.toRows trans)
     where
         allVals = fromMaybe (sort $ nub $ concat chains) vals
-        chains' = filter (not . null) chains
         pi0 = trainDiscrete 0 (Just allVals) smooth (head <$> chains)
         indices = valsToIndices pi0 <$> chains
         transitionPairs = concat [zip inds (tail inds) | inds <- indices]
@@ -111,7 +110,7 @@ trainMarkovModel vals smooth chains = markov pi0 (LA.toRows trans)
         addSmooth (key, val) = (key, val + smooth)
         trans = LA.assoc (n, n) smooth (addSmooth <$> (M.toList $ count transitionPairs))
 
--- samples a Markov model (infinitely)
+-- | Samples a Markov model (infinitely).
 markovSample :: (RandomGen g) => MarkovModel v a -> Rand g [a]
 markovSample (Markov {pi0, trans}) = do
     rs <- getRandoms
@@ -126,8 +125,8 @@ instance (b ~ [a]) => Simulable (MarkovModel v) a b where
     sample :: (RandomGen g) => MarkovModel v a -> Rand g [a]
     sample = markovSample
 
--- given a distribution on integers steps, creates a MarkovModel representing the random walk on the i.i.d. steps
--- must be bounded within a finite range
+-- | Given a distribution on integers steps, creates a MarkovModel representing the random walk on the i.i.d. steps.
+--   This must be bounded within a finite range.
 boundedIntegerRandomWalk :: DiscreteDist v Int -> (Int, Int) -> MarkovModel Integer Int
 boundedIntegerRandomWalk dist (low, high) = markov pi0 rows
     where
@@ -135,13 +134,13 @@ boundedIntegerRandomWalk dist (low, high) = markov pi0 rows
         pi0 = trainDiscrete 0 (Just [low..high]) 0.0 [0]
         rows = [V.generate n (\j -> getProb dist (j + low - i)) | i <- [low..high]]
 
--- gets backward transition probabilities P(X_n = i | X_{n+1} = j)
+-- | Gets backward transition probabilities P(X_n = i | X_{n+1} = j).
 backwardTransitions :: MarkovModel v a -> [V.Vector Prob]
 backwardTransitions (Markov {trans}) = normalizeVec <$> (LA.toRows $ LA.tr trans)
 
--- TERMINATING MARKOV MODEL --
+-- * Terminating Markov Model
 
--- type for values in a terminating Markov chain
+-- | Type for values in a terminating Markov chain.
 data Token a = Token a | Stop
     deriving (Eq, Ord, Show)
 
@@ -153,8 +152,8 @@ fromToken :: Token a -> a
 fromToken (Token t) = t
 fromToken _         = error "invalid token"
 
--- converts elements to Tokens and appends a final Stop element
--- this Nothing value can be used as a terminating value for Markov chain generation
+-- | Converts elements to Tokens and appends a final 'Stop' element.
+--   This 'Nothing' value can be used as a terminating value for Markov chain generation.
 terminate :: [a] -> [Token a]
 terminate = (++ [Stop]) . map Token
 
@@ -166,9 +165,9 @@ instance {-# OVERLAPPING #-} (b ~ [a]) => Simulable (MarkovModel v) (Token a) b 
     -- override behavior so sampling terminates upon reaching Stop
     sample = fmap (map fromToken . takeWhile isToken) . markovSample
 
--- N-GRAM MODELS --
+-- * n-gram Model
 
--- stores n, alphabet, mapping from alphabet to indices, and transition probability matrices for each Markovity level
+-- | Stores n, alphabet, mapping from alphabet to indices, and transition probability matrices for each Markovity level.
 data NgramModel v a = Ngrams Int (VB.Vector a) (IndexMap a) [MultiArray Prob]
     deriving (Eq, Show)
 
@@ -199,7 +198,7 @@ trainNgramModel n alphabet smooth chains = Ngrams n (VB.fromList alphabet') valI
         getTransitions :: Int -> MultiArray Prob
         getTransitions k = multiarray (replicate k m) (concat rows)
             where
-                pairs = concat $ (map (splitAt (k - 1)) . ngrams k) <$> idxChains
+                pairs = concatMap (map (splitAt (k - 1)) . ngrams k) idxChains
                 cumProds = (m ^) <$> reverse [0..(k - 2)]
                 transitionPairs = [(sum $ zipWith (*) cumProds fromInds, head toInds) | (fromInds, toInds) <- pairs]
                 addSmooth (key, val) = (key, val + smooth)
@@ -229,15 +228,7 @@ instance (b ~ [a]) => Simulable (NgramModel v) a b where
     sample :: (RandomGen g) => NgramModel v a -> Rand g [a]
     sample = ngramSample
 
--- condSlice :: (Ord a) => NgramModel v a -> [a] -> [(Int, a, Prob)]
--- condSlice (Ngrams n vals valIdx transArrs) vals' = zip3 [0..] (VB.toList vals) (V.toList pdf)
---     where
---         lastN = reverse $ take (n - 1) $ reverse vals'
---         inds = (valIdx M.!) <$> lastN
---         arr = transArrs !! length inds
---         pdf = entries $ arr ^:^ (((Just . pure) <$> inds) ++ [Nothing])
-
--- TERMINATING N-GRAM MODELS --
+-- * Terminating n-gram Models
 
 trainTerminatingNgramModel :: (Ord a, Show a) => Int -> Maybe [a] -> Double -> [[a]] -> NgramModel Integer (Token a)
 trainTerminatingNgramModel n alphabet smooth chains = trainNgramModel n toks smooth (terminate <$> chains)
@@ -247,7 +238,7 @@ instance {-# OVERLAPPING #-} (b ~ [a]) => Simulable (NgramModel v) (Token a) b w
     -- override behavior so sampling terminates upon reaching Stop
     sample = fmap (map fromToken . takeWhile isToken) . ngramSample
 
--- TEXT N-GRAM MODELS --
+-- Text n-gram Models
 
 data CharNgramParams = CharNgramParams {
       charAlphabet :: Maybe String,   -- alphabet to use

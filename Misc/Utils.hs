@@ -5,7 +5,6 @@
 
 module Misc.Utils where
 
-import Control.Arrow (second)
 import qualified Data.Array as A
 import qualified Data.List (transpose)
 import Data.List.Split (chunksOf)
@@ -16,9 +15,9 @@ import qualified Data.Text as T
 import Data.Tuple.Select
 
 
--- MATH --
+-- * Math
 
--- double coercion
+-- | Coercion to 'Double'.
 class ToDouble a where
     toDouble :: a -> Double
 instance ToDouble Double where
@@ -26,7 +25,7 @@ instance ToDouble Double where
 instance ToDouble Rational where
     toDouble = fromRational
 
--- computes GCD of two rationals
+-- | Computes GCD of two rationals.
 rationalGCD :: Rational -> Rational -> Rational
 rationalGCD x y = (gcd a c) % (lcm b d)
     where
@@ -37,99 +36,99 @@ argmax, argmin :: Ord a => [a] -> Int
 argmax xs = head [i | (x, i) <- zip xs [0..], x == maximum xs]
 argmin xs = head [i | (x, i) <- zip xs [0..], x == minimum xs]
 
--- cumulative sums
+-- | Cumulative sums.
 cumsum :: (Num a) => [a] -> [a]
 cumsum = scanl (+) 0
 
 log2 :: Floating a => a -> a
-log2 x = log x / (log 2)
+log2 = logBase 2
 
 pow2 :: Floating a => a -> a
 pow2 x = 2 ** x
 
--- division with rule that 0 / 0 = 0
+-- | Division with rule that 0 / 0 = 0.
 safeDiv :: (Eq a, Fractional a) => a -> a -> a
 safeDiv 0 0 = 0
 safeDiv x y = x / y
 
 
--- MISC --
+-- * Miscellaneous
 
 notImpl :: String -> a
 notImpl a = error $ "Not implemented: " ++ a
 
--- enumerates a Bounded Enum type
+-- | Enumerates a Bounded Enum type.
 enumerate :: forall a . (Bounded a, Enum a) => [a]
 enumerate = toEnum <$> [0..(fromEnum (maxBound::a))]
 
--- strips leading and trailing whitespace from a string
+-- | Strips leading and trailing whitespace from a string.
 strip :: String -> String
 strip = T.unpack . T.strip . T.pack
 
--- takes successive pairs of a list
+-- | Takes successive pairs of a list.
 pairwise :: [a] -> [(a, a)]
 pairwise xs = zip xs (tail xs)
 
--- produces all ordered pairs (x_i, x_j) in a list, where i < j
+-- | Produces all ordered pairs (x_i, x_j) in a list, where i < j.
 orderedPairs :: [a] -> [(a, a)]
 orderedPairs xs = [(xi, xj) | (i, xi) <- zip [0..] xs, (j, xj) <- zip [1..] (tail xs), i < j]
 
--- rotates a list left by some number
+-- | Rotates a list left by some number.
 rotateL :: Int -> [a] -> [a]
 rotateL n xs = drop n' xs ++ take n' xs
     where n' = n `mod` (length xs)
 
--- safe head function, returning Nothing if the list is empty
+-- | Safe head function, returning Nothing if the list is empty.
 safeHead :: [a] -> Maybe a
-safeHead []     = Nothing
-safeHead (x:xs) = Just x
+safeHead []    = Nothing
+safeHead (x:_) = Just x
 
--- safe tail function, returning empty list if the list is empty
+-- | Safe tail function, returning empty list if the list is empty.
 safeTail :: [a] -> [a]
 safeTail []     = []
-safeTail (x:xs) = xs
+safeTail (_:xs) = xs
 
--- extracts a Just value, emitting a specified error if it is Nothing
+-- | Extracts a 'Just' value, emitting a specified error if it is 'Nothing'
 justOrError :: Maybe a -> String -> a
 justOrError mx err = fromMaybe (error err) mx
 
--- given n, a list of sorted indices in [0, n), and a list of items, selects items from the list at the corresponding indices
--- does no bounds checking
+-- | Given n, a list of sorted indices in [0, n), and a list of items, selects items from the list at the corresponding indices.
+--   Does no bounds checking.
 selector :: Int -> [Int] -> [a] -> [a]
 selector n indices xs = fst <$> filter snd (zip xs indexIndicators)
     where
         indexSet = S.fromList indices
         indexIndicators = [S.member i indexSet | i <- [0..(n - 1)]]
 
--- merges two sorted lists, but terminates when the second list is exhausted
--- f is the sort key
+-- | Merges two sorted lists, but terminates when the second list is exhausted.
+--   @f@ is the sort key
 merge :: Ord b => (a -> b) -> [a] -> [a] -> [a]
-merge f [] ys = ys
-merge f xs [] = []
+merge _ [] ys = ys
+merge _ _ []  = []
 merge f (x:xs) (y:ys) = if f x <= f y
                             then x : merge f xs (y:ys)
                             else y : merge f (x:xs) ys
 
--- composes a sequence of functions
+-- | Composes a sequence of functions.
 composeFuncs :: [(a -> a)] -> a -> a
 composeFuncs = foldr (.) id
 
--- pads a list to a certain length with a default value
+-- | Pads a list to a certain length with a default value.
 padListWithDefault :: Int -> a -> [a] -> [a]
 padListWithDefault n def xs = take n (xs ++ repeat def)
 
--- chunks a list into length-n pieces; the last chunk may be too short, so pad it with a default value
+-- | Chunks a list into length-n pieces; the last chunk may be too short, so pad it with a default value.
 chunkListWithDefault :: Int -> a -> [a] -> [[a]]
 chunkListWithDefault n def xs = padListWithDefault n def <$> chunksOf n xs
 
--- transposes a list of lists of varying length, padding any short lists with a default value
+-- | Transposes a list of lists of varying length, padding any short lists with a default value.
 transposeWithDefault :: a -> [[a]] -> [[a]]
 transposeWithDefault def xss = Data.List.transpose mat
     where
         maxlen = maximum (length <$> xss)
         mat = padListWithDefault maxlen def <$> xss
 
--- given [A1, A2, ..., An], let A be the intersection of these sets; returns (A, [A1 \ A, A2 \ A, ..., An \ A])
+-- | Given \([A1, A2, ..., An]\), let A be the intersection of these sets; returns \((A, [A1 \ A, A2 \ A, ..., An \ A])\).
 unDistribute :: Ord a => [[a]] -> ([a], [[a]])
 unDistribute [] = ([], [])
 unDistribute xss = (S.toList xint, (S.toList . (`S.difference` xint)) <$> xsets)
@@ -140,13 +139,13 @@ unDistribute xss = (S.toList xint, (S.toList . (`S.difference` xint)) <$> xsets)
 mkArray :: (A.Ix i, Integral i) => [e] -> A.Array i e
 mkArray xs = A.listArray (0, fromIntegral $ length xs - 1) xs
 
--- computes n-grams from a list of items
+-- | Computes n-grams from a list of items.
 ngrams :: Int -> [a] -> [[a]]
 ngrams n xs
     | (n <= length xs) = take n xs : ngrams n (drop 1 xs)
     | otherwise = []
 
--- QUANTIZATION --
+-- * Quantization
 
 divInt :: RealFrac a => a -> Int -> a
 divInt x y = x / (fromIntegral y)
@@ -171,7 +170,6 @@ quantizeRationals q rs = rs'
         step (t, xs) = (t + amt, [if (j == i) then x + amt else x | x <- xs | j <- [0..]])
             where
                 (imin, imax) = (argmin xs, argmax xs)
-                (xmin, xmax) = (xs !! imin, xs !! imax)
                 (i, amt) = if (t > 0)  -- have a surplus
                                 then (imin, -q)
                                 else (imax, q)
@@ -184,7 +182,7 @@ quantizeRationals q rs = rs'
 -- like groupWith, but we assume the key values are in monotonically nondecreasing order
 -- this allows us to group lazily
 lazyGroupWith :: Ord b => (a -> b) -> [a] -> [[a]]
-lazyGroupWith f [] = []
+lazyGroupWith _ []     = []
 lazyGroupWith f (x:xs) = (x : gp) : lazyGroupWith f rest
     where
         key = f x
@@ -193,7 +191,7 @@ lazyGroupWith f (x:xs) = (x : gp) : lazyGroupWith f rest
 
 -- given rational q and a sequence of (x_i, t_i) pairs, where the x_i are values and the t_i are increasing times delimiting time intervals (including start and end points), returns a list of groups of intervals taking place within each q interval, consisting of (start, duration, x, flag), where x denotes the original value, and flag is True if the interval is a continuation of an interval from the previous group
 quantizeTime :: Rational -> [(a, Rational)] -> [[(Rational, Rational, a, Bool)]]
-quantizeTime q [] = []
+quantizeTime _ []   = []
 quantizeTime q pairs = lazyGroupWith (truncate . (/q) . sel1) items'
     where
         (x0, t0) = head pairs
@@ -202,6 +200,6 @@ quantizeTime q pairs = lazyGroupWith (truncate . (/q) . sel1) items'
         items = tail [(t1, t2 - t1, x1, null x1) | ((t1, x1), (t2, _)) <- pairPairs]
         f :: a -> Maybe a -> a
         f x Nothing  = x
-        f x (Just y) = y
+        f _ (Just y) = y
         values = scanl f x0 $ map sel3 items
         items' = [(t, d, x, flag) | (t, d, _, flag) <- items | x <- tail values]

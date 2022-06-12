@@ -2,7 +2,6 @@ module Music.Dynamics where
 
 import Data.Char (toLower)
 import Text.Pretty (Pretty(..), string)
-import qualified Data.Char as Char
 
 
 data DynamicFixed = PPPPP | PPPP | PPP | PP | P | MP | MF | F | FF | FFF | FFFF | FFFFF | SF | SFF | SP | SPP | SFZ | RFZ

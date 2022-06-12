@@ -10,7 +10,8 @@ module Music.Types.MusicD (
     extractTied,
     isRest,
     isTied,
-    primD
+    primD,
+    shape
 ) where
 
 import Control.Monad (join)
@@ -34,29 +35,29 @@ extractTied (Untied _ p) = Just p
 extractTied (Tied p) = Just p
 extractTied _ = Nothing
 
--- returns True if the note is tied
+-- | Returns True if the note is tied.
 isTied :: Tied a -> Bool
 isTied (Tied _) = True
 isTied _        = False
 
--- returns True if the note is a rest
+-- | Returns True if the note is a rest.
 isRest :: Tied a -> Bool
 isRest RestD = True
 isRest _    = False
 
 type ArrD a = [[Tied a]]
 
--- "dense" music data structure
--- represents music as a sequence of chords with fixed duration q (which should be the smallest subdivision of the music)
--- can support a list of global controls to be applied to the whole music
+-- | "Dense" music data structure.
+--   Represents music as a sequence of chords with fixed duration q (which should be the smallest subdivision of the music).
+--   Can support a list of global controls to be applied to the whole music.
 data MusicD a = MusicD Dur Controls (ArrD a)
     deriving (Eq, Ord, Show)
 
--- gets the shape of the (padded) chord array of MusicD
+-- | Gets the shape of the (padded) chord array of 'MusicD'.
 shape :: MusicD a -> (Int, Int)
 shape (MusicD _ _ arr) = (length arr, maximum (length <$> arr))
 
--- creates MusicD from a Primitive element with the given subdivision q
+-- | Creates 'MusicD' from a 'Primitive' element with the given subdivision @q@.
 primD :: Dur -> Primitive a -> MusicD a
 primD q p
     | (q == 0)  = MusicD 0 [] []
@@ -68,22 +69,22 @@ primD q p
                             then [[]]
                             else [Untied [] p] : replicate ((floor $ d / q) - 1) [Tied p]
 
--- pads a sequence of chords (lists of Tied a) of duration q with rests so that the total duration is d
+-- | Pads a sequence of chords (lists of @Tied a@) of duration @q@ with rests so that the total duration is @d@.
 padArr :: Dur -> Dur -> ArrD a -> ArrD a
 padArr q d = padListWithDefault (floor $ d / q) [RestD]
 
--- gets the tempo from a Tempo Control, or 1 if the Control is not a Tempo
+-- | Gets the tempo from a 'Tempo' 'Control', or 1 if the 'Control' is not a 'Tempo'.
 getTempo :: Control -> Rational
 getTempo (Tempo t) = t
 getTempo _         = 1
 
--- returns True if the Control is a Tempo
+-- | Returns True if the 'Control' is a 'Tempo'.
 isTempo :: Control -> Bool
 isTempo (Tempo _) = True
 isTempo _         = False
 
--- given a note duration and a sequence of possibly tied notes of that duration, combines all tied notes into their previous note; also combines rests
--- this is permissive in that it does not check that tied note values match
+-- | Given a note duration and a sequence of possibly tied notes of that duration, combines all tied notes into their previous note; also combines rests.
+-- | This is permissive in that it does not check that tied note values match.
 resolveTies :: Dur -> [Tied a] -> [(Controls, Primitive a)]
 resolveTies q = reverse . (foldl' combine [])
     where
@@ -94,7 +95,7 @@ resolveTies q = reverse . (foldl' combine [])
         combine ps (Untied ctl2 p)                = (ctl2, Note q p) : ps
         combine ps RestD                           = ([], Rest q) : ps
 
--- applies controls note-wise to each Untied note in the array
+-- | Applies controls note-wise to each 'Untied' note in the array.
 distributeControls :: Controls -> ArrD a -> ArrD a
 distributeControls ctls = map (map f)
     where
@@ -104,7 +105,7 @@ distributeControls ctls = map (map f)
 
 instance ToMidi MusicD
 
--- MusicD conversion --
+-- * 'MusicD' conversion
 
 class ToMusicD m a where
     -- converts to MusicD
@@ -120,8 +121,8 @@ instance (Ord a, ToPitch a) => ToMusicD Music a where
     toMusicD = fromMusic
     fromMusicD = toMusic
 
--- given a distance function f and two equal-sized lists, returns a matching (list of pairs) that greedily minimize f
--- preserves the order of the first list
+-- | Given a distance function f and two equal-sized lists, returns a matching (list of pairs) that greedily minimize @f@.
+--   Preserves the order of the first list.
 greedyMatching :: (Ord a, Ord b, Ord s) => (a -> b -> s) -> [a] -> [b] -> [(a, b)]
 greedyMatching f xs ys
     | n1 /= n2  = error "xs and ys must be the same length"
@@ -138,13 +139,13 @@ greedyMatching f xs ys
         select (_, (_, x), (_, y)) = (x, y)
         chosen = ((map select . sortOn sortKey . fst) <$> itemSeq) !! (n1 - 1)
 
--- given a list of equal-sized sublists, reorders the sublists so that each adjacent sublist matches greedily according to the distance function; transposes at the end so each sublist is now a sequence of matched elements spanning all the original sublists
+-- | Given a list of equal-sized sublists, reorders the sublists so that each adjacent sublist matches greedily according to the distance function; transposes at the end so each sublist is now a sequence of matched elements spanning all the original sublists.
 greedyMatchSeq :: (Ord a, Ord s) => (a -> a -> s) -> [[a]] -> [[a]]
-greedyMatchSeq f []  = []
+greedyMatchSeq _ []  = []
 greedyMatchSeq f xss = sortedSeqs
     where
-        reorder f []            = []
-        reorder f [x0]          = [x0]
+        reorder _ []            = []
+        reorder _ [x0]          = [x0]
         reorder f (x0:x1:xtail) = x0' : xtail'
             where
                 (x0', x1') = unzip $ greedyMatching f x0 x1
@@ -153,7 +154,7 @@ greedyMatchSeq f xss = sortedSeqs
         -- sort by first element of each sublist
         sortedSeqs = sortOn head (Data.List.transpose xss')
 
--- note distance is a pair, to allow for priority tiering as well as pitch distance
+-- | Note distance is a pair, to allow for priority tiering as well as pitch distance.
 type NoteDistance = (Int, Int)
 
 tiedNoteDistance :: (ToPitch a) => Tied a -> Tied a -> NoteDistance
@@ -304,9 +305,7 @@ instance (Ord a, ToPitch a) => Quantizable MusicD a where
                     where
                         pairs = [(extractTied x1, t1 + d1) | (t1, d1, x1, _) <- xs1]
                         f :: (Rational, Rational, Tied a, Bool) -> (Rational, Rational, Tied a, Bool)
-                        f (t2, d2, x2, flag) = case x2 of
-                            Tied p       -> (t2, d2, Tied p, flag && tiePermitted)
-                            Untied ctl p -> (t2, d2, Untied ctl p, flag && tiePermitted)
+                        f (t2, d2, x2, flag) = (t2, d2, x2, flag && tiePermitted)
                             where
                                 note2 = extractTied x2
                                 -- does a previous note tie with this note?
@@ -339,6 +338,7 @@ instance (Ord a, ToPitch a) => Quantizable MusicD a where
                                 agg f (Untied c1 p1, r1) (_, r2) = (Untied c1 p1, f r1 r2)
                                 agg f (_, r1) (Untied c2 p2, r2) = (Untied c2 p2, f r1 r2)
                                 agg f (Tied p1, r1) (Tied _, r2) = (Tied p1, f r1 r2)
+                                agg _ _ _                        = error "unexpected Rest"
                                 aggPar = agg max  -- parallel aggregation: take max duration
                                 aggSeq = agg (+)  -- sequential aggregation: take total duration
                                 parGroups = map (foldr1 aggPar) . groupWith (extractTied . fst) . restructure <$> gp'

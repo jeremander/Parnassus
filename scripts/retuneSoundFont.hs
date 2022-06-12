@@ -1,5 +1,5 @@
 import Codec.SoundFont (importFile, SoundFont)
-import System.FilePath.Posix ((<.>), (</>), takeDirectory)
+import System.FilePath.Posix ((<.>), (</>))
 
 import Music.SoundFont (retuneSoundFont)
 import Music.Tuning (a440, meantoneTuningPackage)

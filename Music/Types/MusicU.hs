@@ -8,7 +8,7 @@ module Music.Types.MusicU (mFoldU, MusicU(..), ToMusicU(..)) where
 import qualified Data.List (nub)
 import Data.Tuple.Select (sel3)
 
-import Euterpea (AbsPitch, Control(..), Dur, Music(..), Primitive(..), mFold)
+import Euterpea (AbsPitch, Control(..), Dur, Music(..), Primitive(..))
 
 import Misc.Utils (rationalGCD, unDistribute)
 import Music.Types.MusicT (Controls, MusicT(..), ToMidi(..), durP)
@@ -31,7 +31,7 @@ stripControlU m = (Nothing, m)
 -- un-distributes the same control applied to each element of an input list
 -- TODO: strip away controls in ordering-insensitive way
 combineU :: Eq a => (MusicU a -> [MusicU a]) -> ([MusicU a] -> MusicU a) -> [MusicU a] -> MusicU a
-combineU f con = combine
+combineU _ con = combine
     where
         op :: Maybe Control -> Maybe Control -> Maybe Control
         op (Just ctl1) (Just ctl2) = if (ctl1 == ctl2) then (Just ctl1) else Nothing
@@ -154,14 +154,14 @@ instance MusicT MusicU a where
     removeTempos = mFoldU Empty PrimU SeqU ParU g
         where
             g :: Control -> MusicU a -> MusicU a
-            g (Tempo d) m = m
-            g ctl m = ModifyU ctl m
+            g (Tempo _) m = m
+            g ctl m       = ModifyU ctl m
     distributeTempos :: MusicU a -> MusicU a
     distributeTempos = mFoldU Empty prim SeqU ParU g
         where
             g :: Control -> MusicU a -> MusicU a
             g (Tempo t) m = (1 / t) *^ m
-            g ctl m = ModifyU ctl m
+            g ctl m       = ModifyU ctl m
     -- transposes the music by some interval
     transpose :: AbsPitch -> MusicU a -> MusicU a
     transpose i = ModifyU (Transpose i)

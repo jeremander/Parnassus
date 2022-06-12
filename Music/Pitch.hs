@@ -19,7 +19,7 @@ import qualified Euterpea as E
 import Euterpea (Mode(..), Note1, PitchClass(..), Pitch, absPitch, pitch)
 
 
--- | Converts PitchClass to a diatonic PitchClass and a number of accidentals (from -2 to 2)
+-- | Converts 'PitchClass' to a diatonic PitchClass and a number of accidentals (from -2 to 2).
 noteMapping :: PitchClass -> (PitchClass, Accidental)
 noteMapping pc = (pc', acc)
     where
@@ -41,11 +41,11 @@ class ToPitch a where
 class FromPitch a where
     fromPitch :: Pitch -> a
 
--- given a function modifying a Pitch, conjugates that function by conversion to/from Pitch
+-- | Given a function modifying a 'Pitch', conjugates that function by conversion to/from 'Pitch'.
 modPitch :: (FromPitch a, ToPitch a) => (Pitch -> Pitch) -> a -> a
 modPitch f = fromPitch . f . toPitch
 
--- transposes a pitch
+-- | Transposes a pitch.
 trans :: (FromPitch a, ToPitch a) => Int -> a -> a
 trans = modPitch . E.trans
 
@@ -57,8 +57,8 @@ instance FromPitch Note1 where fromPitch = (, [])
 instance ToPitch PitchL where
     toPitch pc = pitch $ fromIntegral (Music.Pitch.Literal.Pitch.fromPitch pc :: Integer) + 48
 
--- ordinal position on the diatonic staff, C = 0, D = 1, ..., B = 6
--- accidentals are not allowed
+-- | Ordinal position on the diatonic staff, C = 0, D = 1, ..., B = 6.
+--   Accidentals are not allowed.
 diatonicPosition :: PitchClass -> Int
 diatonicPosition pc = case pc of
     C -> 0
@@ -70,7 +70,7 @@ diatonicPosition pc = case pc of
     B -> 6
     _ -> error "invalid pitch"
 
--- diatonic staff distance between two pitches
+-- | Diatonic staff distance between two pitches.
 staffDistance :: (ToPitch a) => a -> a -> Int
 staffDistance p1 p2 = n2 - n1
     where
@@ -119,7 +119,7 @@ solfegeNoteNames = M.fromList [(C, "do"), (D, "re"), (E, "mi"), (F, "fa"), (G, "
 germanNoteNames :: M.Map PitchClass String
 germanNoteNames = M.fromList $ [(pc, toLower <$> show pc) | pc <- [C, D, E, F, G, A]] ++ [(B, "h")]
 
--- maps from language to (diatonic note name map, (flat names, sharp names))
+-- | Maps from language to (diatonic note name map, (flat names, sharp names)).
 languageNoteMap :: M.Map Language (M.Map PitchClass String, ([String], [String]))
 languageNoteMap = M.fromList [
     (Nederlands, (stdNoteNames, (["es"], ["is"]))),
@@ -145,14 +145,14 @@ noteName' lang pc = nameMap M.! base ++ concat (replicate n accSym)
         n = abs acc
 
 germanNoteName' :: Language -> PitchClass -> String
-germanNoteName' lang Eff = "eses"
-germanNoteName' lang Ef = "es"
-germanNoteName' lang Aff = "ases"
-germanNoteName' lang Af = "as"
-germanNoteName' lang Bf = "b"
+germanNoteName' _ Eff = "eses"
+germanNoteName' _ Ef = "es"
+germanNoteName' _ Aff = "ases"
+germanNoteName' _ Af = "as"
+germanNoteName' _ Bf = "b"
 germanNoteName' lang pc = noteName' lang pc
 
--- language-specific rendering of note names
+-- | Language-specific rendering of note names.
 noteName :: Language -> PitchClass -> String
 noteName Norsk Bff = "bes"
 noteName Svenska Eff = "essess"
@@ -181,9 +181,9 @@ instance PrettyPitch Pitch where
     prettyPitch lang (pc, oct) = prettyPitch lang pc <> string octStr
         where
             n = oct - 3
-            octStr  | n < 0  = concat $ replicate (negate n) ","
-                    | n == 0 = ""
-                    | n > 0   = concat $ replicate n "'"
+            octStr  | n < 0     = concat $ replicate (negate n) ","
+                    | n > 0     = concat $ replicate n "'"
+                    | otherwise = ""
 
 
 -- * Modes and Keys

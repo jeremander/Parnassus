@@ -7,7 +7,7 @@ import Data.String (IsString(..))
 import Text.Pretty
 
 
--- Utilities
+-- * Utilities
 
 string' :: String -> Printer
 string' s = char '#' <> string s
@@ -15,7 +15,7 @@ string' s = char '#' <> string s
 prettySeq :: (Pretty a) => [a] -> Printer
 prettySeq xs = "{" <+> hsep (pretty <$> xs) <+> "}"
 
--- Types
+-- * Types
 
 newtype Identifier = Identifier { getIdentifier :: String }  -- \foo
     deriving (Eq, Ord, Show)
@@ -44,7 +44,7 @@ data AxisDir = AxisDir {
 } deriving (Eq, Ord, Show)
 
 instance Pretty AxisDir where
-    pretty axdir@(AxisDir ax dir) = pretty ax <+> (char '#' <> string dir')
+    pretty (AxisDir ax dir) = pretty ax <+> (char '#' <> string dir')
         where
             dir' = case (ax, dir) of
                         (_, 0)  -> "CENTER"

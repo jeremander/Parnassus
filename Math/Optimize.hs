@@ -14,7 +14,7 @@ import Misc.Utils (safeDiv)
 import Math.Search (dfsM, FinalStatePredicate)
 
 
--- LINEAR ALGEBRA --
+-- * Linear Algebra
 
 -- TODO: migrate to VectorSpace package
 
@@ -47,7 +47,7 @@ elemBasis :: (Real a) => Int -> Int -> V.Vector a
 elemBasis n i = V.generate n (\j -> if (j == i) then 1 else 0)
 
 
--- METRIC SPACE --
+-- * Metric Space
 
 class MetricSpace s where
     norm :: s -> Double
@@ -64,7 +64,7 @@ instance (Real a) => MetricSpace (V.Vector a) where
     distance x y = norm $ x ^-^ y
 
 
--- OPTIMIZATION --
+-- * Optimization
 
 data OptParams = OptParams {
     maxIter :: Int,   -- max number of iterations
@@ -89,7 +89,6 @@ isFinalStep (OptParams {maxIter, xtol, ftol, verbosity}) (i, (f0, x0), (f1, x1))
     where
         xerr = distance x1 x0
         df = f1 - f0
-        ferr = abs df
         msg = "Iter " ++ show i ++ (if (verbosity > 1) then ("\n\tx =    " ++ show x1) else "") ++ "\n\tf =    " ++ show f1 ++ "\n\tdf =   " ++ show df ++ "\n\txerr = " ++ show xerr
         shouldTerminate = (i >= 0) && ((i >= maxIter) || (xerr <= xtol) || (df > -ftol))
         msg' = if shouldTerminate then (msg ++ "\nTerminating after " ++ show (i + 1) ++ " iteration(s).") else msg
@@ -112,7 +111,7 @@ type ArmijoParams = (Double, Double, Double)  -- alpha_0, eta, tau
 
 defaultArmijoParams = (32.0, 0.5, 0.5)
 
--- performs a backtracking Armijo linesearch to obtain a good step size
+-- | Performs a backtracking Armijo linesearch to obtain a good step size.
 armijoStep :: (Monad m) => ArmijoParams -> ScalarFuncM m Point -> GradientFuncM m -> Vec -> Point -> m Point
 armijoStep (alpha0, eta, tau) func grad p x = do
     f <- func x
@@ -122,16 +121,16 @@ armijoStep (alpha0, eta, tau) func grad p x = do
     let alphas = alpha0 : [tau * alpha | alpha <- alphas]
     let steps = [x ^+^ (alpha *^ p') | alpha <- alphas]
     fvals <- sequence [func step | step <- steps]
-    let (_, (_, step, _):_) = break (\(alpha, step, fval) -> fval <= f + alpha * thresh) (zip3 alphas steps fvals)
+    let (_, (_, step, _):_) = break (\(alpha, _, fval) -> fval <= f + alpha * thresh) (zip3 alphas steps fvals)
     return step
 
--- performs a backtracking Armijo linesearch to obtain a good gradient step
+-- | Performs a backtracking Armijo linesearch to obtain a good gradient step.
 armijoGradientDescentStep :: (Monad m) => ArmijoParams -> ScalarFuncM m Point -> GradientFuncM m -> PointStepM m
 armijoGradientDescentStep params func grad (_, x) = do
     p <- (-1 *^) <$> grad x
     armijoStep params func grad p x
 
--- monadic minimization function (allows for nondeterministic function/neighborhood evaluation
+-- | Monadic minimization function (allows for nondeterministic function/neighborhood evaluation.
 minimizeM :: (Monad m) => OptParams -> ScalarFuncM m Point -> PointStepM m -> Point -> m (Double, Point)
 minimizeM params func step x0 = do
     f0 <- func x0
@@ -149,16 +148,16 @@ minimizeM params func step x0 = do
             f2 <- func x2
             return [(i + 1, (f1, x1), (f2, x2))]
 
--- deterministic minimization function
+-- | Deterministic minimization function.
 minimize :: OptParams -> ScalarFunc Point -> PointStep -> Point -> (Double, Point)
 minimize params func step x0 = runIdentity $ minimizeM params (return . func) (return . step) x0
 
--- backtracking Armijo linesearch with gradient descent direction
+-- | Backtracking Armijo linesearch with gradient descent direction.
 armijoGradientDescent :: OptParams -> ArmijoParams -> ScalarFunc Point -> GradientFunc -> Point -> (Double, Point)
 armijoGradientDescent optParams armijoParams func grad = minimize optParams func (runIdentity . armijoGradientDescentStep armijoParams (return . func) (return . grad))
 
 
--- GRADIENT APPROXIMATION --
+-- * Gradient Approximation
 
 type GainSeqFunc = Int -> Double  -- defines sequence of gains (step size coefficients)
 type DiffSeqFunc = Int -> Double  -- defines sequence of step sizes for gradient approximation
@@ -177,7 +176,7 @@ mkFinDiffFuncs (FinDiffParams {a, b, alpha, c, gamma}) = (ak, ck)
 defaultFinDiffParams = FinDiffParams {a = 0.5, b = 50.0, alpha = 0.602, c = 0.1, gamma = 0.101}
 defaultFinDiffFuncs = mkFinDiffFuncs defaultFinDiffParams
 
--- uses finite difference method to approximate the gradient
+-- | Uses finite difference method to approximate the gradient.
 finiteDifferenceGradient :: (Monad m) => DiffSeqFunc -> ScalarFuncM m Point -> Int -> GradientFuncM m
 finiteDifferenceGradient diffFunc func k x = do
     let n = V.length x
@@ -194,17 +193,3 @@ fdsaGradientDescent optParams (gainFunc, diffFunc) func = minimize optParams fun
     where
         grad i x = runIdentity $ finiteDifferenceGradient diffFunc (return . func) i x
         pointStep (i, x) = x ^-^ (gainFunc i *^ grad i x)
-
-
--- TEST --
-
-testFunc :: ScalarFunc Point
-testFunc = (** 2) . norm
-
-testGradient :: GradientFunc
-testGradient = fmap (2.0 *)
-
-testStep :: PointStep
-testStep = runIdentity . fixedGradientDescentStep 0.1 (return . testGradient)
-
-testPoint = V.fromList [1.0,2,3,4,5]

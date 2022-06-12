@@ -8,7 +8,6 @@ import Text.Pretty ((<+>), Pretty(..), hcat, string)
 
 import Music.Dynamics (Dynamics)
 import Music.Lilypond.Literal (Markup(..))
-import Music.Rhythm (Duration(..))
 
 
 data BarLine = BarCheck | BarLine String

@@ -22,26 +22,26 @@ import Misc.Utils (justOrError, safeDiv, selector)
 import Math.Multiarray ((^!^), (^:^), MultiArray(..), multiarray)
 
 
--- TYPES --
+-- * Types
 
 type Prob = Double
 type IndexMap a = M.Map a Int
 
--- UTILITIES --
+-- * Utilities
 
 -- \log \sum_i \exp{x_i}
 logSumExp :: [Double] -> Double
 logSumExp = L.ln . L.sum . map L.Exp
 
--- gets the index of an element in a vector
+-- | Gets the index of an element in a vector.
 vecElemIndex :: (Eq a) => a -> VB.Vector a -> Maybe Int
 vecElemIndex x v = elemIndex x (VB.toList v)
 
--- normalizes a vector of nonnegative numbers so that they sum to 1
+-- | Normalizes a vector of nonnegative numbers so that they sum to 1.
 normalizeVec :: V.Vector Double -> V.Vector Prob
 normalizeVec v = V.map (flip safeDiv $ V.sum v) v
 
--- given an element e and a sorted vector v, returns the index i for which v[i] <= e < v[i + 1]
+-- | Given an element e and a sorted vector v, returns the index i for which v[i] <= e < v[i + 1].
 bisect :: (Ord a, V.Storable a) => a -> V.Vector a -> Int
 bisect e v = f 0 (V.length v)
     where
@@ -53,14 +53,14 @@ bisect e v = f 0 (V.length v)
                     imid = imin + (quot (imax - imin) 2)
                     (imin', imax') = if (v V.! imid > e) then (imin, imid) else (imid, imax)
 
--- computes the Cartesian product of several lists
+-- | Computes the Cartesian product of several lists.
 cartesianProduct :: [[a]] -> [[a]]
 cartesianProduct [] = [[]]
 cartesianProduct (x:xs) = concat [[y : item | item <- prev] | y <- x]
     where prev = cartesianProduct xs
 
 
--- DISCRETE DISTRIBUTION --
+-- * Discrete Distribution
 
 data DiscreteDist v a = Discrete
     { var :: v,
@@ -78,9 +78,9 @@ instance Functor (DiscreteDist v) where
     fmap :: (a -> b) -> DiscreteDist v a -> DiscreteDist v b
     fmap f (Discrete {var, vals, probs, cdf}) = Discrete {var = var, vals = VB.map f vals, probs = probs, cdf = cdf}
 
--- constructors --
+-- ** Constructors
 
--- main constructor for DiscreteDist
+-- | Main constructor for 'DiscreteDist'.
 discreteDist :: (Ord a) => v -> [a] -> [Prob] -> DiscreteDist v a
 discreteDist var vals probs
     | null probs                  = error "cannot have empty distribution"
@@ -96,19 +96,17 @@ discreteDist var vals probs
             pmf = normalizeVec probVec
             cdf = V.scanl' (+) 0.0 pmf
 
--- normalizes the probability vector in a DiscreteDist
+-- | Normalizes the probability vector in a 'DiscreteDist'.
 normalizeDist :: (Ord a) => DiscreteDist v a -> DiscreteDist v a
 normalizeDist (Discrete {var, vals, probs}) = discreteDist var (VB.toList vals) (V.toList probs)
 
--- creates DiscreteDist from data (optionally include a smoothing constant)
+-- | Creates 'DiscreteDist' from data (optionally include a smoothing constant).
 trainDiscrete :: (Ord a) => v -> Maybe [a] -> Double -> [a] -> DiscreteDist v a
 trainDiscrete var vals smooth xs = discreteDist var vals' counts
     where
         freqs = count xs
         observedVals = sort $ M.keys freqs
-        vals' = case vals of
-            Just vs -> nub vs
-            Nothing -> observedVals
+        vals' = maybe observedVals nub vals
         counts = [(fromIntegral $ M.findWithDefault 0 val freqs) + smooth | val <- vals']
 
 uniformDiscreteDist :: (Ord a) => v -> [a] -> DiscreteDist v a
@@ -118,16 +116,16 @@ uniformDiscreteDist var vals = discreteDist var vals' (replicate n p)
         n = length vals'
         p = 1 / fromIntegral n
 
--- accessors --
+-- ** Accessors
 
--- converts a list of values to their corresponding indices
+-- | Converts a list of values to their corresponding indices.
 valsToIndices :: (Ord a, Show a) => DiscreteDist v a -> [a] -> [Int]
 valsToIndices (Discrete {vals}) = map f
     where
         valIdx = M.fromList $ zip (VB.toList vals) ([0..]::[Int])
         f val = justOrError (M.lookup val valIdx) ("invalid value " ++ show val)
 
--- gets the probability of a particular outcome
+-- | Gets the probability of a particular outcome.
 getProb :: (Ord a, Show a) => DiscreteDist v a -> a -> Prob
 getProb (Discrete {vals, probs}) val = case i of
     Just i' -> probs V.! i'
@@ -135,25 +133,25 @@ getProb (Discrete {vals, probs}) val = case i of
     Nothing -> 0.0  -- silently return 0 probability
     where i = vecElemIndex val vals
 
--- gets the probability of an event (a set of particular outcomes)
+-- | Gets the probability of an event (a set of particular outcomes).
 getProbEvent :: (Ord a, Show a) => DiscreteDist v a -> [a] -> Prob
 getProbEvent dist@(Discrete {probs}) vals = sum [probs V.! i | i <- valsToIndices dist (nub vals)]
 
--- gets the log-probability of a particular outcome
+-- | Gets the log-probability of a particular outcome.
 getLogProb :: (Ord a, Show a) => DiscreteDist v a -> a -> Double
 getLogProb dist val = log $ getProb dist val
 
--- gets the log-probability of an event (a set of particular outcomes)
+-- | Gets the log-probability of an event (a set of particular outcomes).
 getLogProbEvent :: (Ord a, Show a) => DiscreteDist v a -> [a] -> Double
-getLogProbEvent dist@(Discrete {probs}) vals = log $ getProbEvent dist vals
+getLogProbEvent dist vals = log $ getProbEvent dist vals
 
--- simulation --
+-- * Simulation
 
 class Simulable s a b where
-    -- computes a single random sample from a distribution
+    -- | Computes a single random sample from a distribution.
     sample :: (RandomGen g) => s a -> Rand g b
     sample = (head <$>) . samples
-    -- computes random samples from a distribution
+    -- | Computes random samples from a distribution.
     samples :: (RandomGen g) => s a -> Rand g [b]
     samples = sequence . repeat . interleave . sample
 
@@ -163,7 +161,7 @@ instance (b ~ a) => Simulable (DiscreteDist v) a b where
         rs <- getRandoms
         return [vals VB.! (bisect r cdf) | r <- rs]
 
--- sample a DiscreteDist without replacement (producing a permutation of the elements)
+-- | Samples a 'DiscreteDist' without replacement (producing a permutation of the elements).
 samplesWithoutReplacement :: (RandomGen g, Eq a) => DiscreteDist v a -> Rand g [a]
 samplesWithoutReplacement dist@(Discrete {var, vals, probs})
     | totalProb == 0 = return []
@@ -172,7 +170,7 @@ samplesWithoutReplacement dist@(Discrete {var, vals, probs})
         let (vals', probs') = unzip $ filter ((/= val) . fst) (zip (VB.toList vals) (V.toList probs))
         let positiveSum = sum probs' > 0.0
         rest <- case (vals', positiveSum) of
-            ((x:_), True) -> samplesWithoutReplacement dist'
+            ((_:_), True) -> samplesWithoutReplacement dist'
                 where
                     vals'' = VB.fromList vals'
                     probs'' = normalizeVec $ V.fromList probs'
@@ -183,7 +181,7 @@ samplesWithoutReplacement dist@(Discrete {var, vals, probs})
         where totalProb = V.sum probs
 
 
--- JOINT DISCRETE DISTRIBUTION --
+-- * Joint Discrete Distribution
 
 class (Eq v, Ord v) => JointDiscreteDistribution d v a where
     -- gets the list of variables associated with the joint distribution
@@ -219,13 +217,13 @@ class (Eq v, Ord v) => JointDiscreteDistribution d v a where
     -- "forgets" joint structure and returns a DiscreteDist
     forgetJoint :: d v a -> DiscreteDist [v] [a]
 
--- convert joint distribution into a 1D distribution on lists, then sample
+-- | Convert joint distribution into a 1D distribution on lists, then sample.
 instance {-# OVERLAPPABLE #-} (JointDiscreteDistribution d v a, b ~ [a]) => Simulable (d v) a b where
     samples :: (RandomGen g) => d v a -> Rand g [[a]]
     samples = samples . forgetJoint
 
 
--- JointDiscreteDist: full joint probability table --
+-- * 'JointDiscreteDist': full joint probability table
 
 data JointDiscreteDist v a = JointDiscrete
     { numVars :: Int,
@@ -285,7 +283,7 @@ trainJointDiscrete vars vals smooth xs = jointDiscrete vars vals' countArr
 instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscreteDist v a where
     getVars :: JointDiscreteDist v a -> [v]
     getVars = jVars
-    -- gets the probability of a particular outcome
+    -- | Gets the probability of a particular outcome.
     getJointProb :: JointDiscreteDist v a -> [a] -> Prob
     getJointProb (JointDiscrete {numVars, jValIdx, jProbs}) vals = jProbs ^!^ multiIdx
         where
@@ -300,9 +298,8 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
             sel = selector numVars indices
             sizes1 = sizes jProbs
             probs = entries jProbs
-            size1 = V.length probs
             sizes2 = sel sizes1
-            cumProds2 = reverse $ init $ scanl' (*) 1 (reverse sizes2)
+            cumProds2 = tail $ reverse $ scanl' (*) 1 (reverse sizes2)
             size2 = product sizes2
             multiIndices1 = cartesianProduct [[0..(sz - 1)] | sz <- sizes1]
             multiIndices2 = sel <$> multiIndices1
@@ -324,7 +321,7 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
                 | (numVals == numVars) = zipWith getSliceDim jValIdx valss
                 | otherwise            = error $ show numVars ++ " value lists required, " ++ show numVals ++ " given"
             probs = jProbs ^:^ slice
-            getVals valIdx vals indices = case indices of
+            getVals _ vals indices = case indices of
                 Just inds -> (vals VB.!) <$> inds
                 Nothing   -> VB.toList vals
             valss' = zipWith3 getVals jValIdx jVals slice
@@ -339,7 +336,7 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
             probs = V.toList $ entries jProbs
 
 
--- IndependentDiscreteDist: joint probability factorized as several independent discrete distributions --
+-- * 'IndependentDiscreteDist': joint probability factorized as several independent discrete distributions
 
 newtype IndependentDiscreteDist v a = IndependentDiscrete [DiscreteDist v a]
     deriving (Eq, Show)

@@ -1,25 +1,25 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 
-
 module Music.Rhythm (
     Duration(..),
     TimeSig,
     getTimeSig,
-    splitDur
+    splitDur,
+    validDur
 ) where
 
 import Codec.Midi (Message(..), Midi, tracks)
 import Control.Monad (join)
-import Data.Maybe (isJust, listToMaybe)
+import Data.List (find)
+import Data.Maybe (isJust)
 import Data.Ratio ((%), denominator, numerator)
 import Euterpea (Dur)
 import Text.Pretty (Pretty(..), string)
 
 
--- time duration
-
--- | Notated time in fractions, in @[2^^i | i <- [-10..3]]@, along with a number of dots and a multiplier.
+-- | Time duration.
+--   Notated time in fractions, in @[2^^i | i <- [-10..3]]@, along with a number of dots and a multiplier.
 data Duration = Duration Rational Int Int
     deriving (Eq, Ord, Show)
 
@@ -27,7 +27,7 @@ data Duration = Duration Rational Int Int
 intLog2 :: (Integral a, Integral b) => a -> b
 intLog2 = truncate . logBase 2 . fromIntegral
 
--- | Separates a Dur into a sequence of Durations (with multiplier 1)
+-- | Separates a 'Dur' into a sequence of 'Duration's (with multiplier 1).
 splitDur :: Dur -> [Duration]
 splitDur r
     | r == 0       = []
@@ -42,7 +42,7 @@ splitDur r
         q = diff / b
         (n', d') = (numerator q, denominator q)
 
--- | Returns True if a duration is valid for Lilypond output
+-- | Returns True if a duration is valid for Lilypond output.
 validDur :: Dur -> Bool
 validDur r = length (splitDur r) <= 1
 
@@ -73,13 +73,12 @@ instance Pretty Duration where
             go x = show $ denominator x
             showDur r' nd' = go r' ++ concat (replicate nd' ".")
 
--- time signature
-
+-- | Time signature
 type TimeSig = (Int, Int)
 
 -- | Gets the time signature of a Midi.
 getTimeSig :: Midi -> Maybe TimeSig
-getTimeSig m = join $ listToMaybe $ filter isJust (getSig <$> msgs)
+getTimeSig m = join $ find isJust (getSig <$> msgs)
     where
         msgs = snd <$> head (tracks m)  -- time signature should appear in the first track if at all
         getSig msg = case msg of

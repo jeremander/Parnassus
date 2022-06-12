@@ -11,15 +11,12 @@ import Data.Char (toLower, toUpper)
 import Data.List (isSuffixOf)
 import System.FilePath.Posix ((<.>), (-<.>), takeExtension)
 import System.Process (callProcess, readProcess)
-import Text.Pretty ((<+>), (<//>), doubleQuotes, pretty, string)
+import Text.Pretty (pretty)
 
+import Misc.Utils (safeTail)
 import Music.Lilypond.Score (ToLilypond(..))
 import Music.Pitch (PrettyPitch(..))
 
-
-safeTail :: [a] -> [a]
-safeTail []     = []
-safeTail (x:xs) = xs
 
 lilypondProg = "lilypond"
 

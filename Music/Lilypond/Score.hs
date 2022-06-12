@@ -32,9 +32,9 @@ data LayoutItem a = LayoutAssignment LitAssignment | LayoutVar Variable | Layout
     deriving (Eq, Show)
 
 instance (PrettyPitch a) => PrettyPitch (LayoutItem a) where
-    prettyPitch lang (LayoutAssignment assignment) = pretty assignment
-    prettyPitch lang (LayoutVar v)                 = pretty v
-    prettyPitch lang (LayoutContext context)       = prettyPitch lang context
+    prettyPitch _ (LayoutAssignment assignment) = pretty assignment
+    prettyPitch _ (LayoutVar v)                 = pretty v
+    prettyPitch lang (LayoutContext context)    = prettyPitch lang context
 
 newtype Layout a = Layout [LayoutItem a]
     deriving (Eq, Show)

@@ -20,17 +20,14 @@ import Data.Tuple (swap)
 import Euterpea (Mode(..), Pitch, PitchClass(..))
 import System.Directory (findFile)
 import Text.Parsec
-import Text.Parsec.Number (floating, floating2, int, sign)
+import Text.Parsec.Number (floating2, int, sign)
 import Text.Parsec.Pos (initialPos)
-import Text.Parsec.Token (float, integer, stringLiteral)
-import qualified Text.Pretty as P
 import Text.Pretty (Pretty(..))
 
 import Misc.Utils (enumerate)
 import Music.Dynamics
 import Music.Pitch
 import Music.Rhythm
-import Music.Lilypond.IO
 import Music.Lilypond.Literal
 import Music.Lilypond.MusicL
 import Music.Lilypond.Score

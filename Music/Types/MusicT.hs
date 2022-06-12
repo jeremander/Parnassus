@@ -16,23 +16,23 @@ module Music.Types.MusicT (
     durP,
     extractTempo,
     metronome,
+    musicToSineWav,
+    musicToWav,
     withMetronome
 ) where
 
 import qualified Codec.Midi
 import Control.DeepSeq (NFData)
-import Data.Default (def)
 import Data.Either (partitionEithers)
 import Data.List (partition)
 import Data.Ratio
-import Data.VectorSpace (AdditiveGroup(..))
 import qualified Euterpea
-import Euterpea (AbsPitch, Control(..), Dur, InstrMap, InstrumentName(..), Music(..), Music1(..), Note1, NoteAttribute(..), Pitch, PitchClass(..), Primitive(..), ToMusic1, absPitch, exportMidiFile, instrument, mFold, note, perform, pitch, rest, tempo, writeWavNorm)
+import Euterpea (AbsPitch, Control(..), Dur, InstrMap, InstrumentName(..), Music(..), Music1, Note1, NoteAttribute(..), Pitch, PitchClass(..), Primitive(..), ToMusic1, exportMidiFile, instrument, mFold, note, perform, rest, tempo, writeWavNorm)
 import qualified Euterpea.IO.MIDI.FromMidi
 import qualified Euterpea.IO.MIDI.ToMidi
 
 import Misc.Utils (composeFuncs, rationalGCD, unDistribute)
-import Music.Pitch (Key, FromPitch(..), ToPitch(..), simplifyMode)
+import Music.Pitch (FromPitch(..))
 import Music.Rhythm (TimeSig)
 import Music.Wave (AudSig, sineInstrMap)
 
@@ -56,13 +56,13 @@ extractTempo _         = 1
 
 -- fix Euterpea's chord function to avoid creating empty rests
 chord' :: [Music a] -> Music a
-chord' (x:[]) = x
-chord' xs = Euterpea.chord xs
+chord' [x] = x
+chord' xs  = Euterpea.chord xs
 
 -- fix Euterpea's line function to avoid creating empty rests
 line' :: [Music a] -> Music a
-line' (x:[]) = x
-line' xs = Euterpea.line xs
+line' [x] = x
+line' xs  = Euterpea.line xs
 
 unChord' :: Music a -> [Music a]
 unChord' (x :=: y) = unChord' x ++ unChord' y
@@ -89,27 +89,27 @@ stripControls' = mFold f (combine (:+:)) (combine (:=:)) g
         f :: Primitive a -> (Controls, Music a)
         f p = ([], Prim p)
         g :: Control -> (Controls, Music a) -> (Controls, Music a)
-        g ctl (ctls, m) = ([ctl] ++ ctls, m)
+        g ctl (ctls, m) = (ctl : ctls, m)
         combine :: (Music a -> Music a -> Music a) -> (Controls, Music a) -> (Controls, Music a) -> (Controls, Music a)
         combine op (xctl, x) (yctl, y) = (prefix, op x' y')
             where
                 (prefix, [xctl', yctl']) = unDistribute [xctl, yctl]
-                x' = (foldr (.) id (Modify <$> xctl')) x
-                y' = (foldr (.) id (Modify <$> yctl')) y
+                x' = foldr ($) x (Modify <$> xctl')
+                y' = foldr ($) y (Modify <$> yctl')
 
 removeTempos' :: Music a -> Music a
 removeTempos' = mFold Prim (:+:) (:=:) g
     where
         g :: Control -> Music a -> Music a
-        g (Tempo d) m = m
-        g ctl m = Modify ctl m
+        g (Tempo _) m = m
+        g ctl m       = Modify ctl m
 
 distributeTempos' :: Music a -> Music a
 distributeTempos' = mFold Prim (:+:) (:=:) g
     where
         g :: Control -> Music a -> Music a
         g (Tempo t) m = Euterpea.scaleDurations t m
-        g ctl m = Modify ctl m
+        g ctl m       = Modify ctl m
 
 infixr 5 /+/, /=/
 infixr 7 *^
@@ -187,7 +187,7 @@ class MusicT m a where
     durGCD = gcd' . toMusic
     -- scales durations by a constant (pre-multiplication)
     (*^) :: Rational -> m a -> m a
-    (*^) 0 x = empty
+    (*^) 0 _ = empty
     (*^) c x = unConj (Euterpea.scaleDurations c) x
     -- scales durations by a constant (post-multiplication)
     (^*) :: m a -> Rational -> m a
@@ -227,7 +227,7 @@ class MusicT m a where
             isTempo (Tempo _) = True
             isTempo _         = False
             (tempos, nonTempos) = partition isTempo ctls
-            tempo = Tempo $ foldr (*) 1 (extractTempo <$> tempos)
+            tempo = Tempo $ product $ extractTempo <$> tempos
             ctlMod = composeFuncs (modify <$> nonTempos)
     -- eliminates all tempo modifiers
     removeTempos :: m a -> m a
@@ -283,15 +283,16 @@ instance MusicT Music a where
         where (mhead, mtail) = bisect (d * r) m
     bisect d (Modify ctl m)         = (Modify ctl mhead, Modify ctl mtail)
         where (mhead, mtail) = bisect d m
+    bisect _ _                      = error "unexpected expression"
 
 instance ToMidi Music
 
 -- * Metronome
 
 -- | Metronome for a fixed time signature.
--- Uses claves for downbeat, high wood block for upbeats.
+--   Uses claves for downbeat, high wood block for upbeats.
 metronome :: (MusicT m Note1) => TimeSig -> Dur -> m Note1
-metronome (n, d) r = modify (Instrument Percussion) $ line $ (prim <$> beats)
+metronome (n, d) r = modify (Instrument Percussion) $ line (prim <$> beats)
     where
         numBeats = ceiling (r * fromIntegral d)
         flags = [rem i n == 0 | i <- [0..]]
@@ -343,4 +344,4 @@ musicToWav path instrMap music = writeWavNorm path instrMap music1
 
 -- saves music to a wav file via the sine instrument
 musicToSineWav :: FilePath -> Music1 -> IO ()
-musicToSineWav path music = writeWavNorm path sineInstrMap music
+musicToSineWav path = writeWavNorm path sineInstrMap

@@ -8,17 +8,18 @@ module Music.Types (
     module Music.Types.MusicD,
     module Music.Types.MusicU,
     MusicD1,
+    MusicL,
     MusicU1
 ) where
 
 import qualified Data.List
-import Euterpea (Control(..), Music(..), Note1, Pitch, Primitive(..))
+import Euterpea (Control(..), Music(..), Note1)
 
 import Music.Pitch (ToPitch(..))
 import Music.Types.MusicT
 import Music.Types.MusicD
 import Music.Types.MusicU
-import Music.Lilypond.MusicL
+import Music.Lilypond.MusicL (MusicL)
 
 
 -- * Types

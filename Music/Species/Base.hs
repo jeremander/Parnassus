@@ -18,26 +18,25 @@ import Music.Types.MusicT (MusicT(..))
 import Music.Types.MusicD (extractTied, MusicD (MusicD), Tied (..), ToMusicD (..))
 
 
--- HELPER FUNCTIONS --
+-- * Helper Functions
 
 maybePair :: (Maybe a, Maybe b) -> Maybe (a, b)
 maybePair (Just x, Just y) = Just (x, y)
 maybePair _                = Nothing
 
--- gets windows of a list
--- n is the amount to the left and right of the current element
+-- | Gets windows of a list.
+--   \(n\) is the amount to the left and right of the current element.
 getWindows :: Int -> [a] -> [[a]]
 getWindows n xs = (drop (n + 1) $ take (2 * n + 1) $ inits xs) ++ ngrams (2 * n + 1) xs ++ reverse (reverse <$> (drop (n + 1) $ take (2 * n + 1) $ inits $ reverse xs))
 
--- folds a list of Tied a into a list of a and some bookkeeping that will allow us to reconstruct the original list
--- (loses all Control information)
+-- | Folds a list of @Tied a@ into a list of a and some bookkeeping that will allow us to reconstruct the original list (loses all 'Control' information).
 foldTied :: [Tied a] -> ([a], [(Bool, Int)])
 foldTied xs = (reverse items, reverse pairs)
     where
         foldTied' []                = ([], [])
         foldTied' ((Untied _ x):xs) = ((x:ys), (True, 1):pairs)
             where (ys, pairs) = foldTied' xs
-        foldTied' ((Tied x):xs)     = (ys, (True, n + 1):(tail pairs))
+        foldTied' ((Tied _):xs)     = (ys, (True, n + 1):(tail pairs))
             where
                 (ys, pairs) = foldTied' xs
                 (_, n) = head pairs
@@ -45,13 +44,14 @@ foldTied xs = (reverse items, reverse pairs)
             where (ys, pairs) = foldTied' xs
         (items, pairs) = foldTied' $ reverse xs
 
--- given folded representation of [Tied a], converts back to the original representation
+-- | Given folded representation of @[Tied a]@, converts back to the original representation.
 unfoldTied :: ([a], [(Bool, Int)]) -> [Tied a]
-unfoldTied (_, [])                = []
-unfoldTied (xs, (False, n):pairs) = replicate n RestD ++ unfoldTied (xs, pairs)
+unfoldTied (_, [])                 = []
+unfoldTied (xs, (False, n):pairs)  = replicate n RestD ++ unfoldTied (xs, pairs)
 unfoldTied (x:xs, (True, n):pairs) = Untied [] x : (replicate (n - 1) (Tied x) ++ unfoldTied (xs, pairs))
+unfoldTied _                       = error "unexpected pattern"
 
--- given a list of items, returns a list of (a, count) pairs, where count counts the number of successive identical items
+-- | Given a list of items, returns a list of (a, count) pairs, where count counts the number of successive identical items.
 foldRepeats :: (Eq a) => [a] -> [(a, Int)]
 foldRepeats xs = reverse $ foldRepeats' $ reverse xs
     where
@@ -62,12 +62,12 @@ foldRepeats xs = reverse $ foldRepeats' $ reverse xs
                 ys = foldRepeats' xs
                 (_, n) = head ys
 
--- gets the max number of repeated elements in a list (that are not Nothing) and the element itself
+-- | Gets the max number of repeated elements in a list (that are not Nothing) and the element itself.
 maxRepeats :: (Eq a) => [Maybe a] -> Int
 maxRepeats xs = maximum $ 0 : (snd <$> filter (isJust . fst) (foldRepeats xs))
 
 
--- VOICES --
+-- * Voices
 
 data Voice = Bass | Tenor | Alto | Soprano
     deriving (Enum, Eq, Ord, Show)
@@ -75,20 +75,20 @@ data Voice = Bass | Tenor | Alto | Soprano
 incBnd :: a -> Bound a
 incBnd bnd = Bound bnd Inclusive
 
--- vocal range for each voice part
+-- | Vocal range for each voice part.
 voiceRange :: Voice -> Range AbsPitch
 voiceRange Bass    = SpanRange (incBnd $ absPitch (E, 2)) (incBnd $ absPitch (E, 4))
 voiceRange Tenor   = SpanRange (incBnd $ absPitch (C, 3)) (incBnd $ absPitch (A, 4))
 voiceRange Alto    = SpanRange (incBnd $ absPitch (F, 3)) (incBnd $ absPitch (F, 5))
 voiceRange Soprano = SpanRange (incBnd $ absPitch (C, 4)) (incBnd $ absPitch (A, 5))
 
--- returns True if the voice can sing the note
+-- | Returns True if the voice can sing the note.
 voiceCanSing :: Voice -> Pitch -> Bool
 voiceCanSing voice p = inRange (voiceRange voice) (absPitch p)
 
--- SCALES & MODES --
+-- * Scales & Modes
 
--- only church modes are acceptable for species counterpoint
+-- | Only church modes are acceptable for species counterpoint.
 convertMode :: Mode -> Mode
 convertMode Major = Ionian
 convertMode Minor = Aeolian
@@ -96,15 +96,15 @@ convertMode Locrian = error "Locrian is an invalid mode for species counterpoint
 convertMode (CustomMode _) = error "CustomMode is an invalid mode for species counterpoint"
 convertMode mode = mode
 
--- returns True if two pitch classes are equivalent
+-- | Returns True if two pitch classes are equivalent.
 equivPitchClass :: PitchClass -> PitchClass -> Bool
 equivPitchClass pc1 pc2 = (absPitch (pc1, 4)) == (absPitch (pc2, 4))
 
--- transposes a pitch class by some number of semitones
+-- | Transposes a pitch class by some number of semitones.
 shiftPitch :: PitchClass -> Int -> PitchClass
 shiftPitch pc shift = fst $ pitch $ absPitch (pc, 4) + shift
 
--- gets the first degree of the key
+-- | Gets the first degree of the key.
 firstDegree :: Key -> PitchClass
 firstDegree (pc, mode) = shiftPitch pc i
     where i = case mode of
@@ -117,8 +117,8 @@ firstDegree (pc, mode) = shiftPitch pc i
             Locrian    -> 1
             _          -> 0
 
--- gets the pitch class scale for a given key
--- extra boolean flag indicating whether to include "extra" nodes (e.g. leading tone) sometimes permitted in the scale
+-- | Gets the pitch class scale for a given key.
+--   An extra boolean flag indicating whether to include "extra" nodes (e.g. leading tone) is sometimes permitted in the scale.
 scaleForKey :: Key -> Bool -> [PitchClass]
 scaleForKey (pc, mode) extra = [shiftPitch pc j | j <- scale]
     where
@@ -132,36 +132,36 @@ scaleForKey (pc, mode) extra = [shiftPitch pc j | j <- scale]
             Locrian    -> [0, 1, 3, 5, 6, 8, 10]
             _          -> [0, 2, 4, 5, 7, 9, 11]
 
--- INTERVALS --
+-- * Intervals
 
 type Interval = (Pitch, Pitch) -- a pair of notes
 
--- (signed) number of semitones between the two pitches
+-- | (Signed) number of semitones between the two pitches
 intervalDisplacement :: Interval -> Int
 intervalDisplacement (p1, p2) = absPitch p2 - absPitch p1
 
--- (unsigned) number of semitones between the two pitches
+-- | (Unsigned) number of semitones between the two pitches
 intervalDistance :: Interval -> Int
 intervalDistance = abs . intervalDisplacement
 
--- returns the ordering of the two pitches
+-- | Returns the ordering of the two pitches.
 intervalOrdering :: Interval -> Ordering
 intervalOrdering (p1, p2) = compare p1 p2
 
--- three broad categories of intervals, according to Fux
+-- | Three broad categories of intervals, according to Fux.
 data IntervalType = PerfectConsonance | ImperfectConsonance | Dissonance
     deriving (Eq, Show)
 
--- gets the type of interval for two adjacent notes
+-- | Gets the type of interval for two adjacent notes.
 melodicIntervalType :: PitchClass -> Interval -> IntervalType
-melodicIntervalType root interval
+melodicIntervalType _ interval
     | (dist `elem` [0, 7])                             = PerfectConsonance
     | (dist `elem` [3, 4, 5])                          = ImperfectConsonance
     | (dist == 8) && (intervalOrdering interval /= LT) = ImperfectConsonance  -- descent by a minor 6th is consonant
     | otherwise                                        = Dissonance
     where dist = intervalDistance interval `mod` 12
 
--- gets the type of interval for two notes in parallel (main voice is the first note, harmony the second)
+-- | Gets the type of interval for two notes in parallel (main voice is the first note, harmony the second).
 harmonicIntervalType :: PitchClass -> Interval -> IntervalType
 harmonicIntervalType root interval@(p1, p2)
     | (dist `elem` [0, 7])                           = PerfectConsonance
@@ -173,23 +173,23 @@ harmonicIntervalType root interval@(p1, p2)
         dist = intervalDistance interval `mod` 12
         interval' = if (intervalOrdering interval == GT) then (p2, p1) else (p1, p2)
 
--- gets the position of a Pitch in the diatonic staff (i.e. mod 7)
+-- | Gets the position of a Pitch in the diatonic staff (i.e. mod 7).
 diatonicPosition :: Pitch -> Int
 diatonicPosition (pc, oct) = 7 * oct + (posTable M.! (head $ show pc))
     where posTable = M.fromList $ zip "CDEFGAB" [0..]
 
--- gets the (signed) interval number (staff distance) of an interval, e.g. "first", "third", etc.
+-- | Gets the (signed) interval number (staff distance) of an interval, e.g. "first", "third", etc.
 intervalNumber :: Interval -> Int
 intervalNumber (p1, p2) = if (diff >= 0) then (diff + 1) else (diff - 1)
     where diff = diatonicPosition p2 - diatonicPosition p1
 
--- a pair of adjacent harmonic intervals
+-- | A pair of adjacent harmonic intervals.
 type PairwiseMotion = (Interval, Interval)
 
 data MotionType = Parallel | Contrary | Oblique
     deriving (Eq, Show)
 
--- gets the type of motion for a pair of intervals
+-- | Gets the type of motion for a pair of intervals.
 motionType :: PairwiseMotion -> MotionType
 motionType ((p1, p2), (p1', p2'))
     | (n1 == n1') || (n2 == n2') = Oblique
@@ -198,13 +198,13 @@ motionType ((p1, p2), (p1', p2'))
     | otherwise                  = Parallel
     where [n1, n2, n1', n2'] = absPitch <$> [p1, p2, p1', p2']
 
--- converts PairwiseMotion from adjacent harmonies to concurrent motions
+-- | Converts 'PairwiseMotion' from adjacent harmonies to concurrent motions.
 motionTranspose :: PairwiseMotion -> (Interval, Interval)
 motionTranspose ((p1, p2), (p1', p2')) = ((p1, p1'), (p2, p2'))
 
--- PARSING --
+-- * Parsing
 
--- parses a note from a string: starts with the pitch, followed by an octave, followed by ~ if it is tied; a rest is simply a *
+-- | Parses a note from a string: starts with the pitch, followed by an octave, followed by ~ if it is tied; a rest is simply a *.
 parseNote :: String -> Tied Pitch
 parseNote "*" = RestD
 parseNote s   = tp
@@ -220,7 +220,7 @@ parseNote s   = tp
 parseLine :: String -> [Tied Pitch]
 parseLine s = parseNote <$> filter (not . null) (splitOn " " s)
 
--- SPECIES --
+-- * Species
 
 type VoiceLineT a = (Voice, [Tied a])
 type VoiceLine = VoiceLineT Pitch
@@ -233,7 +233,7 @@ data SpeciesT a = Species { key :: Key, cantusFirmus :: VoiceLineT a, counterpoi
 
 type Species = SpeciesT Pitch
 
--- convert Species to/from MusicD Pitch
+-- | Convert 'Species' to/from 'MusicD Pitch'.
 instance ToMusicD SpeciesT Pitch where
     toMusicD Species {cantusFirmus = (_, cf), counterpoint = (_, cpt)} = modify (Tempo 3) $ (MusicD 1 [Instrument VoiceOohs] (pure <$> cf)) /=/ (MusicD 1 [Instrument VoiceOohs] (pure <$> cpt))
     fromMusicD (MusicD _ _ [cf, cpt]) = Species {key = key, cantusFirmus = (getVoice cfPitches, cf), counterpoint = (getVoice cptPitches, cpt)}
@@ -250,15 +250,15 @@ instance ToMusicD SpeciesT Pitch where
             key = justOrError (safeHead $ filter (\k -> pitchesFitKey k (cfPitches ++ cptPitches)) validKeys) "no key could be found to accommodate all the notes"
     fromMusicD _ = error "input MusicD must consist of two voice lines"
 
--- applies a sequence of rules to something, short-circuiting as soon as the first rule fails
--- for efficiency, it is best to put the filters in order of decreasing cheapness
+-- | Applies a sequence of rules to something, short-circuiting as soon as the first rule fails.
+--   For efficiency, it is best to put the filters in order of decreasing cheapness.
 checkRules :: [a -> RuleCheck] -> a -> RuleCheck
-checkRules [] x     = Passed
+checkRules [] _     = Passed
 checkRules (f:fs) x = case f x of
     fx@(Failed _) -> fx
     _             -> checkRules fs x
 
--- convenience constructor from strings
+-- | Convenience constructor from strings.
 species :: Key -> (Voice, String) -> (Voice, String) -> Species
 species (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
     where
@@ -288,24 +288,22 @@ species (pc, mode) (cfVoice, cfStr) (cptVoice, cptStr) = spec
             (x:_)  -> error s where (Failed s) = x
             _      -> Species {key = key', cantusFirmus = (cfVoice, cf), counterpoint = (cptVoice, cpt)}
 
--- global data for first species
+-- | Global data for first species.
 data SpeciesConstants = SpecConsts {
     specLength :: Int,    -- number of bars
     specKey :: Key,       -- key (fundamental)
     specOrdering :: Bool  -- True if CF <= CPT, False if CF > CPT
-}
-    deriving (Eq, Show)
+} deriving (Eq, Show)
 
--- local context of a note in a species
--- this is the minimal data needed to determine if a violation is present locally
+-- | Local context of a note in a species.
+--   This is the minimal data needed to determine if a violation is present locally.
 data SpeciesContext = SpecContext {
     specConsts :: SpeciesConstants,
     specIndex :: Int,                        -- index of the present note
     specInterval :: Interval,                -- the present (vertical) interval
     specIntervalWindow :: [Maybe Interval],  -- up to 7-long window of surrounding intervals
     specMotions :: [Maybe PairwiseMotion]    -- 2-long list containing motion into present interval & into next interval
-}
-    deriving (Eq, Show)
+} deriving (Eq, Show)
 
 data SpeciesRule = SpecRule {
     specRuleCheck :: SpeciesContext -> Bool,  -- returns True if the rule is satisfied
@@ -313,19 +311,19 @@ data SpeciesRule = SpecRule {
     specRuleIsEssential :: Bool               -- flag indicating whether the rule is "essential" (crucial)
 }
 
--- given a rule and a context, checks the rule
+-- | Given a rule and a context, checks the rule.
 checkSpeciesRule :: SpeciesRule -> SpeciesContext -> RuleCheck
 checkSpeciesRule (SpecRule {specRuleCheck, specRuleDescr}) context@(SpecContext {specIndex}) = result
     where
         passed = specRuleCheck context
         result = if passed then Passed else (Failed $ "Bar " ++ show specIndex ++ ": " ++ specRuleDescr)
 
--- given a list of rules, returns True if the given context passes all the rules
+-- | Given a list of rules, returns True if the given context passes all the rules.
 passesFirstSpeciesRules :: [SpeciesRule] -> SpeciesContext -> Bool
 passesFirstSpeciesRules rules context = all (== Passed) [checkSpeciesRule rule context | rule <- rules]
 
--- checks all of the given rules against all the given contexts
--- returns either Passed or Failed (with the first violation encountered)
+-- | Checks all of the given rules against all the given contexts.
+--   Returns either Passed or Failed (with the first violation encountered).
 checkSpeciesContexts :: [SpeciesRule] -> [SpeciesContext] -> RuleCheck
 checkSpeciesContexts rules contexts = result
     where

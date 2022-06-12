@@ -2,7 +2,7 @@
 
 module Music.Primes where
 
-import Data.Counter (Counter(..), count)
+import Data.Counter (Counter, count)
 import Data.List (unfoldr)
 import qualified Data.Map as M
 import Data.Maybe (listToMaybe)

@@ -11,7 +11,7 @@ import Data.Char (isAlpha, toUpper)
 import Data.List (nub, sort)
 import Data.Maybe (fromMaybe)
 import Control.Monad (liftM2)
-import Data.Ratio ((%), denominator, numerator)
+import Data.Ratio (denominator, numerator)
 import Data.Tuple.Select (sel3)
 import qualified Text.Pretty as P
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, hsep, nest, sep, sepByS, string, vcat)
@@ -26,9 +26,9 @@ import Music.Rhythm (Duration(..), TimeSig, splitDur)
 import Music.Types.MusicT (MusicT(..), ToMidi(..))
 
 
--- Utilities
+-- * Utilities
 
--- capitalizes the first letter of a string
+-- | Capitalizes the first letter of a string.
 cap :: String -> String
 cap cs = [if (i == 0) then toUpper c else c | (i, c) <- zip [0..] cs]
 
@@ -56,7 +56,7 @@ instance ToPitch NotePitch where
 instance FromPitch NotePitch where
     fromPitch = (`NotePitch` Nothing)
 
--- tempo name (e.g. allegro), and a specification of what note duration is one beat, along with BPM
+-- | Tempo name (e.g. allegro), and a specification of what note duration is one beat, along with BPM.
 data Tempo = Tempo (Maybe String) (Maybe (Duration, Integer))
     deriving (Eq, Show)
 
@@ -202,21 +202,21 @@ type MusicL' = MusicL NotePitch
 -- extracts data from Note (pitch data, duration, presence of a tie)
 getNoteData :: MusicL a -> Maybe (a, Maybe E.Dur, Bool)
 getNoteData (Note x d exprs) = Just (x, toRational <$> d, Tie `elem` exprs)
-getNoteData m                = Nothing
+getNoteData _                = Nothing
 
 dur' :: MusicL a -> Maybe Duration
 dur' (Note _ d _) = d
 dur' (Rest _ d _) = d
 dur' (Chord _ d _) = d
-dur' (Sequential xs) = sum <$> (sequence $ dur' <$> xs)
-dur' (Simultaneous _ xs) = maximum <$> (sequence $ dur' <$> xs)
-dur' x = Nothing
+dur' (Sequential xs) = sum <$> mapM dur' xs
+dur' (Simultaneous _ xs) = maximum <$> mapM dur' xs
+dur' _ = Nothing
 
 instance (FromPitch a, ToPitch a) => MusicT MusicL a where
     toMusic :: MusicL a -> Music a
     toMusic note@(Note {}) = E.Prim $ E.Note (toRational d') x
         where
-            (Just (x, d, hasTie)) = getNoteData note
+            (Just (x, d, _)) = getNoteData note
             d' = fromMaybe (error "no duration") d
     toMusic (Rest _ d _) = E.Prim $ E.Rest (toRational d')
         where d' = fromMaybe (error "no duration") d
@@ -259,12 +259,12 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
     modify :: E.Control -> MusicL a -> MusicL a
     modify (E.Tempo r) = Times (1 / r)
     modify (E.Transpose ap) = Transpose (C, 4) (trans ap (C, 4))
-    modify (E.Instrument inst) = id  -- TODO: implement this (convert from enum to Lilypond)
+    modify (E.Instrument _) = id  -- TODO: implement this (convert from enum to Lilypond)
     modify (E.Phrase attrs) = \x -> foldr modify' x attrs
         where
             -- TODO: dynamics/articulation conversion is tricky since Lilypond always puts it after the note
             -- thus conversion may only be possible if the Modify applies to a single note
-            modify' attr = id
+            modify' _ = id
     modify (E.KeySig pc mode) = (/+/) $ Key (pc, mode)
     modify (E.Custom s) = (/+/) $ Lit (MarkupL (MarkupExpr (MarkupText s)))
     (/+/) :: MusicL a -> MusicL a -> MusicL a
@@ -278,7 +278,7 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
         where
             xs' = filter (not . isEmpty) $ concatMap unLine xs
             pitchSet ps = nubSort $ toPitch <$> ps
-            removeTies = filter (not . (== Tie))
+            removeTies = filter (/= Tie)
             maybePlus = liftM2 (+)
             -- gets initial set of pitches
             pitches (Note p _ _) = [toPitch p]
@@ -291,16 +291,18 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             isTied (Sequential ys@(_:_)) = isTied $ last ys
             isTied (Simultaneous _ ys) = all isTied ys
             isTied _ = False
-            addExprs exprs (Note p d exprs') = Note p d (nubSort $ exprs ++ exprs')
-            addExprs exprs (Rest rt d exprs') = Rest rt d (nubSort $ exprs ++ exprs')
-            addExprs exprs (Chord ps d exprs') = Chord ps d (nubSort $ exprs ++ exprs')
-            addExprs exprs (Sequential xs) = Sequential $ addExprs exprs <$> xs
-            addExprs exprs (Simultaneous b xs) = Simultaneous b $ addExprs exprs <$> xs
+            -- addExprs exprs (Note p d exprs') = Note p d (nubSort $ exprs ++ exprs')
+            -- addExprs exprs (Rest rt d exprs') = Rest rt d (nubSort $ exprs ++ exprs')
+            -- addExprs exprs (Chord ps d exprs') = Chord ps d (nubSort $ exprs ++ exprs')
+            -- addExprs exprs (Sequential xs) = Sequential $ addExprs exprs <$> xs
+            -- addExprs exprs (Simultaneous b xs) = Simultaneous b $ addExprs exprs <$> xs
+            -- addExprs _     _                   = error "unexpected expression"
             -- extends the duration of the first note of a musical element
-            extend d1 (Note p d2 exprs) = Note p (maybePlus d1 d2) exprs
-            extend d1 (Rest rt d2 exprs) = Rest rt (maybePlus d1 d2) exprs
+            extend d1 (Note p d2 exprs)   = Note p (maybePlus d1 d2) exprs
+            extend d1 (Rest rt d2 exprs)  = Rest rt (maybePlus d1 d2) exprs
             extend d1 (Chord ps d2 exprs) = Chord ps (maybePlus d1 d2) exprs
             extend d1 (Simultaneous b ys) = Simultaneous b (extend d1 <$> ys)
+            extend _  _                   = error "unexpected expression"
             -- if same note or chord is tied to another, extend its duration
             go x@(Note p1 d1 exprs1) (y@(Note p2 d2 exprs2):ys) = if isTied x && (p1 == p2)
                 then (Note p2 (maybePlus d1 d2) (nubSort $ removeTies exprs1 ++ exprs2)) : ys
@@ -308,7 +310,7 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             go x@(Chord ps1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if isTied x && (pitchSet ps1 == pitchSet ps2)
                 then (Chord ps1 (maybePlus d1 d2) (nubSort $ removeTies exprs1 ++ exprs2)) : ys
                 else x : y : ys
-            go x@(Chord ps1 d1 exprs1) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
+            go x@(Chord _ d1 _) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
                 then extend d1 y : ys
                 else x : y : ys
             go x@(Simultaneous {}) (y@(Simultaneous {}):ys) = if isTied x && (pitches x == pitches y)
@@ -330,11 +332,10 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             mkNoteChord ps d exprs  = Chord (fromPitch <$> ps) d exprs
             -- if two notes/chords have the same duration & expressives, merge them into a chord
             -- if they have the same pitch, merge them into a note
-            go x@(Note p1 d1 exprs1) (y@(Note p2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
-                then mkNoteChord (nubSort $ toPitch <$> [p1, p2]) d1 exprs1 : ys
-                else if (d1 == d2) && (p1 == p2)
-                    then Note p1 d1 (nubSort $ exprs1 ++ exprs2) : ys
-                    else x : y : ys
+            go x@(Note p1 d1 exprs1) (y@(Note p2 d2 exprs2):ys)
+              | (d1 == d2) && (exprs1 == exprs2) = mkNoteChord (nubSort $ toPitch <$> [p1, p2]) d1 exprs1 : ys
+              | (d1 == d2) && (p1 == p2) = Note p1 d1 (nubSort $ exprs1 ++ exprs2) : ys
+              | otherwise = x : y : ys
             go x@(Note p1 d1 exprs1) (y@(Chord ps2 d2 exprs2):ys) = if (d1 == d2) && (exprs1 == exprs2)
                 then mkNoteChord (nubSort $ toPitch <$> p1 : ps2) d1 exprs1 : ys
                 else x : y : ys
@@ -399,7 +400,7 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
             exprs' = case d'' of
                 Nothing -> exprs
                 Just d2 -> if (d2 > 0) then Tie : exprs else exprs
-    bisect d (Sequential []) = (empty, empty)
+    bisect _ (Sequential []) = (empty, empty)
     bisect d (Sequential ms) = (line left', line right')
         where
             durs = dur <$> ms
@@ -428,7 +429,7 @@ instance (FromPitch a, ToPitch a) => MusicT MusicL a where
         where (left, right) = bisect d mus
     -- TODO: detect last note on left side to set correct relative pitch on right side
     bisect d x@(Relative _ _) = bisect d $ unRelative x
-    bisect d x = (x, empty)
+    bisect _ x = (x, empty)
     transpose :: E.AbsPitch -> MusicL a -> MusicL a
     transpose i = Transpose pc1 pc2
         where
@@ -448,7 +449,7 @@ fillDurations = go Nothing
         fillDur d (Chord ys Nothing exprs) = (d, Chord ys d exprs)
         fillDur d (Sequential xs) = (d', Sequential $ snd <$> pairs)
             where
-                fillDur' (d, _) x = fillDur d x
+                fillDur' (d, _) = fillDur d
                 pairs = tail $ scanl fillDur' (d, empty) xs
                 d' = fst $ last pairs
         fillDur d (Simultaneous b xs) = (Nothing, Simultaneous b $ go d <$> xs)
@@ -465,7 +466,7 @@ fillDurations = go Nothing
         fillDur d (Relative p x) = (d', Relative p x')
             where (d', x') = fillDur d x
         fillDur d x = (d', x)
-            where d' = fromMaybe d $ return <$> dur' x
+            where d' = maybe d return (dur' x)
 
 -- given a possible relative pitch context, and a pitch, returns the corresponding pitch whose octave is nearest to the pitch context, in terms of staff distance
 -- this replicates the functionality of Lilypond's \relative mode
@@ -482,13 +483,11 @@ unRelative :: (FromPitch a, ToPitch a) => MusicL a -> MusicL a
 unRelative = go Nothing
     where
         go p = snd . unRel p
-        pitch' (Note p _ _) = Just $ toPitch p
-        pitch' x = Nothing
         unRel p (Note p' d exprs) = (Just p'', Note (fromPitch p'') d exprs)
             where p'' = nearestRelPitch p (toPitch p')
         unRel p (Sequential xs) = (p', Sequential $ snd <$> pairs)
             where
-                unRel' (p, _) x = unRel p x
+                unRel' (p, _) = unRel p
                 pairs = tail $ scanl unRel' (p, empty) xs
                 p' = fst $ last pairs
         unRel p (Simultaneous b xs) = (Nothing, Simultaneous b $ go p <$> xs)

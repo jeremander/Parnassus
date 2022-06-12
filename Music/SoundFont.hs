@@ -4,7 +4,7 @@ module Music.SoundFont where
 
 import Codec.SoundFont (Bag(..), Generator(..), Info(..), Inst(..), Phdr(..), Pdta(..), SoundFont(..), exportFile, importFile)
 import Control.Exception (assert)
-import Control.Monad.Reader (liftM2, forM_, MonadReader(..), asks, runReader, Reader)
+import Control.Monad.Reader (forM_, MonadReader(..), asks, runReader, Reader)
 import Data.Array ((!), elems)
 import Data.List (partition)
 import Data.Maybe (fromJust, isJust)
@@ -12,11 +12,9 @@ import qualified Data.Set as S
 import Data.Range (fromRanges)
 import Data.Sort (sort, sortOn)
 import Data.Time (getCurrentTime)
-import System.IO.Unsafe (unsafePerformIO)
-import System.FilePath.Posix ((<.>), (</>), takeDirectory)
+import System.FilePath.Posix ((<.>), (</>))
 import System.Posix.User (getEffectiveUserName)
 
-import Euterpea (PitchClass(..))
 import Misc.Utils (cumsum, mkArray, pairwise, strip)
 import Music.Tuning (StdPitch, Tuning, TuningPackage, TuningSystem, centsFromStd, makeTuning, pianoRange)
 
@@ -86,7 +84,6 @@ retuneZones tuning spans = do
     let zones = [[gens ! fromIntegral i | i <- [fst span .. snd span - 1]] | span <- spans]
     let zonePairs = zip zones [0..]
     let (keyPairs, nonKeyPairs) = partition (isJust . getKeyRange . head . fst) zonePairs
-    let numKeyPairs = length keyPairs
     let keyRanges = sort [(fromJust $ getKeyRange $ head zone, i) | (zone, i) <- keyPairs]
     let firstPair = head keyRanges
     let (minKey, minIdx) = (fst $ fst firstPair, snd firstPair)
@@ -153,7 +150,7 @@ retuneSF std (name, scale) = renameSF name . retuner
 -- | Given an input path, output directory, base frequency, and 'TuningSystem', retunes the SoundFont and saves it to @[system name].sf2@.
 retuneSoundFont :: FilePath -> FilePath -> StdPitch -> TuningSystem a -> IO ()
 retuneSoundFont infile outdir std (name, scale) = do
-    sf <- either (\err -> error $ "invalid SoundFont " ++ "'" ++ infile ++ "'") id <$> importFile infile
+    sf <- either (\_ -> error $ "invalid SoundFont " ++ "'" ++ infile ++ "'") id <$> importFile infile
     sf' <- retuneSF std (name, scale) sf
     let outfile = outdir </> name <.> "sf2"
     putStrLn outfile

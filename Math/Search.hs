@@ -15,9 +15,9 @@ import Data.Sort (sortOn)
 import Misc.Utils (safeHead)
 
 
--- Priority Queue ("Beam") --
+-- * Priority Queue ("Beam")
 
--- performs a binary search to get the index at which we would need to insert an element into a sorted sequence
+-- | Performs a binary search to get the index at which we would need to insert an element into a sorted sequence.
 bisect :: (Ord a) => Int -> (Int -> a) -> a -> Int
 bisect len get elt = search (0, len)
     where
@@ -29,12 +29,11 @@ bisect len get elt = search (0, len)
                 elt' = get midpt
                 bounds = if elt <= elt' then (i, midpt) else (midpt + 1, j)
 
--- data structure that maintains a sorted list of (priority, elt) pairs and imposes a max capacity
+-- | Data structure that maintains a sorted list of (priority, elt) pairs and imposes a max capacity.
 data Beam w a = Beam {
     capacity :: Int,
     queue :: S.Seq (w, a)
-}
-    deriving (Eq, Ord, Show)
+} deriving (Eq, Ord, Show)
 
 empty :: Int -> Beam w a
 empty capacity = Beam {capacity = capacity, queue = S.empty}
@@ -61,7 +60,7 @@ insert (pri, elt) beam@(Beam {capacity, queue}) =
         else newQueue
     where
         n = S.length queue
-        (smallestPri, smallestElt) S.:< queue' = S.viewl queue
+        (smallestPri, _) S.:< queue' = S.viewl queue
         i = bisect (n - 1) (fst . fromJust . (queue' S.!?)) pri
         queue'' = S.insertAt i (pri, elt) (if (n < capacity) then queue else queue')
         newQueue = Beam {capacity = capacity, queue = queue''}
@@ -76,34 +75,35 @@ fromList capacity pairs = Beam {capacity = capacity, queue = queue}
         queue = S.fromList $ reverse $ take capacity pairs'
 
 
--- Search Algorithms --
+-- * Search Algorithms
 
 type NeighborGen s = s -> [s]
 type NeighborGenM m s = s -> m [s]
 type FinalStatePredicate s = s -> Bool
 type TransitionCostFunc s c = s -> s -> c
 
--- monadic depth-first search
+-- | Monadic depth-first search.
 dfsM :: Monad m => NeighborGenM m s -> FinalStatePredicate s -> s -> m (Maybe [s])
 dfsM next found initial = go [initial]
     where
-        go path@(cur:rest) =
+        go [] = error "path cannot be empty"
+        go path@(cur:_) =
             if found cur
                 then return $ Just path
                 else do
                     neighbors <- next cur
-                    paths <- sequence $ go . (: path) <$> neighbors
+                    paths <- mapM (go . (: path)) neighbors
                     return $ case paths of
                         [] -> Nothing
                         _  -> asum paths
 
--- pure depth-first search
+-- | Pure depth-first search.
 dfs :: NeighborGen s -> FinalStatePredicate s -> s -> Maybe [s]
 dfs neighborGen found initial = runIdentity $ dfsM (return . neighborGen) found initial
 
--- beam search (returns all solutions stored, with their costs)
--- attempts to minimize total transition cost from the starting state
--- terminates when every queue entry is in a final state
+-- | Beam search (returns all solutions stored, with their costs).
+--   Attempts to minimize total transition cost from the starting state.
+--   Terminates when every queue entry is in a final state.
 beamSearchM :: forall c s m . (Num c, Ord c, Monad m) => Int -> NeighborGenM m s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> m [(c, [s])]
 beamSearchM width neighborGen costFunc found initial = results
     where
@@ -138,7 +138,7 @@ beamSearchM width neighborGen costFunc found initial = results
 beamSearch :: forall c s . (Num c, Ord c) => Int -> NeighborGen s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> [(c, [s])]
 beamSearch width neighborGen costFunc found initial = runIdentity $ beamSearchM width (return . neighborGen) costFunc found initial
 
--- a greedy search is just a beam search with a width of 1
+-- | A greedy search is just a beam search with a width of 1.
 greedySearchM :: forall c s m . (Num c, Ord c, Monad m) => NeighborGenM m s -> TransitionCostFunc s c -> FinalStatePredicate s -> s -> m (Maybe (c, [s]))
 greedySearchM neighborGen costFunc found initial = safeHead <$> beamSearchM 1 neighborGen costFunc found initial
 

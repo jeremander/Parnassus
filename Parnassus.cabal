@@ -75,6 +75,7 @@ library
     , unix >=2.7
     , vector >=0.12
     , vector-space >=0.15
+  ghc-options: -Wall -Wno-missing-signatures -Wno-name-shadowing -Wno-orphans -Wno-type-defaults -Wno-unused-do-bind -Wwarn=missing-home-modules
 --   default-language: GHC2021
 
 test-suite Parnassus-test
