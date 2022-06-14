@@ -4,7 +4,6 @@ module Music.SoundFont where
 
 import Codec.SoundFont (Bag(..), Generator(..), Info(..), Inst(..), Phdr(..), Pdta(..), Sdta(..), Shdr(..), SoundFont(..), exportFile, importFile)
 import Control.Exception (assert)
-import Control.Monad (forM_)
 import Data.Array ((!), elems)
 import qualified Data.Array.IArray as IA
 import Data.List ((\\), nub, partition)
@@ -14,15 +13,15 @@ import Data.Range (fromRanges)
 import qualified Data.Set as S
 import Data.Sort (sort, sortOn)
 import Data.Time (getCurrentTime)
-import System.FilePath.Posix ((<.>), (</>))
 import System.Posix.User (getEffectiveUserName)
 
 import Misc.Utils (atIndices, cumsum, inverseIndexMap, mkArray, pairwise, strip)
-import Music.Tuning (StdPitch, Tuning, TuningPackage, TuningSystem, centsFromStd, makeTuning, pianoRange)
+import Music.Tuning (StdPitch, Tuning, centsFromStd, makeTuning, pianoRange)
 
 
 type Span = (Int, Int)
 type SFMod = SoundFont -> SoundFont
+type SFModIO = SoundFont -> IO SoundFont
 
 
 -- * Sound Fonts
@@ -104,9 +103,63 @@ instrumentZones pdata spans = zones
         gens = igens pdata
         zones = [[gens ! fromIntegral i | i <- [fst span .. snd span - 1]] | span <- spans]
 
+-- ** Manipulators
+
+-- | Strips whitespace from the names of all presets and instruments in a 'SoundFont'.
+sfStripNames :: SFMod
+sfStripNames sf@(SoundFont {pdta}) = sf'
+    where
+        stripPhdrName phdr@(Phdr {presetName}) = phdr {presetName = strip presetName}
+        stripInstName inst@(Inst {instName}) = inst {instName = strip instName}
+        phdrs' = stripPhdrName <$> phdrs pdta
+        insts' = stripInstName <$> insts pdta
+        sf' = sf {pdta = pdta {phdrs = phdrs', insts = insts'}}
+
+-- | Renames a 'SoundFont''s bank name.
+sfRename :: String -> SFMod
+sfRename name sf@(SoundFont {infos}) = sf {infos = infos'}
+    where
+        fixInfo (BankName _) = BankName name
+        fixInfo info         = info
+        infos' = fixInfo <$> infos
+
+-- | Adds a username and creation date to the header of a 'SoundFont'.
+sfStampWithUserAndTime :: SFModIO
+sfStampWithUserAndTime sf@(SoundFont {infos}) = do
+    time <- getCurrentTime
+    user <- getEffectiveUserName
+    let infos' = mkArray $ elems infos ++ [CreationDate $ show time, Authors user]
+    return $ sf {infos = infos'}
+
+-- | Resets the bank/preset indices to start from bank 0, preset 0.
+sfReindexPresets :: SFMod
+sfReindexPresets sf = sf'
+    where
+        pdata = pdta sf
+        pairs = (,) <$> [0..127] <*> [0..127]  -- all possible (bank, preset) pairs
+        phdrs' = mkArray [phdr {bank = bank, preset = preset} | (phdr, (bank, preset)) <- zip (elems $ phdrs pdata) pairs]
+        pdata' = pdata {phdrs = phdrs'}
+        sf' = sf {pdta = pdata'}
+
+-- | Given a list of name suffixes, makes a copy of each instrument, applying each suffix to each instrument.
+--   Also copies presets corresponding to each copied instrument (with its corresponding suffix).
+-- sfCopyInstruments :: [String] -> SFMod
+-- sfCopyInstruments suffixes sf = sf'
+--     where
+--         pdata = pdta sf
+--         n = length suffixes
+--         -- adjust instrument names and ibag indices
+--         numIbags = length (ibags pdata) - 1
+--         fixInst i suffix (Inst {instName, instBagNdx}) = Inst {instName = instName ++ suffix, instBagNdx = fromIntegral (i * numIbags) + instBagNdx}
+--         eoi = fixInst (n - 1) "" $ last $ elems $ insts pdata
+--         insts' = mkArray $ concat [fixInst i suffix <$> init (elems $ insts pdata) | (i, suffix) <- zip [0..] suffixes] ++ [eoi]
+--         sf' = undefined
+
+-- *** Filtering
+
 -- | Removes all unused samples from a 'SoundFont'.
-filterUnusedSamples :: SFMod
-filterUnusedSamples sf = sf'
+sfFilterUnusedSamples :: SFMod
+sfFilterUnusedSamples sf = sf'
     where
         pdata = pdta sf
         getSampleIdx (SampleIndex i) = Just i
@@ -131,7 +184,7 @@ filterUnusedSamples sf = sf'
         -- adjust sample offsets
         dataIdxMap = invIdxMap dataIndices'
         fixShdrIdx i = if (i == 0) then 0 else (dataIdxMap M.! i)
-        fixShdr shdr@(Shdr {start, end}) = shdr {start = fixShdrIdx start, end = fixShdrIdx end}
+        fixShdr shdr@(Shdr {start, end, startLoop, endLoop}) = shdr {start = fixShdrIdx start, end = fixShdrIdx end, startLoop = fixShdrIdx startLoop, endLoop = fixShdrIdx endLoop}
         shdrs'' = mkArray $ fixShdr <$> shdrList
         pdata' = pdata {pgens = pgens', igens = igens', shdrs = shdrs''}
         -- filter raw samples
@@ -143,8 +196,8 @@ filterUnusedSamples sf = sf'
         sf' = sf {sdta = sdata', pdta = pdata'}
 
 -- | Given preset indices, filters a 'SoundFont' to include only the specified presets. Also filters out instruments and samples that are not assigned to any of the presets.
-filterPresets :: [Int] -> SFMod
-filterPresets presetIndices sf = sf'
+sfFilterPresets :: [Int] -> SFMod
+sfFilterPresets presetIndices sf = sf'
     where
         pdata = pdta sf
         numPresets = length (phdrs pdata) - 1
@@ -172,11 +225,11 @@ filterPresets presetIndices sf = sf'
         validPhdrIndices = presetIndices ++ [numPresets]
         phdrs' = mkArray $ fixPhdr <$> phdrs pdata `atIndices` validPhdrIndices
         pdata' = pdata {phdrs = phdrs', pbags = pbags', pmods = pmods', pgens = pgens'}
-        sf' = filterUnusedSamples $ sf {pdta = pdata'}
+        sf' = sfFilterUnusedSamples $ sf {pdta = pdata'}
 
 -- | Given instrument indices, filters a 'SoundFont' to include only the specified instruments. Also filters out presets and samples that are not assigned to any of the instruments.
-filterInstruments :: [Int] -> SFMod
-filterInstruments instIndices sf = sf'''
+sfFilterInstruments :: [Int] -> SFMod
+sfFilterInstruments instIndices sf = sf'''
     where
         pdata = pdta sf
         numInsts = length (insts pdata) - 1
@@ -211,8 +264,8 @@ filterInstruments instIndices sf = sf'''
         allPresetIndices = [0..(numPresets - 1)]
         validPresetIndices = [i | i <- allPresetIndices, any (`S.member` instIdxSet) (instIdxForPhdrIdx pdata i)]
         sf'' = if (allPresetIndices == validPresetIndices)
-                    then filterUnusedSamples sf'
-                    else filterPresets validPresetIndices sf'
+                    then sfFilterUnusedSamples sf'
+                    else sfFilterPresets validPresetIndices sf'
         -- finally, remap the instrument indices stored in the pgens
         instIdxMap = invIdxMap instIndices
         fixGen (InstIndex i) = InstIndex $ instIdxMap M.! i
@@ -223,109 +276,88 @@ filterInstruments instIndices sf = sf'''
         sf''' = sf'' {pdta = pdata'''}
 
 -- | Removes any unsed instruments from a 'SoundFont'.
-filterUnusedInstruments :: SFMod
-filterUnusedInstruments sf = sf'
+sfFilterUnusedInstruments :: SFMod
+sfFilterUnusedInstruments sf = sf'
     where
         pdata = pdta sf
         numInsts = length (insts pdata) - 1
         instIndices = nub $ mapMaybe getInstIdx $ elems $ pgens pdata
         unusedIndices = [0..(numInsts - 1)] \\ instIndices
-        sf' = if null unusedIndices then sf else filterInstruments instIndices sf
+        sf' = if null unusedIndices then sf else sfFilterInstruments instIndices sf
 
--- | Resets the bank/preset indices to start from bank 0, preset 0.
-reindexPresets :: SFMod
-reindexPresets sf = sf'
-    where
-        pdata = pdta sf
-        pairs = (,) <$> [0..127] <*> [0..127]  -- all possible (bank, preset) pairs
-        phdrs' = mkArray [phdr {bank = bank, preset = preset} | (phdr, (bank, preset)) <- zip (elems $ phdrs pdata) pairs]
-        pdata' = pdata {phdrs = phdrs'}
-        sf' = sf {pdta = pdata'}
-
--- ** Manipulators
-
--- | Strips whitespace from the names of all presets and instruments in a 'SoundFont'.
-stripNames :: SFMod
-stripNames sf@(SoundFont {pdta}) = sf'
-    where
-        stripPhdrName phdr@(Phdr {presetName}) = phdr {presetName = strip presetName}
-        stripInstName inst@(Inst {instName}) = inst {instName = strip instName}
-        phdrs' = stripPhdrName <$> phdrs pdta
-        insts' = stripInstName <$> insts pdta
-        sf' = sf {pdta = pdta {phdrs = phdrs', insts = insts'}}
-
--- | Fixes an 'Inst' to strip whitespace from the instrument's name, and also reassigns the @ibag@ index to a specified value.
-fixInst :: Inst -> Int -> Inst
-fixInst instrument@(Inst {instName}) bagIndex = instrument {instName = strip instName, instBagNdx = fromIntegral bagIndex}
+-- *** Retuning
 
 -- | Given a list of @igen@ spans (instrument zones), creates a new set of zones where each distinct pitch (on an 88-key keyboard) gets its own zone, and each pitch is re-tuned according to the given tuning.
-retuneZones :: Tuning -> [Span] -> Pdta -> [[Generator]]
-retuneZones tuning spans pdata = zones'
+retuneZones :: Tuning -> Pdta -> [Span] -> [[Generator]]
+retuneZones tuning pdata spans = zones'
     where
         gens = igens pdata
         zones = [[gens ! fromIntegral i | i <- [fst span .. snd span - 1]] | span <- spans]
         zonePairs = zip zones [0..]
+        -- partition zones based on whether they contain key ranges
         (keyPairs, nonKeyPairs) = partition (isJust . getKeyRange . head . fst) zonePairs
         keyRanges = sort [(fromJust $ getKeyRange $ head zone, i) | (zone, i) <- keyPairs]
         firstPair = head keyRanges
         (minKey, minIdx) = (fst $ fst firstPair, snd firstPair)
         prange = fromRanges [pianoRange]
         (bottomNote, topNote) = (fromIntegral $ minimum prange, fromIntegral $ maximum prange)
+        -- get the index of the zone for each keyboard key
         zoneIndices = [if k < minKey then minIdx else (snd $ last $ takeWhile (\pair -> k >= (fst $ fst pair)) keyRanges) | k <- prange]
+        -- assign each key to its own zone, unless it is outside the piano range
         krange k
             | k == bottomNote = KeyRange 0 k
             | k == topNote    = KeyRange k 127
             | otherwise       = KeyRange k k
+        -- get tuning adjustments for each key in the middle octave
         tuningGens = centsToGenerators . round <$> centsFromStd tuning
         newKeyZones = [insertTuningGens (tuningGens !! k) (krange (fromIntegral k) : tail (zones !! i)) | (k, i) <- zip prange zoneIndices]
         newZones = fst <$> sortOn snd (nonKeyPairs ++ [(zone, minIdx) | zone <- newKeyZones])
-        zones' = case keyPairs of
-            [] -> zones  -- instrument does not have key zones
-            _  -> newZones
+        zones' = if null keyPairs then zones else newZones
 
--- | Retunes all melodic instruments in a SoundFont.
---   For now, only does this to instruments in bank 0 up to preset 63, to avoid int16 overflow issues (should ideally go up to at least preset 95).
-retuneInstruments :: Tuning -> SFMod
-retuneInstruments tuning sf = assertion $ sf {pdta = pdata'}
+-- | Retunes instruments in a 'SoundFont' with the given instrument indices.
+sfRetuneInstruments :: Tuning -> [Int] -> SFMod
+sfRetuneInstruments tuning instIndices sf = assertion $ sf {pdta = pdata'}
     where
         pdata = pdta sf
-        numInsts = length $ insts pdata
-        instIndices = [0..(numInsts - 1)]
-        -- NB: the last instrument is a sentinel, so exclude it
-        bagSpans = ibagSpan pdata <$> init instIndices
-        genSpans = igenSpan pdata <$> bagSpans
-        zones' = [retuneZones tuning spans pdata | spans <- genSpans]
-        newBagIndices = cumsum $ length <$> zones'
-        insts' = mkArray [fixInst instrument i | (instrument, i) <- zip (elems $ insts pdata) newBagIndices]
-        genIndices' = cumsum $ length <$> concat zones'
+        instIdxSet = S.fromList instIndices
+        numInsts = length (insts pdata) - 1
+        ibagSpans = ibagSpan pdata <$> [0..(numInsts - 1)]
+        igenSpans = igenSpan pdata <$> ibagSpans
+        go i = if (i `S.member` instIdxSet) then retuneZones tuning pdata else instrumentZones pdata
+        -- get the new set of igen zones for each instrument
+        zones' = [go i spans | (i, spans) <- zip [0..] igenSpans]
+        bagIndices = cumsum $ length <$> zones'
+        -- adjust the ibag indices to the appropriate zone boundaries
+        fixInst inst bagIdx = inst {instBagNdx = fromIntegral bagIdx}
+        insts' = mkArray [fixInst inst i | (inst, i) <- zip (elems $ insts pdata) bagIndices]
+        genIndices = cumsum $ length <$> concat zones'
         -- for simplicity, require all modulator indices to be 0
         modIndexSet = S.fromList [modNdx bag | bag <- elems $ ibags pdata]
         assertion = assert (modIndexSet == S.singleton 0)
-        ibags' = mkArray [Bag {genNdx = fromIntegral i, modNdx = 0} | i <- genIndices']
+        ibags' = mkArray [Bag {genNdx = fromIntegral i, modNdx = 0} | i <- genIndices]
         igens' = mkArray $ concat $ concat zones'
         pdata' = pdata {insts = insts', ibags = ibags', igens = igens'}
 
--- | Renames a SoundFont's bank name.
---   Also adds username & creation date to the header.
-renameSF :: String -> SoundFont -> IO SoundFont
-renameSF name sf@(SoundFont {infos}) = do
-    time <- getCurrentTime
-    user <- getEffectiveUserName
-    let infos' = mkArray $ (modifyInfo <$> elems infos) ++ [CreationDate $ show time, Authors user]
-    return $ sf {infos = infos'}
+-- | Retunes all instruments in a 'SoundFont'.
+--   WARNING: this can potentially cause integer overflow issues if the number of parameters in the original SoundFont file is large. It may be necessary to filter down to a smaller number of instruments first.
+sfRetuneAllInstruments :: Tuning -> SFMod
+sfRetuneAllInstruments tuning sf = sfRetuneInstruments tuning instIndices sf
     where
-        modifyInfo :: Info -> Info
-        modifyInfo (BankName _) = BankName name
-        modifyInfo info         = info
+        numInsts = length $ insts $ pdta sf
+        instIndices = [0..(numInsts - 1)]
 
--- | Given a base frequency and tuning system, retunes the given SoundFont.
-retuneSF :: StdPitch -> TuningSystem a -> SoundFont -> IO SoundFont
-retuneSF std (name, scale) = renameSF name . retuner
-    where
-        tuning = makeTuning scale std
-        retuner = retuneInstruments tuning
+-- | Given a list of 'NamedTuning's, an instrument index, and a 'SoundFont', produces a new 'SoundFont' containing only that single instrument, using all of the given tunings.
+-- sfRetuneInstrumentMulti :: [NamedTuning] -> Int -> SFMod
+-- sfRetuneInstrumentMulti pairs i sf = sf'
+--     where
+--         sf' = sfReindexPresets $ sfFilterInstruments [i] sf
 
--- Loads a SoundFont file.
+
+
+
+-- ** I/O
+
+-- | Loads a SoundFont file as a 'SoundFont' object.
 loadSoundFont :: FilePath -> IO SoundFont
 loadSoundFont path = do
     sf <- importFile path
@@ -334,7 +366,7 @@ loadSoundFont path = do
         Right sf' -> sf'
 
 -- | Given an IO function modifying a 'SoundFont', an input path, and an output path, loads a 'SoundFont' from the input file, applies the modification, then saves it to the output file.
-modifySoundFont :: (SoundFont -> IO SoundFont) -> FilePath -> FilePath -> IO ()
+modifySoundFont :: SFModIO -> FilePath -> FilePath -> IO ()
 modifySoundFont f infile outfile = do
     putStrLn $ "Loading " ++ infile
     sf <- loadSoundFont infile
@@ -344,15 +376,15 @@ modifySoundFont f infile outfile = do
 
 -- | Given a list of instrument indices, modfiies a SoundFont file to include only the given instruments.
 filterSoundFontInstruments :: [Int] -> FilePath -> FilePath -> IO ()
-filterSoundFontInstruments indices = modifySoundFont (return . reindexPresets . filterInstruments indices)
+filterSoundFontInstruments indices = modifySoundFont (return . sfReindexPresets . sfFilterInstruments indices)
 
--- | Given a base frequency and 'TuningSystem', retunes a SoundFont file accordingly and uses the tuning system's name as the filename.
-retuneSoundFont :: StdPitch -> TuningSystem a -> FilePath -> FilePath -> IO ()
-retuneSoundFont std (name, scale) infile outdir = do
-    let f = retuneSF std (name, scale)
-    let outfile = outdir </> name <.> "sf2"
-    modifySoundFont f infile outfile
+-- -- | Given a base frequency and 'TuningSystem', retunes a SoundFont file accordingly and uses the tuning system's name as the filename.
+-- retuneSoundFont :: StdPitch -> TuningSystem a -> FilePath -> FilePath -> IO ()
+-- retuneSoundFont std (name, scale) infile outdir = do
+--     let f = sfRetuneMulti std (name, scale)
+--     let outfile = outdir </> name <.> "sf2"
+--     modifySoundFont (return . f) infile outfile
 
--- | Given a base frequency, a 'TuningPackage' (list of 'TuningSystem's), path to a SoundFont, and output directory, retunes the SoundFont in each tuning system, and saves them all to different output files.
-retuneSoundFonts :: StdPitch -> TuningPackage -> FilePath -> FilePath -> IO ()
-retuneSoundFonts std pkg infile outdir = forM_ pkg (\tuning -> retuneSoundFont std tuning infile outdir)
+-- -- | Given a base frequency, a 'TuningPackage' (list of 'TuningSystem's), path to a SoundFont, and output directory, retunes the SoundFont in each tuning system, and saves them all to different output files.
+-- retuneSoundFonts :: StdPitch -> TuningPackage -> FilePath -> FilePath -> IO ()
+-- retuneSoundFonts std pkg infile outdir = forM_ pkg (\tuning -> retuneSoundFont std tuning infile outdir)

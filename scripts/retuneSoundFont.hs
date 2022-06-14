@@ -4,16 +4,15 @@ build-depends: base, filepath, Parnassus
 
 import System.FilePath.Posix ((<.>), (</>))
 
-import Music.SoundFont (filterSoundFontInstruments, retuneSoundFont)
-import Music.Tuning (a440, meantoneTuningPackage)
+import Music.SoundFont
+import Music.Tuning
 
 
 sfPath = "/Users/jerm/Programming/Music/SoundFonts/GM"
 gmPath = sfPath </> "gm.sf2"
 outputDir = "."
 
-tuningSystem = meantoneTuningPackage !! 1
-
+tuningSystem = meantoneTemperaments !! 1
 
 
 main :: IO ()
@@ -24,5 +23,10 @@ main = do
     -- putStrLn $ "Saving SoundFont to " ++ outfile
     -- retuneSoundFont a440 tuningSystem gmPath outputDir
     -- filter instruments
-    let filteredPath = "tmp.sf2"
-    filterSoundFontInstruments [30] gmPath filteredPath
+    let outfile = "tmp.retuned.sf2"
+    let (name, scale) = tuningSystem
+    let tuning = makeTuning scale a440
+    -- let mod = return . sfFilterInstruments [7, 15]
+    -- let mod = return . sfRetuneInstruments tuning . sfFilterInstruments [0]
+    let mod = sfStampWithUserAndTime . sfRename name . sfRetuneAllInstruments tuning . sfStripNames . sfFilterInstruments [7, 15]
+    modifySoundFont mod gmPath outfile

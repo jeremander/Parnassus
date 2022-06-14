@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
@@ -33,17 +34,20 @@ type StdPitch = (Pitch, Freq)
 -- | log2 of a ratio
 type LogRatio = Double
 -- | Represents tuning as a list of freqs mapping @[0..127]@ to Hz
-type Tuning = [Freq]
+newtype Tuning = Tuning {unTuning :: [Freq]}
+    deriving (Eq, Show)
 -- | Interval in a scale, given by the two scale degrees
 type ScaleInterval = (Int, Int)
 -- | Ideal intervals @[0..11]@ (can allow multiple possibilities)
-type IdealScale a = [[a]]
+newtype IdealScale a = IdealScale {unIdealScale :: [[a]]}
+    deriving (Eq, Show)
 -- | Actual intervals @[0..11]@
-type Scale a = [a]
--- | A named tuning system
-type TuningSystem a = (String, Scale Double)
--- | A set of named tuning systems
-type TuningPackage = [TuningSystem Double]
+newtype Scale a = Scale {unScale :: [a]}
+    deriving (Eq, Show)
+-- | A named tuning
+type NamedTuning = (String, Tuning)
+-- | A named temperament (defined by a 12-tone scale which gets extended to all octaves)
+type Temperament = (String, Scale Double)
 
 
 -- * Helper Functions
@@ -105,11 +109,11 @@ pianoRange = SpanRange (Bound (absPitch (A, 0)) Inclusive) (Bound (absPitch (C, 
 
 -- | Transposes a tuning by a ratio.
 transposeTuning :: Tuning -> Double -> Tuning
-transposeTuning tuning shift = (shift *) <$> tuning
+transposeTuning (Tuning tuning) shift = Tuning $ (shift *) <$> tuning
 
 -- | Given a base pitch and a tuning of a full-octave chromatic scale starting with the base pitch, extends it to the entire set of pitches [0..127].
 extendScaleTuning :: Pitch -> Tuning -> Tuning
-extendScaleTuning pc tuning = freqs
+extendScaleTuning pc (Tuning tuning) = Tuning freqs
     where
         ap = absPitch pc
         (octave, diff) = ap `divMod` 12
@@ -120,18 +124,18 @@ extendScaleTuning pc tuning = freqs
 
 -- | Extends a scale to a full tuning [0..127], given a base pitch & frequency.
 makeTuning :: (ToDouble a) => Scale a -> StdPitch -> Tuning
-makeTuning scale (basePitch, baseFreq) = extendScaleTuning basePitch tuning
+makeTuning (Scale scale) (basePitch, baseFreq) = extendScaleTuning basePitch (Tuning tuning)
     where tuning = (baseFreq *) . toDouble <$> scale
 
 -- | Measures interval ratios between each pair of notes in a scale.
 --   Always expresses ratio between a lower note and the higher note.
 --   If the first note is higher, uses the octave above the lower note.
 intervalRatios :: Fractional a => Scale a -> [(ScaleInterval, a)]
-intervalRatios scale = [((i, j), if i <= j then s2 / s1 else 2 * s2 / s1) | (i, s1) <- zip [0..] scale, (j, s2) <- zip [0..] scale]
+intervalRatios (Scale scale) = [((i, j), if i <= j then s2 / s1 else 2 * s2 / s1) | (i, s1) <- zip [0..] scale, (j, s2) <- zip [0..] scale]
 
 -- | Measures deviations between a scale's intervals and some "ideal" intervals, as ratios.
 intervalDevs :: (Fractional a, Ord a, RealFrac a) => [Int] -> IdealScale a -> Scale a -> [(ScaleInterval, a)]
-intervalDevs intervals ideal scale = devs
+intervalDevs intervals (IdealScale ideal) scale = devs
     where
         intervalSet = S.fromList intervals
         idealArr = listArray (0, length ideal - 1) ideal
@@ -147,7 +151,7 @@ intervalDevCents intervals ideal scale = sortOn (negate . abs . snd) [((i, j), t
 -- | Constructs a 12-tone scale by tuning each scale interval in succession.
 --   Issues an error if the entire scale is not covered.
 constructScale :: RealFrac a => [(ScaleInterval, a)] -> Scale a
-constructScale pairs = extract <$> elems finalScale
+constructScale pairs = Scale $ extract <$> elems finalScale
     where
         initScale = listArray (0, 11) $ Just 1 : replicate 11 Nothing
         update arr ((i, j), r) = arr // [(j, normalize2pow . (r *) <$> (arr ! i))]
@@ -166,19 +170,21 @@ stackedFifthScale r = constructScale $ zip pairs1 (repeat r) ++ zip pairs2 (repe
         pairs1 = pairwise $ take 7 circleOfFifths
         pairs2 = pairwise $ take 6 $ reverse circleOfFifths
 
+scaleToDouble :: (ToDouble a) => Scale a -> Scale Double
+scaleToDouble (Scale scale) = Scale $ toDouble <$> scale
 
 -- * Temperaments
 
 -- ** Equal Temperament
 
 stdScale :: Scale Double
-stdScale = pow2 . (/ 12) <$> [0..11]
+stdScale = Scale $ pow2 . (/ 12) <$> [0..11]
 
 stdTuning :: Tuning
-stdTuning = extendScaleTuning (A, 4) ((440.0 *) <$> stdScale)
+stdTuning = extendScaleTuning (A, 4) (Tuning $ (440.0 *) <$> (unScale stdScale))
 
 centsFromStd :: Tuning -> [Double]
-centsFromStd tuning = toCents <$> zipWith (/) tuning stdTuning
+centsFromStd (Tuning tuning) = toCents <$> zipWith (/) tuning (unTuning stdTuning)
 
 eqTmp440 = stdTuning
 eqTmp432 = transposeTuning eqTmp440 (432 / 440)
@@ -188,35 +194,35 @@ eqTmp432 = transposeTuning eqTmp440 (432 / 440)
 -- *** 5-limit temperament
 
 just5Sym1aScale :: Scale Rational
-just5Sym1aScale = [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 45 % 32, 3 % 2, 8 % 5, 5 % 3, 16 % 9, 15 % 8]
+just5Sym1aScale = Scale [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 45 % 32, 3 % 2, 8 % 5, 5 % 3, 16 % 9, 15 % 8]
 
 just5Sym1bScale :: Scale Rational
-just5Sym1bScale = [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 64 % 45, 3 % 2, 8 % 5, 5 % 3, 16 % 9, 15 % 8]
+just5Sym1bScale = Scale [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 64 % 45, 3 % 2, 8 % 5, 5 % 3, 16 % 9, 15 % 8]
 
 just5Sym2aScale :: Scale Rational
-just5Sym2aScale = [1, 16 % 15, 10 % 9, 6 % 5, 5 % 4, 4 % 3, 45 % 32, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
+just5Sym2aScale = Scale [1, 16 % 15, 10 % 9, 6 % 5, 5 % 4, 4 % 3, 45 % 32, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
 
 just5Sym2bScale :: Scale Rational
-just5Sym2bScale = [1, 16 % 15, 10 % 9, 6 % 5, 5 % 4, 4 % 3, 64 % 45, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
+just5Sym2bScale = Scale [1, 16 % 15, 10 % 9, 6 % 5, 5 % 4, 4 % 3, 64 % 45, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
 
 just5Asym1aScale :: Scale Rational
-just5Asym1aScale = [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 45 % 32, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
+just5Asym1aScale = Scale [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 45 % 32, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
 
 just5Asym1bScale :: Scale Rational
-just5Asym1bScale = [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 64 % 45, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
+just5Asym1bScale = Scale [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 64 % 45, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
 
 -- NB: this is the "justest" of 5-limit scales
 just5Asym2aScale :: Scale Rational
-just5Asym2aScale = [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 25 % 18, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
+just5Asym2aScale = Scale [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 25 % 18, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
 
 just5Asym2bScale :: Scale Rational
-just5Asym2bScale = [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 36 % 25, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
+just5Asym2bScale = Scale [1, 16 % 15, 9 % 8, 6 % 5, 5 % 4, 4 % 3, 36 % 25, 3 % 2, 8 % 5, 5 % 3, 9 % 5, 15 % 8]
 
 strict5Limit :: IdealScale Rational
-strict5Limit = pure <$> just5Asym2aScale
+strict5Limit = IdealScale $ pure <$> unScale just5Asym2aScale
 
 lax5Limit :: IdealScale Rational
-lax5Limit = [[1], [16 % 15], [9 % 8, 10 % 9], [6 % 5], [5 % 4], [4 % 3], [25 % 18, 45 % 32, 36 % 25, 64 % 45], [3 % 2], [8 % 5], [5 % 3], [9 % 5, 16 % 9], [15 % 8]]
+lax5Limit = IdealScale [[1], [16 % 15], [9 % 8, 10 % 9], [6 % 5], [5 % 4], [4 % 3], [25 % 18, 45 % 32, 36 % 25, 64 % 45], [3 % 2], [8 % 5], [5 % 3], [9 % 5, 16 % 9], [15 % 8]]
 
 -- ** Pythagorean
 
@@ -265,18 +271,18 @@ kirnberger3Tuning :: StdPitch -> Tuning
 kirnberger3Tuning = makeTuning kirnberger3Scale
 
 harmonicScale :: Scale Rational
-harmonicScale = (% 16) <$> [16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28, 30]
+harmonicScale = Scale $ (% 16) <$> [16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28, 30]
 
 harmonicTuning :: StdPitch -> Tuning
 harmonicTuning = makeTuning harmonicScale
 
 -- * Tuning Packages
 
-equalTuningPackage :: TuningPackage
-equalTuningPackage = [("twelveToneEqual", stdScale)]
+twelveToneEqualTemperament :: Temperament
+twelveToneEqualTemperament = ("twelveToneEqual", stdScale)
 
-justTuningPackage :: TuningPackage
-justTuningPackage = [(name, toDouble <$> scale) | (name, scale) <- [
+justTemperaments :: [Temperament]
+justTemperaments = [(name, scaleToDouble scale) | (name, scale) <- [
     ("just5Sym1a", just5Sym1aScale),
     ("just5Sym1b", just5Sym1bScale),
     ("just5Sym2a", just5Sym2aScale),
@@ -286,23 +292,23 @@ justTuningPackage = [(name, toDouble <$> scale) | (name, scale) <- [
     ("just5Asym2a", just5Asym2aScale),
     ("just5Asym2b", just5Asym2bScale)]]
 
-pythagoreanTuningPackage :: TuningPackage
-pythagoreanTuningPackage = [("pythagorean", toDouble <$> pythagoreanScale)]
+pythagoreanTemperaments :: [Temperament]
+pythagoreanTemperaments = [("pythagorean", scaleToDouble pythagoreanScale)]
 
-meantoneTuningPackage :: TuningPackage
-meantoneTuningPackage = [
+meantoneTemperaments :: [Temperament]
+meantoneTemperaments = [
     ("thirdCommaMeantone", nthCommaMeantoneScale 3),
     ("quarterCommaMeantone", nthCommaMeantoneScale 4),
     ("septimalMeantone", septimalMeantoneScale)]
 
-miscTuningPackage :: TuningPackage
-miscTuningPackage = [
+miscTemperaments :: [Temperament]
+miscTemperaments = [
     ("kirnberger2", kirnberger2Scale),
     ("kirnberger3", kirnberger3Scale),
-    ("wendyCarlosHarmonic", toDouble <$> harmonicScale)]
+    ("wendyCarlosHarmonic", scaleToDouble harmonicScale)]
 
-allTuningPackage :: TuningPackage
-allTuningPackage = equalTuningPackage ++ justTuningPackage ++ pythagoreanTuningPackage ++ meantoneTuningPackage ++ miscTuningPackage
+allTemperaments :: [Temperament]
+allTemperaments = [twelveToneEqualTemperament] ++ justTemperaments ++ pythagoreanTemperaments ++ meantoneTemperaments ++ miscTemperaments
 
 -- * Musical Examples
 
@@ -366,7 +372,7 @@ data TunOpt = TunOpt {
 type Interval = (AbsPitch, AbsPitch)
 
 instance Default TunOpt where
-    def = TunOpt 2.0 (fmap fromRational <$> strict5Limit)
+    def = TunOpt 2.0 (IdealScale $ fmap fromRational <$> unIdealScale strict5Limit)
 
 diatonicIntervals :: [Interval]
 diatonicIntervals = [(60, 60 + i) | i <- [0, 2, 4, 5, 7, 9, 11, 12]]
@@ -377,7 +383,7 @@ collapseInterval (i, j) = (i `mod` 12, j `mod` 12)
 
 -- | Gives \(p\)-norm distance between 2 scales in log space.
 scaleDistance :: Double -> Scale Double -> Scale Double -> Double
-scaleDistance p scale1 scale2 = dist
+scaleDistance p (Scale scale1) (Scale scale2) = dist
     where
         scale1' = V.fromList $ log2 <$> scale1
         scale2' = V.fromList $ log2 <$> scale2
@@ -385,12 +391,12 @@ scaleDistance p scale1 scale2 = dist
 
 -- | Computes \(p\)-norm loss between a given scale and an ideal scale.
 pNormLoss :: TunOpt -> Counter Interval Int -> PitchClass -> Scale Double -> Double
-pNormLoss (TunOpt {pnorm, idealScale}) intervalCtr pc scale = loss
+pNormLoss (TunOpt {pnorm, idealScale}) intervalCtr pc (Scale scale) = loss
     where
         base = absPitch (pc, 4) `mod` 12  -- base pitch class
         base' = 12 - base
         scaleArr = log2 <$> mkArray scale
-        idealDiffArr = mkArray $ fmap log2 <$> idealScale
+        idealDiffArr = mkArray $ fmap log2 <$> unIdealScale idealScale
         err :: Interval -> Int -> Double
         err (i, j) ct = fromIntegral ct * (minAbsErr ** pnorm)
             where
@@ -414,10 +420,10 @@ tuningFinDiffFuncs = mkFinDiffFuncs tuningFinDiffParams
 optimizeScale :: TunOpt -> [Interval] -> PitchClass -> Scale Double
 optimizeScale tunOpt intervals pc = vecToScale xf
     where
-        vecToScale = fmap (2.0 **) . (0.0 :) . V.toList
+        vecToScale = Scale . fmap (2.0 **) . (0.0 :) . V.toList
         intervalCtr = count $ collapseInterval <$> intervals
         lossFunc = pNormLoss tunOpt intervalCtr pc . vecToScale
-        x0 = V.fromList $ log2 <$> tail stdScale  -- start with equal temperament
+        x0 = V.fromList $ log2 <$> tail (unScale stdScale)  -- start with equal temperament
         (_, xf) = fdsaGradientDescent def tuningFinDiffFuncs lossFunc x0
 
 musicToIntervals :: (ToPitch a, ToMusicD m a) => m a -> [Interval]
