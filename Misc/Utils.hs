@@ -51,13 +51,26 @@ safeDiv :: (Eq a, Fractional a) => a -> a -> a
 safeDiv 0 0 = 0
 safeDiv x y = x / y
 
+-- * Arrays
+
+-- | Constructs an array from a list of elements, using standard 0-up indexing.
+mkArray :: (A.Ix i, Integral i) => [e] -> A.Array i e
+mkArray xs = A.listArray (0, fromIntegral $ length xs - 1) xs
+
+-- | Given a filter function and an integer-indexed array, returns a new reindexed filtered array.
+filterArray :: (A.Ix i, Integral i) => (e -> Bool) -> A.Array i e -> A.Array i e
+filterArray f arr = mkArray $ filter f $ A.elems arr
+
+-- | Given an array and a list of integer indices, returns the elements at the corresponding indices.
+atIndices ::  (A.Ix i, Integral i) => A.Array i e -> [Int] -> [e]
+atIndices xs indices = [xs A.! fromIntegral i | i <- indices]
 
 -- * Miscellaneous
 
 notImpl :: String -> a
 notImpl a = error $ "Not implemented: " ++ a
 
--- | Enumerates a Bounded Enum type.
+-- | Enumerates a 'Bounded' 'Enum' type.
 enumerate :: forall a . (Bounded a, Enum a) => [a]
 enumerate = toEnum <$> [0..(fromEnum (maxBound::a))]
 
@@ -69,9 +82,22 @@ strip = T.unpack . T.strip . T.pack
 pairwise :: [a] -> [(a, a)]
 pairwise xs = zip xs (tail xs)
 
--- | Produces all ordered pairs (x_i, x_j) in a list, where i < j.
+-- | Produces all ordered pairs \((x_i, x_j)\) in a list, where \(i < j\).
 orderedPairs :: [a] -> [(a, a)]
 orderedPairs xs = [(xi, xj) | (i, xi) <- zip [0..] xs, (j, xj) <- zip [1..] (tail xs), i < j]
+
+-- | Given a predicate and a list of elements, computes the list of indices whose elements satisfy the predicate.
+indicesWhere :: (a -> Bool) -> [a] -> [Int]
+indicesWhere pred xs = [i | (i, x) <- zip [0..] xs, pred x]
+
+-- | Given a predicate and a list of elements, returns a mapping \(i \rightarrow j\), where \(i\) is the original index and \(j\) is the filtered index. This mapping will only include filtered elements.
+filteredIndexMap :: (a -> Bool) -> [a] -> [(Int, Int)]
+filteredIndexMap pred xs = zip indices [0..(length indices - 1)]
+    where indices = indicesWhere pred xs
+
+-- | Given filtered, returns a mapping from original indices to filtered indices.
+inverseIndexMap :: [Int] -> [(Int, Int)]
+inverseIndexMap indices = zip indices [0..]
 
 -- | Rotates a list left by some number.
 rotateL :: Int -> [a] -> [a]
@@ -101,7 +127,8 @@ selector n indices xs = fst <$> filter snd (zip xs indexIndicators)
         indexIndicators = [S.member i indexSet | i <- [0..(n - 1)]]
 
 -- | Merges two sorted lists, but terminates when the second list is exhausted.
---   @f@ is the sort key
+--
+--   The first argument @f@ is the sort key.
 merge :: Ord b => (a -> b) -> [a] -> [a] -> [a]
 merge _ [] ys = ys
 merge _ _ []  = []
@@ -117,7 +144,7 @@ composeFuncs = foldr (.) id
 padListWithDefault :: Int -> a -> [a] -> [a]
 padListWithDefault n def xs = take n (xs ++ repeat def)
 
--- | Chunks a list into length-n pieces; the last chunk may be too short, so pad it with a default value.
+-- | Chunks a list into length-n pieces; the last chunk may be too short, so pads it with a default value.
 chunkListWithDefault :: Int -> a -> [a] -> [[a]]
 chunkListWithDefault n def xs = padListWithDefault n def <$> chunksOf n xs
 
@@ -128,7 +155,7 @@ transposeWithDefault def xss = Data.List.transpose mat
         maxlen = maximum (length <$> xss)
         mat = padListWithDefault maxlen def <$> xss
 
--- | Given \([A1, A2, ..., An]\), let A be the intersection of these sets; returns \((A, [A1 \ A, A2 \ A, ..., An \ A])\).
+-- | Given \([A_1, A_2, ..., A_n]\), let \(A\) be the intersection of these sets. Returns \((A, [A_1 \backslash A, A_2 \backslash A, ..., A_n \backslash A])\).
 unDistribute :: Ord a => [[a]] -> ([a], [[a]])
 unDistribute [] = ([], [])
 unDistribute xss = (S.toList xint, (S.toList . (`S.difference` xint)) <$> xsets)
@@ -136,10 +163,7 @@ unDistribute xss = (S.toList xint, (S.toList . (`S.difference` xint)) <$> xsets)
         xsets = S.fromList <$> xss
         xint = foldr1 S.intersection xsets
 
-mkArray :: (A.Ix i, Integral i) => [e] -> A.Array i e
-mkArray xs = A.listArray (0, fromIntegral $ length xs - 1) xs
-
--- | Computes n-grams from a list of items.
+-- | Computes \(n\)-grams from a list of items.
 ngrams :: Int -> [a] -> [[a]]
 ngrams n xs
     | (n <= length xs) = take n xs : ngrams n (drop 1 xs)
@@ -150,16 +174,16 @@ ngrams n xs
 divInt :: RealFrac a => a -> Int -> a
 divInt x y = x / (fromIntegral y)
 
--- returns True if a divides b
+-- | Returns True if \(a\) divides \(b\).
 divides :: Rational -> Rational -> Bool
 divides a b = fromIntegral (truncate q) == q
     where q = b / a
 
--- quantizes a rational r to the nearest multiple of q
+-- | Quantizes a rational \(r\) to the nearest multiple of \(q\).
 quantizeRational ::  Rational -> Rational -> Rational
 quantizeRational q r = fromIntegral (round (r / q)) * q
 
--- given rational q, quantizes a sequences of rationals to be multiples of q, with as little perturbation as possible
+-- | Given rational \(q\), quantizes a sequences of rationals to be multiples of \(q\), with as little perturbation as possible
 quantizeRationals :: Rational -> [Rational] -> [Rational]
 quantizeRationals q rs = rs'
     where
@@ -179,8 +203,8 @@ quantizeRationals q rs = rs'
         ((_, finalDiffs), (_, _)) = head $ dropWhile dropCondition pairSeq
         rs' = zipWith (-) rs finalDiffs
 
--- like groupWith, but we assume the key values are in monotonically nondecreasing order
--- this allows us to group lazily
+-- | Like 'Data.List.groupWith', but we assume the key values are in monotonically nondecreasing order.
+--   This allows us to group lazily.
 lazyGroupWith :: Ord b => (a -> b) -> [a] -> [[a]]
 lazyGroupWith _ []     = []
 lazyGroupWith f (x:xs) = (x : gp) : lazyGroupWith f rest
@@ -189,7 +213,7 @@ lazyGroupWith f (x:xs) = (x : gp) : lazyGroupWith f rest
         pred = (/=) key . f
         (gp, rest) = break pred xs
 
--- given rational q and a sequence of (x_i, t_i) pairs, where the x_i are values and the t_i are increasing times delimiting time intervals (including start and end points), returns a list of groups of intervals taking place within each q interval, consisting of (start, duration, x, flag), where x denotes the original value, and flag is True if the interval is a continuation of an interval from the previous group
+-- | Given rational \(q\) and a sequence of \((x_i, t_i)\) pairs, where the \(x_i\) are values and the \(t_i\) are increasing times delimiting time intervals (including start and end points), returns a list of groups of intervals taking place within each \(q\) interval, consisting of @(start, duration, x, flag)@, where @x@ denotes the original value, and @flag@ is @True@ if the interval is a continuation of an interval from the previous group.
 quantizeTime :: Rational -> [(a, Rational)] -> [[(Rational, Rational, a, Bool)]]
 quantizeTime _ []   = []
 quantizeTime q pairs = lazyGroupWith (truncate . (/q) . sel1) items'
