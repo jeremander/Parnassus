@@ -2,8 +2,9 @@
 
 module Music.SoundFont where
 
-import Codec.SoundFont (Bag(..), Generator(..), Info(..), Inst(..), Phdr(..), Pdta(..), Sdta(..), Shdr(..), SoundFont(..), exportFile, importFile)
+import Codec.SoundFont (Bag(..), Generator(..), Info(..), Inst(..), Mod(..), Phdr(..), Pdta(..), Sdta(..), Shdr(..), SoundFont(..), exportFile, importFile)
 import Control.Exception (assert)
+import qualified Data.Array as A
 import Data.Array ((!), elems)
 import qualified Data.Array.IArray as IA
 import Data.List ((\\), nub, partition)
@@ -19,12 +20,12 @@ import Misc.Utils (atIndices, cumsum, inverseIndexMap, mkArray, pairwise, strip)
 import Music.Tuning (StdPitch, Tuning, centsFromStd, makeTuning, pianoRange)
 
 
+-- ** Types
+
 type Span = (Int, Int)
+
 type SFMod = SoundFont -> SoundFont
 type SFModIO = SoundFont -> IO SoundFont
-
-
--- * Sound Fonts
 
 -- ** Helper Functions
 
@@ -43,6 +44,12 @@ spansToIndices spans = concat [[start..(stop - 1)] | (start, stop) <- spans]
 invIdxMap :: [Int] -> M.Map Word Word
 invIdxMap indices = M.fromList [(fromIntegral i, fromIntegral j) | (i, j) <- inverseIndexMap indices]
 
+sliceArr :: (A.Ix i, Num i) => A.Array i a -> Span -> [a]
+sliceArr arr (start, stop) = [arr ! fromIntegral i | i <- [start..(stop - 1)]]
+
+
+-- * Sound Fonts
+
 -- ** Accessors
 
 -- | Given a 'KeyRange' 'Generator', extracts the bounds of the range.
@@ -59,7 +66,7 @@ pbagSpan :: Pdta -> Int -> Span
 pbagSpan pdata i = (go i, go $ i + 1)
     where go j = fromIntegral $ presetBagNdx $ phdrs pdata ! (fromIntegral j)
 
--- | Given 'Pdta' and a @pbag@ 'Span', extracts the corresponding index 'Spans' for the @pbag@'s generators.
+-- | Given 'Pdta' and a @pgen@ 'Span', extracts the corresponding index 'Spans' for the @pbag@'s generators.
 pgenSpan :: Pdta -> Span -> [Span]
 pgenSpan pdata (start, stop) = pairwise [fromIntegral $ genNdx $ pbags pdata ! fromIntegral i | i <- [start..stop]]
 
@@ -72,7 +79,7 @@ ibagSpan :: Pdta -> Int -> Span
 ibagSpan pdata i = (go i, go $ i + 1)
     where go j = fromIntegral $ instBagNdx $ insts pdata ! (fromIntegral j)
 
--- | Given 'Pdta' and an @ibag@ 'Span', extracts the corresponding index 'Spans' for the @ibag@'s generators.
+-- | Given 'Pdta' and an @igen@ 'Span', extracts the corresponding index 'Spans' for the @ibag@'s generators.
 igenSpan :: Pdta -> Span -> [Span]
 igenSpan pdata (start, stop) = pairwise [fromIntegral $ genNdx $ ibags pdata ! fromIntegral i | i <- [start..stop]]
 
@@ -101,7 +108,110 @@ instrumentZones :: Pdta -> [Span] -> [[Generator]]
 instrumentZones pdata spans = zones
     where
         gens = igens pdata
-        zones = [[gens ! fromIntegral i | i <- [fst span .. snd span - 1]] | span <- spans]
+        zones = [gens `sliceArr` span | span <- spans]
+
+-- ** SFData Type
+
+type SFBag = ([Generator], [Mod])
+type SFBags = [SFBag]
+type SFPhdr = (Phdr, SFBags)
+type SFPhdrs = [SFPhdr]
+type SFInst = (String, SFBags)
+type SFInsts = [SFInst]
+type SFShdrs = [Shdr]
+
+-- | A saner data structure to store the fearsome "hydra" that is the 'SoundFont' 'Pdta'.
+data SFPdta = SFPdta {
+    sfPhdrs :: SFPhdrs,
+    sfInsts :: SFInsts,
+    sfShdrs :: SFShdrs
+} deriving (Eq, Show)
+
+-- | Alternate representation of a 'SoundFont' that is easier to manipulate.
+data SFData = SFData {
+    sfInfos :: [Info],
+    sfSdta :: Sdta,
+    sfPdta :: SFPdta
+}
+
+-- ** Conversion
+
+-- | Converts 'Pdta' to 'SFPdta'.
+pdtaToSfPdta :: Pdta -> SFPdta
+pdtaToSfPdta pdata = sfPdata
+    where
+        phdrList = [phdr {presetBagNdx = 0} | phdr <- elems $ phdrs pdata]
+        numPresets = length phdrList - 1
+        pbagSpans = pbagSpan pdata <$> [0..(numPresets - 1)]
+        pmodSpans = pmodSpan pdata <$> pbagSpans
+        pgenSpans = pgenSpan pdata <$> pbagSpans
+        slicePmods = sliceArr (pmods pdata)
+        slicePgens = sliceArr (pgens pdata)
+        getPbags genSpans modSpans = [(slicePgens genSpan, slicePmods modSpan) | (genSpan, modSpan) <- zip genSpans modSpans]
+        allPbags = zipWith getPbags pgenSpans pmodSpans
+        sfPhdrs = zip phdrList allPbags
+        instList = elems $ insts pdata
+        numInsts = length instList - 1
+        ibagSpans = ibagSpan pdata <$> [0..(numInsts - 1)]
+        imodSpans = imodSpan pdata <$> ibagSpans
+        igenSpans = igenSpan pdata <$> ibagSpans
+        sliceImods = sliceArr (imods pdata)
+        sliceIgens = sliceArr (igens pdata)
+        getIbags genSpans modSpans = [(sliceIgens genSpan, sliceImods modSpan) | (genSpan, modSpan) <- zip genSpans modSpans]
+        allIbags = zipWith getIbags igenSpans imodSpans
+        sfInsts = [(instName inst, bags) | (inst, bags) <- zip instList allIbags]
+        sfShdrs = elems $ shdrs pdata
+        sfPdata = SFPdta {sfPhdrs, sfInsts, sfShdrs}
+
+-- | Converts 'SFPdta' to 'Pdta'.
+sfPdtaToPdta :: SFPdta -> Pdta
+sfPdtaToPdta sfPdata = pdata
+    where
+        -- define terminal (sentinel) elements
+        terminalPhdr = Phdr {presetName = "EOP", preset = 255, bank = 255, presetBagNdx = 0, library = 0, genre = 0, morphology = 0}
+        terminalGen = StartAddressOffset 0
+        terminalMod = Mod {srcOper = 0, destOper = 0, amount = 0, amtSrcOper = 0, transOper = 0}
+        -- convert the preset data
+        (phdrList, sfPbags) = unzip $ sfPhdrs sfPdata
+        pbagOffsets = cumsum $ length <$> sfPbags
+        phdrs = mkArray $ [phdr {presetBagNdx = fromIntegral i} | (i, phdr) <- zip pbagOffsets (phdrList ++ [terminalPhdr])]
+        pgenZones = map fst <$> sfPbags
+        pgenZoneLengths = map length <$> pgenZones
+        pbagGenOffsets = cumsum $ fromIntegral . sum <$> pgenZoneLengths
+        pmodZones = map snd <$> sfPbags
+        pmodZoneLengths = map length <$> pmodZones
+        pbagModOffsets = cumsum $ fromIntegral . sum <$> pmodZoneLengths
+        pbags = mkArray $ [Bag {genNdx, modNdx} | (genNdx, modNdx) <- zip pbagGenOffsets pbagModOffsets]
+        pmods = mkArray $ concatMap concat pmodZones ++ [terminalMod]
+        pgens = mkArray $ concatMap concat pgenZones ++ [terminalGen]
+        -- convert the instrument data
+        (instNames, sfIbags) = unzip $ sfInsts sfPdata
+        ibagOffsets = cumsum $ length <$> sfIbags
+        insts = mkArray $ [Inst {instName, instBagNdx = fromIntegral i} | (i, instName) <- zip ibagOffsets (instNames ++ ["EOI"])]
+        igenZones = map fst <$> sfIbags
+        igenZoneLengths = map length <$> igenZones
+        ibagGenOffsets = cumsum $ fromIntegral . sum <$> igenZoneLengths
+        imodZones = map snd <$> sfIbags
+        imodZoneLengths = map length <$> imodZones
+        ibagModOffsets = cumsum $ fromIntegral . sum <$> imodZoneLengths
+        ibags = mkArray $ [Bag {genNdx, modNdx} | (genNdx, modNdx) <- zip ibagGenOffsets ibagModOffsets]
+        imods = mkArray $ concatMap concat imodZones ++ [terminalMod]
+        igens = mkArray $ concatMap concat igenZones ++ [terminalGen]
+        shdrs = mkArray $ sfShdrs sfPdata
+        pdata = Pdta {phdrs, pbags, pmods, pgens, insts, ibags, imods, igens, shdrs}
+
+soundFontToSfData :: SoundFont -> SFData
+soundFontToSfData sf = sfd
+    where
+        pdata = pdtaToSfPdta $ pdta sf
+        sfd = SFData {sfInfos = elems $ infos sf, sfSdta = sdta sf, sfPdta = pdata}
+
+sfDataToSoundFont :: SFData -> SoundFont
+sfDataToSoundFont sfd = sf
+    where
+        infos' = mkArray $ sfInfos sfd
+        pdata = undefined
+        sf = SoundFont {infos = infos', sdta = sfSdta sfd, pdta = pdata}
 
 -- ** Manipulators
 

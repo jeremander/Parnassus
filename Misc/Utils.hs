@@ -140,6 +140,14 @@ merge f (x:xs) (y:ys) = if f x <= f y
 composeFuncs :: [(a -> a)] -> a -> a
 composeFuncs = foldr (.) id
 
+-- | "Commutes" a function in a commutative diagram by a pre-composed function and post-composed function.
+commute :: (a -> b) -> (c -> d) -> (b -> c) -> (a -> d)
+commute f g h = g . h . f
+
+-- | "Conjugates" a function by some other function and its inverse.
+conj :: (a -> b) -> (b -> a) -> (b -> b) -> (a -> a)
+conj = commute
+
 -- | Pads a list to a certain length with a default value.
 padListWithDefault :: Int -> a -> [a] -> [a]
 padListWithDefault n def xs = take n (xs ++ repeat def)
