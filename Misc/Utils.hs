@@ -144,8 +144,10 @@ composeFuncs = foldr (.) id
 commute :: (a -> b) -> (c -> d) -> (b -> c) -> (a -> d)
 commute f g h = g . h . f
 
+type Conj a b = (b -> b) -> (a -> a)
+
 -- | "Conjugates" a function by some other function and its inverse.
-conj :: (a -> b) -> (b -> a) -> (b -> b) -> (a -> a)
+conj :: (a -> b) -> (b -> a) -> Conj a b
 conj = commute
 
 -- | Pads a list to a certain length with a default value.
