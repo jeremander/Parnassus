@@ -1,37 +1,34 @@
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
 
 module Music.SoundFont where
 
 import Codec.SoundFont (Bag(..), Generator(..), Info(..), Inst(..), Mod(..), Phdr(..), Pdta(..), Sdta(..), Shdr(..), SoundFont(..), exportFile, importFile)
-import Control.Exception (assert)
+import Control.Monad (forM_)
 import qualified Data.Array as A
 import Data.Array ((!), elems)
 import qualified Data.Array.IArray as IA
-import Data.List ((\\), nub, partition)
+import Data.List (nub)
 import qualified Data.Map as M
-import Data.Maybe (catMaybes, fromJust, isJust, mapMaybe)
-import Data.Range (fromRanges)
+import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as S
-import Data.Sort (sort, sortOn)
+import Data.Sort (sort)
+import qualified Data.Text as T
 import Data.Time (getCurrentTime)
+import System.FilePath.Posix ((<.>), (</>))
 import System.Posix.User (getEffectiveUserName)
 
-import Misc.Utils (atIndices, Conj, conj, cumsum, inverseIndexMap, mkArray, pairwise, strip)
-import Music.Tuning (StdPitch, Tuning, centsFromStd, makeTuning, pianoRange)
+import Misc.Utils (Conj, conj, cumsum, inverseIndexMap, mkArray, mkIArray, pairwise, safeHead, strip)
+import Music.Tuning (Cents, centsFromStd, NamedTuning(..), Tuning)
 
 
 type Span = (Int, Int)
+type Generators = [Generator]
+type Mods = [Mod]
 
 -- ** Helper Functions
-
--- | Given a number of cents to adjust, returns a list of 'Generator's reflecting the change.
-centsToGenerators :: Int -> [Generator]
-centsToGenerators cts = coarse ++ fine
-    where
-        (isNeg, absCts) = (cts < 0, abs cts)
-        (semis, cts') = divMod absCts 100
-        coarse = [CoarseTune (if isNeg then (-semis) else semis) | semis /= 0]
-        fine = [FineTune (if isNeg then (-cts') else cts') | cts' /= 0]
 
 spansToIndices :: [Span] -> [Int]
 spansToIndices spans = concat [[start..(stop - 1)] | (start, stop) <- spans]
@@ -39,8 +36,11 @@ spansToIndices spans = concat [[start..(stop - 1)] | (start, stop) <- spans]
 invIdxMap :: [Int] -> M.Map Word Word
 invIdxMap indices = M.fromList [(fromIntegral i, fromIntegral j) | (i, j) <- inverseIndexMap indices]
 
-sliceArr :: (A.Ix i, Num i) => A.Array i a -> Span -> [a]
-sliceArr arr (start, stop) = [arr ! fromIntegral i | i <- [start..(stop - 1)]]
+sliceArray :: (A.Ix i, Num i) => A.Array i a -> Span -> [a]
+sliceArray arr (start, stop) = [arr ! fromIntegral i | i <- [start..(stop - 1)]]
+
+sliceIArray :: (IA.IArray arr a, IA.Ix i, Integral i) => arr i a -> (i, i) -> [a]
+sliceIArray arr (start, stop) = [arr IA.! fromIntegral i | i <- [start..(stop - 1)]]
 
 -- | Indexes a list at the given indices.
 listAtIndices :: [a] -> [Int] -> [a]
@@ -49,6 +49,8 @@ listAtIndices xs indices = [x | (i, x) <- zip [0..] xs, i `S.member` idxSet]
 
 
 -- * Sound Fonts
+
+deriving instance Ord Shdr
 
 -- ** Accessors
 
@@ -92,27 +94,16 @@ instIdxForPhdrIdx :: Pdta -> Int -> [Int]
 instIdxForPhdrIdx pdata i = catMaybes [getInstIdx $ pgens pdata ! (fromIntegral stop - 1) | (_, stop) <- genSpans]
     where genSpans = pgenSpan pdata (pbagSpan pdata i)
 
--- | Inserts tuning 'Generator's ('FineTune' or 'CoarseTune') within a list of existing generators.
---
---   NOTE: it is important that the tuning generators come before the 'SampleMode' generator.
-insertTuningGens :: [Generator] -> [Generator] -> [Generator]
-insertTuningGens tuningGens gens = left ++ tuningGens ++ right
-    where
-        isSampleMode :: Generator -> Bool
-        isSampleMode (SampleMode _) = True
-        isSampleMode _              = False
-        (left, right) = break isSampleMode gens
-
 -- | Given 'Pdta' and a list of @igen@ spans, gets the corresponding instrument zones.
-instrumentZones :: Pdta -> [Span] -> [[Generator]]
+instrumentZones :: Pdta -> [Span] -> [Generators]
 instrumentZones pdata spans = zones
     where
         gens = igens pdata
-        zones = [gens `sliceArr` span | span <- spans]
+        zones = [gens `sliceArray` span | span <- spans]
 
 -- ** SFData Type
 
-type SFBag = ([Generator], [Mod])
+type SFBag = (Generators, Mods)
 type SFBags = [SFBag]
 type SFPhdr = (Phdr, SFBags)
 type SFPhdrs = [SFPhdr]
@@ -134,6 +125,141 @@ data SFData = SFData {
     sfPdta :: SFPdta
 } deriving (Eq, Show)
 
+-- | Reindexes the presets to start from bank 0, preset 0, with no skipping.
+reindexPresets :: SFPhdrs -> SFPhdrs
+reindexPresets sfPhdrs = sfPhdrs'
+    where
+        pairs = (,) <$> [0..127] <*> [0..127]  -- all possible (bank, preset) pairs
+        sfPhdrs' = [(phdr {bank, preset}, bags) | ((phdr, bags), (bank, preset)) <- zip sfPhdrs pairs]
+
+-- | Gets the index spans corresponding to each sample.
+--
+--   Ensures at least 46 zero data points available after each sample, as per the standard.
+sampleSpans :: SFData -> [Span]
+sampleSpans sf = [(bndStart $ start shdr, bndEnd $ end shdr + 46) | shdr <- sfShdrs $ sfPdta sf]
+    where
+        maxIdx = snd $ IA.bounds $ smpl $ sfSdta sf
+        bndStart i = min (fromIntegral i) maxIdx
+        bndEnd i = min (fromIntegral i) (maxIdx + 1)
+
+-- | Removes unused sample data from 'SFData' and reindexes appropriately.
+sfFilterUnusedSampleData :: SFMod
+sfFilterUnusedSampleData sf = sf'
+    where
+        sfPdata = sfPdta sf
+        sfSdata = sfSdta sf
+        -- get indices of the raw samples to keep
+        shdrs = sfShdrs sfPdata
+        dataSpans = sampleSpans sf
+        -- get indices from spans, and dedupe
+        dataIndices = sort $ S.elems $ S.fromList $ spansToIndices dataSpans
+        -- adjust sample data offsets
+        dataIdxMap = invIdxMap dataIndices
+        fixShdrIdx i = if (i == 0) then 0 else (dataIdxMap M.! i)
+        fixShdr shdr@(Shdr {start, end, startLoop, endLoop}) = shdr {start = fixShdrIdx start, end = fixShdrIdx end, startLoop = fixShdrIdx startLoop, endLoop = fixShdrIdx endLoop}
+        shdrs' = fixShdr <$> shdrs
+        sfPdata' = sfPdata {sfShdrs = shdrs'}
+        -- filter the raw data
+        filterData arr = IA.listArray (0, length dataIndices - 1) [arr IA.! i | i <- dataIndices]
+        smpl' = filterData $ smpl sfSdata
+        sm24' = filterData <$> sm24 sfSdata
+        sfSdata' = Sdta {smpl = smpl', sm24 = sm24'}
+        sf' = sf {sfSdta = sfSdata', sfPdta = sfPdata'}
+
+-- | Removes all unused samples from 'SFData'.
+sfFilterUnusedSamples :: SFMod
+sfFilterUnusedSamples sf = sfFilterUnusedSampleData sf'
+    where
+        sfPdata = sfPdta sf
+        -- identify the sample indices used in any preset/instrument
+        getSampleIdx (SampleIndex i) = Just i
+        getSampleIdx _               = Nothing
+        allBags = concat $ (snd <$> sfPhdrs sfPdata) ++ (snd <$> sfInsts sfPdata)
+        allGens = concatMap fst allBags
+        sampleIndices = fromIntegral <$> (sort $ nub $ mapMaybe getSampleIdx allGens)
+        -- filter the samples to include only the ones used
+        sfShdrs' = sfShdrs sfPdata `listAtIndices` sampleIndices
+        -- reindex the samples and adjust the indices in all Generators
+        sampleIdxMap = invIdxMap sampleIndices
+        fixGen (SampleIndex i) = SampleIndex $ sampleIdxMap M.! i
+        fixGen gen             = gen
+        sfPdata' = mapGen fixGen sfPdata {sfShdrs = sfShdrs'}
+        sf' = sf {sfPdta = sfPdata'}
+
+-- | Dedupes identical samples.
+dedupeSamples :: SFMod
+dedupeSamples sf = sfFilterUnusedSamples $ sf {sfPdta = sfPdta'}
+    where
+        sfPdata = sfPdta sf
+        sfSdata = sfSdta sf
+        -- get the sample data spans for each shdr
+        dataSpans = sampleSpans sf
+        -- to dedupe spans, get a mapping from sample data to the first span representing it
+        sliceSamples span = (smpl sfSdata `sliceIArray` span, (`sliceIArray` span) <$> sm24 sfSdata)
+        slices = sliceSamples <$> dataSpans
+        spanBySlice = M.fromListWith (\_ span -> span) (zip slices dataSpans)
+        -- get index offsets for each shdr
+        offsets = fromIntegral <$> [(fst $ spanBySlice M.! slice) - (fst span) | (span, slice) <- zip dataSpans slices]
+        fixShdr offset shdr = shdr {start = start shdr + offset, end = end shdr + offset, startLoop = startLoop shdr + offset, endLoop = endLoop shdr + offset}
+        -- dedupe identical shdrs
+        shdrs' = [fixShdr offset shdr | (offset, shdr) <- zip offsets (sfShdrs sfPdata)]
+        sfShdrs' = nub shdrs'
+        -- adjust sample indices in instruments
+        shdrIdxMap = M.fromListWith (\_ i -> i) (zip shdrs' [0..])
+        idxMap = M.fromList [(i, shdrIdxMap M.! shdr) | (i, shdr) <- zip [0..] shdrs']
+        fixSampleIndex (SampleIndex i) = SampleIndex $ idxMap M.! i
+        fixSampleIndex gen             = gen
+        fixInst (name, bags) = (name, [(fixSampleIndex <$> gens, mods) | (gens, mods) <- bags])
+        sfInsts' = fixInst <$> sfInsts sfPdata
+        sfPdta' = sfPdata {sfInsts = sfInsts', sfShdrs = sfShdrs'}
+
+instance Semigroup SFData where
+    sf1 <> sf2 = mconcat [sf1, sf2]
+
+instance Monoid SFData where
+    mempty = SFData {sfInfos = [], sfSdta = sfSdta', sfPdta = sfPdta'}
+        where
+            sfSdta' = Sdta {smpl = mkIArray [], sm24 = Nothing}
+            sfPdta' = SFPdta {sfPhdrs = [], sfInsts = [], sfShdrs = []}
+    mconcat sfs = dedupeSamples sf'
+        where
+            -- the first info bundle will take precedence
+            sfInfos' = fromMaybe [] (safeHead $ sfInfos <$> sfs)
+            -- concatenate sample data
+            -- TODO: this could be done more efficiently
+            concatArrs arrs = mkIArray arrList
+                where
+                    arrLists = IA.elems <$> arrs
+                    arrList = concat arrLists
+            sdtas = sfSdta <$> sfs
+            smplArrs = smpl <$> sdtas
+            smpl' = concatArrs smplArrs
+            arrLen arr = length $ IA.elems arr
+            getSm24 sdata = fromMaybe (mkIArray $ replicate numSamples 0) (sm24 sdata)
+                where numSamples = arrLen $ smpl sdata
+            -- if any sm24s exist, use them (and construct 0 arrays for any that are missing)
+            sm24' = if any isJust (sm24 <$> sdtas) then (Just $ concatArrs $ getSm24 <$> sdtas) else Nothing
+            sfSdta' = Sdta {smpl = smpl', sm24 = sm24'}
+            sfPdtas = sfPdta <$> sfs
+            -- adjust sample data indices, then concat shdrs together
+            sampleDataOffsets = cumsum $ fromIntegral . arrLen <$> smplArrs
+            fixShdr offset shdr = shdr {start = offset + start shdr, end = offset + end shdr, startLoop = offset + startLoop shdr, endLoop = offset + endLoop shdr}
+            sfShdrs' = concat [fixShdr offset <$> sfShdrs sfPdata | (offset, sfPdata) <- zip sampleDataOffsets sfPdtas]
+            -- adjust sample indices, then concat instruments together
+            sampleOffsets = cumsum $ fromIntegral . length . sfShdrs <$> sfPdtas
+            fixSampleIndex offset (SampleIndex i) = SampleIndex $ offset + i
+            fixSampleIndex _      gen             = gen
+            fixInst offset (name, bags) = (name, [(fixSampleIndex offset <$> gens, mods) | (gens, mods) <- bags])
+            sfInsts' = concat [fixInst offset <$> sfInsts sfPdata | (offset, sfPdata) <- zip sampleOffsets sfPdtas]
+            -- adjust instrument indices, then concat presets together
+            instOffsets = cumsum $ fromIntegral . length . sfInsts <$> sfPdtas
+            fixInstIndex offset (InstIndex i) = InstIndex $ offset + i
+            fixInstIndex _      gen           = gen
+            fixPhdr offset (phdr, bags) = (phdr, [(fixInstIndex offset <$> gens, mods) | (gens, mods) <- bags])
+            sfPhdrs' = reindexPresets $ concat [fixPhdr offset <$> sfPhdrs sfPdata | (offset, sfPdata) <- zip instOffsets sfPdtas]
+            sfPdta' = SFPdta {sfPhdrs = sfPhdrs', sfInsts = sfInsts', sfShdrs = sfShdrs'}
+            sf' = SFData {sfInfos = sfInfos', sfSdta = sfSdta', sfPdta = sfPdta'}
+
 -- ** Conversion
 
 -- | Converts 'Pdta' to 'SFPdta'.
@@ -145,8 +271,8 @@ pdtaToSfPdta pdata = sfPdata
         pbagSpans = pbagSpan pdata <$> [0..(numPresets - 1)]
         pmodSpans = pmodSpan pdata <$> pbagSpans
         pgenSpans = pgenSpan pdata <$> pbagSpans
-        slicePmods = sliceArr (pmods pdata)
-        slicePgens = sliceArr (pgens pdata)
+        slicePmods = sliceArray (pmods pdata)
+        slicePgens = sliceArray (pgens pdata)
         getPbags genSpans modSpans = [(slicePgens genSpan, slicePmods modSpan) | (genSpan, modSpan) <- zip genSpans modSpans]
         allPbags = zipWith getPbags pgenSpans pmodSpans
         sfPhdrs = zip phdrList allPbags
@@ -155,12 +281,12 @@ pdtaToSfPdta pdata = sfPdata
         ibagSpans = ibagSpan pdata <$> [0..(numInsts - 1)]
         imodSpans = imodSpan pdata <$> ibagSpans
         igenSpans = igenSpan pdata <$> ibagSpans
-        sliceImods = sliceArr (imods pdata)
-        sliceIgens = sliceArr (igens pdata)
+        sliceImods = sliceArray (imods pdata)
+        sliceIgens = sliceArray (igens pdata)
         getIbags genSpans modSpans = [(sliceIgens genSpan, sliceImods modSpan) | (genSpan, modSpan) <- zip genSpans modSpans]
         allIbags = zipWith getIbags igenSpans imodSpans
         sfInsts = [(instName inst, bags) | (inst, bags) <- zip instList allIbags]
-        sfShdrs = elems $ shdrs pdata
+        sfShdrs = init $ elems $ shdrs pdata
         sfPdata = SFPdta {sfPhdrs, sfInsts, sfShdrs}
 
 -- | Converts 'SFPdta' to 'Pdta'.
@@ -171,6 +297,7 @@ sfPdtaToPdta sfPdata = pdata
         terminalPhdr = Phdr {presetName = "EOP", preset = 255, bank = 255, presetBagNdx = 0, library = 0, genre = 0, morphology = 0}
         terminalGen = StartAddressOffset 0
         terminalMod = Mod {srcOper = 0, destOper = 0, amount = 0, amtSrcOper = 0, transOper = 0}
+        terminalShdr = Shdr {sampleName = "EOS", start = 0, end = 0, startLoop = 0, endLoop = 0, sampleRate = 0, originalPitch = 0, pitchCorrection = 0, sampleLink = 0, sampleType = 0}
         -- convert the preset data
         (phdrList, sfPbags) = unzip $ sfPhdrs sfPdata
         pbagOffsets = cumsum $ length <$> sfPbags
@@ -197,7 +324,7 @@ sfPdtaToPdta sfPdata = pdata
         ibags = mkArray $ [Bag {genNdx, modNdx} | (genNdx, modNdx) <- zip ibagGenOffsets ibagModOffsets]
         imods = mkArray $ concatMap concat imodZones ++ [terminalMod]
         igens = mkArray $ concatMap concat igenZones ++ [terminalGen]
-        shdrs = mkArray $ sfShdrs sfPdata
+        shdrs = mkArray $ sfShdrs sfPdata ++ [terminalShdr]
         pdata = Pdta {phdrs, pbags, pmods, pgens, insts, ibags, imods, igens, shdrs}
 
 soundFontToSfData :: SoundFont -> SFData
@@ -221,21 +348,12 @@ conjSF :: Conj SoundFont SFData
 conjSF = conj soundFontToSfData sfDataToSoundFont
 
 -- | Defines an 'SFMod' in terms of a transformation on 'SFPdta'.
-overSfPdta :: SFData -> Conj SFData SFPdta
-overSfPdta sf = conj sfPdta (\sfPdata -> sf {sfPdta = sfPdata})
-
+overSfPdta :: Conj SFData SFPdta
+overSfPdta go sf = sf {sfPdta = go $ sfPdta sf}
 
 -- ** Manipulators
 
--- | Strips whitespace from the names of all presets and instruments in a 'SoundFont'.
-sfStripNames :: SFMod
-sfStripNames sf = sf'
-    where
-        stripPhdrName phdr@(Phdr {presetName}) = phdr {presetName = strip presetName}
-        sfPdata = sfPdta sf
-        sfPhdrs' = [(stripPhdrName phdr, bags) | (phdr, bags) <- sfPhdrs sfPdata]
-        sfInsts' = [(strip name, bags) | (name, bags) <- sfInsts sfPdata]
-        sf' = sf {sfPdta = sfPdata {sfPhdrs = sfPhdrs', sfInsts = sfInsts'}}
+-- *** Renaming
 
 -- | Renames a 'SoundFont''s bank name.
 sfRename :: String -> SFMod
@@ -244,6 +362,24 @@ sfRename name sf = sf {sfInfos = sfInfos'}
         fixInfo (BankName _) = BankName name
         fixInfo info         = info
         sfInfos' = fixInfo <$> sfInfos sf
+
+-- | Applies some function to rename all instruments. Will truncate to ensure all names are 20 characters or less.
+sfRenameInsts :: (String -> String) -> SFMod
+sfRenameInsts rename = overSfPdta go
+    where
+        go sfPdata = sfPdata {sfPhdrs = sfPhdrs'}
+            where sfPhdrs' = [(phdr {presetName = take 20 $ rename $ presetName phdr}, bags) | (phdr, bags) <- sfPhdrs sfPdata]
+
+-- | Applies some function to rename all presets. Will truncate to ensure all names are 20 characters or less.
+sfRenamePresets :: (String -> String) -> SFMod
+sfRenamePresets rename = overSfPdta go
+    where
+        go sfPdata = sfPdata {sfInsts = sfInsts'}
+            where sfInsts' = [(take 20 $ rename name, bags) | (name, bags) <- sfInsts sfPdata]
+
+-- | Strips whitespace from the names of all presets and instruments in a 'SoundFont'.
+sfStripNames :: SFMod
+sfStripNames = sfRenamePresets strip . sfRenameInsts strip
 
 -- | Adds a username and creation date to the header of a 'SoundFont'.
 sfStampWithUserAndTime :: SFModIO
@@ -255,13 +391,8 @@ sfStampWithUserAndTime sf = do
 
 -- | Resets the bank/preset indices to start from bank 0, preset 0.
 sfReindexPresets :: SFMod
-sfReindexPresets sf = sf'
-    where
-        sfPdata = sfPdta sf
-        pairs = (,) <$> [0..127] <*> [0..127]  -- all possible (bank, preset) pairs
-        sfPhdrs' = [(phdr {bank, preset}, bags) | ((phdr, bags), (bank, preset)) <- zip (sfPhdrs sfPdata) pairs]
-        sfPdata' = sfPdata {sfPhdrs = sfPhdrs'}
-        sf' = sf {sfPdta = sfPdata'}
+sfReindexPresets = overSfPdta go
+    where go sfPdata = sfPdata {sfPhdrs = reindexPresets $ sfPhdrs sfPdata}
 
 -- | Applies a function to all 'Generators' in an 'SFPdta'.
 mapGen :: (Generator -> Generator) -> SFPdta -> SFPdta
@@ -272,72 +403,25 @@ mapGen f sfPdata = sfPdata'
         sfInsts' = [(name, fixBags bags) | (name, bags) <- sfInsts sfPdata]
         sfPdata' = sfPdata {sfPhdrs = sfPhdrs', sfInsts = sfInsts'}
 
--- | Given a list of name suffixes, makes a copy of each instrument, applying each suffix to each instrument.
+-- | Given a function to rename an instrument or preset at a given index, makes some number of copies of each instrument.
+--
 --   Also copies presets corresponding to each copied instrument (with its corresponding suffix), and reindexes the banks/presets from zero.
-sfCopyInstruments :: [String] -> SFMod
-sfCopyInstruments suffixes sf = sfReindexPresets $ sf {sfPdta = sfPdata'}
+sfCopyInstruments :: (Int -> String -> String) -> Int -> SFMod
+sfCopyInstruments rename n = sfReindexPresets . overSfPdta go
     where
-        sfPdata = sfPdta sf
-        insts = sfInsts sfPdata
-        numInsts = length insts
-        -- replicate instruments with each suffix
-        sfInsts' = concat [[(name ++ suffix, bags) | (name, bags) <- insts] | suffix <- suffixes]
-        -- replicate phdrs with indices of replicated instruments
-        fixGen i (InstIndex j) = InstIndex $ fromIntegral (i * numInsts) + j
-        fixGen _ gen           = gen
-        fixPhdr suffix phdr = phdr {presetName = presetName phdr ++ suffix}
-        getNewPhdrs (phdr, bags) = [(fixPhdr suffix phdr, [(fixGen i <$> gens, mods) | (gens, mods) <- bags]) | (i, suffix) <- zip [0..] suffixes]
-        sfPhdrs' = concatMap getNewPhdrs $ sfPhdrs sfPdata
-        sfPdata' = sfPdata {sfPhdrs = sfPhdrs', sfInsts = sfInsts'}
-
--- TODO: Monoid instance
+        go sfPdata = sfPdata {sfPhdrs = sfPhdrs', sfInsts = sfInsts'} where
+            insts = sfInsts sfPdata
+            numInsts = length insts
+            -- replicate instruments with new names
+            sfInsts' = concat [[(rename i name, bags) | (name, bags) <- insts] | i <- [0..(n - 1)]]
+            -- replicate phdrs with indices of replicated instruments
+            fixGen i (InstIndex j) = InstIndex $ fromIntegral (i * numInsts) + j
+            fixGen _ gen           = gen
+            fixPhdr i phdr = phdr {presetName = rename i $ presetName phdr}
+            getNewPhdrs (phdr, bags) = [(fixPhdr i phdr, [(fixGen i <$> gens, mods) | (gens, mods) <- bags]) | i <- [0..(n - 1)]]
+            sfPhdrs' = concatMap getNewPhdrs $ sfPhdrs sfPdata
 
 -- *** Filtering
-
--- | Removes unused sample data from 'SFData' and reindexes appropriately.
-sfFilterUnusedSampleData :: SFMod
-sfFilterUnusedSampleData sf = sf'
-    where
-        sfPdata = sfPdta sf
-        -- get indices of the raw samples to keep
-        shdrs = sfShdrs sfPdata
-        -- ensure at least 46 zero data points available after each sample, as per the standard
-        dataSpans = [(i, j + 46) | (i, j) <- pairwise $ fromIntegral <$> (start <$> shdrs) ++ [end $ last shdrs]]
-        -- get indices from spans, and dedupe
-        dataIndices = sort $ S.elems $ S.fromList $ spansToIndices dataSpans
-        -- adjust sample data offsets
-        dataIdxMap = invIdxMap dataIndices
-        fixShdrIdx i = if (i == 0) then 0 else (dataIdxMap M.! i)
-        fixShdr shdr@(Shdr {start, end, startLoop, endLoop}) = shdr {start = fixShdrIdx start, end = fixShdrIdx end, startLoop = fixShdrIdx startLoop, endLoop = fixShdrIdx endLoop}
-        shdrs' = fixShdr <$> shdrs
-        sfPdata' = sfPdata {sfShdrs = shdrs'}
-        -- filter the raw data
-        filterData arr = IA.listArray (0, length dataIndices - 1) [arr IA.! i | i <- dataIndices]
-        sfSdata = sfSdta sf
-        smpl' = filterData $ smpl sfSdata
-        sm24' = filterData <$> sm24 sfSdata
-        sfSdata' = Sdta {smpl = smpl', sm24 = sm24'}
-        sf' = sf {sfSdta = sfSdata', sfPdta = sfPdata'}
-
--- | Removes all unused samples from 'SFData'.
-sfFilterUnusedSamples :: SFMod
-sfFilterUnusedSamples sf = sfFilterUnusedSampleData sf'
-    where
-        sfPdata = sfPdta sf
-        -- identify the sample indices used in any preset/instrument
-        getSampleIdx (SampleIndex i) = Just i
-        getSampleIdx _               = Nothing
-        allBags = concat $ (snd <$> sfPhdrs sfPdata) ++ (snd <$> sfInsts sfPdata)
-        allGens = concatMap fst allBags
-        sampleIndices = fromIntegral <$> (sort $ nub $ mapMaybe getSampleIdx allGens)
-        -- filter the samples to include only the ones used
-        sfShdrs' = sfShdrs sfPdata `listAtIndices` sampleIndices
-        -- reindex the samples and adjust the indices in all Generators
-        sampleIdxMap = invIdxMap sampleIndices
-        fixGen (SampleIndex i) = SampleIndex $ sampleIdxMap M.! i
-        fixGen gen             = gen
-        sfPdata' = mapGen fixGen sfPdata {sfShdrs = sfShdrs'}
-        sf' = sf {sfPdta = sfPdata'}
 
 -- | For each preset, gets the list of instrument indices it utilizes.
 instIndicesForPresets :: SFPdta -> [[Int]]
@@ -378,7 +462,7 @@ sfFilterInstruments :: [Int] -> SFMod
 sfFilterInstruments instIndices sf = sfFilterPresets presetIndices sf'
     where
         sfPdata = sfPdta sf
-        -- filter instruments and relabel Generators
+        -- filter instruments and relabel generators
         sfPdata' = sfPdtaFilterInstruments instIndices sfPdata
         sf' = sf {sfPdta = sfPdata'}
         -- determine which presets to keep
@@ -386,73 +470,94 @@ sfFilterInstruments instIndices sf = sfFilterPresets presetIndices sf'
         presetIndices = [i | (i, inds) <- zip [0..] (instIndicesForPresets sfPdata), or [j `S.member` instIdxSet | j <- inds]]
 
 
--- -- *** Retuning
+-- *** Retuning
 
--- -- | Given a list of @igen@ spans (instrument zones), creates a new set of zones where each distinct pitch (on an 88-key keyboard) gets its own zone, and each pitch is re-tuned according to the given tuning.
--- retuneZones :: Tuning -> Pdta -> [Span] -> [[Generator]]
--- retuneZones tuning pdata spans = zones'
---     where
---         gens = igens pdata
---         zones = [[gens ! fromIntegral i | i <- [fst span .. snd span - 1]] | span <- spans]
---         zonePairs = zip zones [0..]
---         -- partition zones based on whether they contain key ranges
---         (keyPairs, nonKeyPairs) = partition (isJust . getKeyRange . head . fst) zonePairs
---         keyRanges = sort [(fromJust $ getKeyRange $ head zone, i) | (zone, i) <- keyPairs]
---         firstPair = head keyRanges
---         (minKey, minIdx) = (fst $ fst firstPair, snd firstPair)
---         prange = fromRanges [pianoRange]
---         (bottomNote, topNote) = (fromIntegral $ minimum prange, fromIntegral $ maximum prange)
---         -- get the index of the zone for each keyboard key
---         zoneIndices = [if k < minKey then minIdx else (snd $ last $ takeWhile (\pair -> k >= (fst $ fst pair)) keyRanges) | k <- prange]
---         -- assign each key to its own zone, unless it is outside the piano range
---         krange k
---             | k == bottomNote = KeyRange 0 k
---             | k == topNote    = KeyRange k 127
---             | otherwise       = KeyRange k k
---         -- get tuning adjustments for each key in the middle octave
---         tuningGens = centsToGenerators . round <$> centsFromStd tuning
---         newKeyZones = [insertTuningGens (tuningGens !! k) (krange (fromIntegral k) : tail (zones !! i)) | (k, i) <- zip prange zoneIndices]
---         newZones = fst <$> sortOn snd (nonKeyPairs ++ [(zone, minIdx) | zone <- newKeyZones])
---         zones' = if null keyPairs then zones else newZones
+-- | MIDI key range (bounds are 0 to 127)
+type KRange = (Int, Int)
+-- | MIDI velocity range (bounds are 0 to 127)
+type VRange = (Int, Int)
 
--- -- | Retunes instruments in a 'SoundFont' with the given instrument indices.
--- sfRetuneInstruments :: Tuning -> [Int] -> SFMod
--- sfRetuneInstruments tuning instIndices sf = assertion $ sf {pdta = pdata'}
---     where
---         pdata = pdta sf
---         instIdxSet = S.fromList instIndices
---         numInsts = length (insts pdata) - 1
---         ibagSpans = ibagSpan pdata <$> [0..(numInsts - 1)]
---         igenSpans = igenSpan pdata <$> ibagSpans
---         go i = if (i `S.member` instIdxSet) then retuneZones tuning pdata else instrumentZones pdata
---         -- get the new set of igen zones for each instrument
---         zones' = [go i spans | (i, spans) <- zip [0..] igenSpans]
---         bagIndices = cumsum $ length <$> zones'
---         -- adjust the ibag indices to the appropriate zone boundaries
---         fixInst inst bagIdx = inst {instBagNdx = fromIntegral bagIdx}
---         insts' = mkArray [fixInst inst i | (inst, i) <- zip (elems $ insts pdata) bagIndices]
---         genIndices = cumsum $ length <$> concat zones'
---         -- for simplicity, require all modulator indices to be 0
---         modIndexSet = S.fromList [modNdx bag | bag <- elems $ ibags pdata]
---         assertion = assert (modIndexSet == S.singleton 0)
---         ibags' = mkArray [Bag {genNdx = fromIntegral i, modNdx = 0} | i <- genIndices]
---         igens' = mkArray $ concat $ concat zones'
---         pdata' = pdata {insts = insts', ibags = ibags', igens = igens'}
+keyRange :: Generator -> Maybe KRange
+keyRange (KeyRange lo hi) = Just (fromIntegral lo, fromIntegral hi)
+keyRange _                = Nothing
 
--- -- | Retunes all instruments in a 'SoundFont'.
--- --   WARNING: this can potentially cause integer overflow issues if the number of parameters in the original SoundFont file is large. It may be necessary to filter down to a smaller number of instruments first.
--- sfRetuneAllInstruments :: Tuning -> SFMod
--- sfRetuneAllInstruments tuning sf = sfRetuneInstruments tuning instIndices sf
---     where
---         numInsts = length $ insts $ pdta sf
---         instIndices = [0..(numInsts - 1)]
+velRange :: Generator -> Maybe VRange
+velRange (VelRange lo hi) = Just (fromIntegral lo, fromIntegral hi)
+velRange _                = Nothing
 
--- -- | Given a list of 'NamedTuning's, an instrument index, and a 'SoundFont', produces a new 'SoundFont' containing only that single instrument, using all of the given tunings.
--- -- sfRetuneInstrumentMulti :: [NamedTuning] -> Int -> SFMod
--- -- sfRetuneInstrumentMulti pairs i sf = sf'
--- --     where
--- --         sf' = sfReindexPresets $ sfFilterInstruments [i] sf
+type ZoneModifier = Generators -> [Generators]
+type KeyVelZoneModifier = Maybe KRange -> Maybe VRange -> ZoneModifier
 
+-- | Given a function that conditionally modifies a zone based on key and velocity range, applies the modification to a zone.
+keyVelModifyZone :: KeyVelZoneModifier -> ZoneModifier
+keyVelModifyZone modifier gens = modifier krange vrange gens
+    where
+        krange = safeHead $ mapMaybe keyRange gens
+        vrange = safeHead $ mapMaybe velRange gens
+
+-- | Inserts tuning 'Generator's ('FineTune' or 'CoarseTune') within a list of existing generators.
+--
+--   NOTE: it is important that the tuning generators come before the 'SampleMode' generator.
+insertTuningGens :: Generators -> Generators -> Generators
+insertTuningGens tuningGens gens = left ++ tuningGens ++ right
+    where
+        isSampleMode :: Generator -> Bool
+        isSampleMode (SampleMode _) = True
+        isSampleMode _              = False
+        (left, right) = break isSampleMode gens
+
+-- | Given a number of cents to adjust, returns a list of 'Generator's reflecting the change.
+centsToGenerators :: Cents -> Generators
+centsToGenerators cts = coarse ++ fine
+    where
+        (isNeg, absCts) = (cts < 0, round $ abs cts)
+        (semis, cts') = divMod absCts 100
+        coarse = [CoarseTune (if isNeg then (-semis) else semis) | semis /= 0]
+        fine = [FineTune (if isNeg then (-cts') else cts') | cts' /= 0]
+
+-- | Given a pitch adjustment in cents and a zone of 'Generator's, returns a new zone with the adjustment.
+retuneGenZone :: Cents -> Generators -> Generators
+retuneGenZone cents = insertTuningGens (centsToGenerators cents)
+
+-- | Modifies a zone with a tuning by inserting the appropriate 'Generator's to alter pitch.
+tuningModifyZone :: Tuning -> ZoneModifier
+tuningModifyZone tuning = keyVelModifyZone modifier
+    where
+        allCents = centsFromStd tuning
+        -- create a distinct retuned zone for each key in the range
+        fixGen k (KeyRange _ _) = KeyRange (fromIntegral k) (fromIntegral k)
+        fixGen _ gen            = gen
+        retuneGens k gens = insertTuningGens (centsToGenerators $ allCents !! k) (fixGen k <$> gens)
+        modifier (Just (lo, hi)) _ gens = [retuneGens k gens | k <- [lo..hi]]
+        modifier Nothing         _ gens = [gens]
+
+retuneInstBags :: Tuning -> SFBags -> SFBags
+retuneInstBags tuning bags = bags'
+    where
+        modifier = tuningModifyZone tuning
+        expandBag (gens, mods) = (, mods) <$> modifier gens
+        bags' = concatMap expandBag bags
+
+-- | Retunes all of the instruments in 'SFPdta'.
+retuneInstruments :: Tuning -> SFPdta -> SFPdta
+retuneInstruments tuning sfPdata = sfPdata'
+    where
+        go = retuneInstBags tuning
+        sfInsts' = [(name, go bags) | (name, bags) <- sfInsts sfPdata]
+        sfPdata' = sfPdata {sfInsts = sfInsts'}
+
+-- | Retunes all instruments in 'SFData'.
+sfRetuneInstruments :: Tuning -> SFMod
+sfRetuneInstruments tuning = overSfPdta $ retuneInstruments tuning
+
+-- | Given 'NamedTuning's and an instrument index, creates a new 'SFData' with one instrument for each retuning of the original instrument.
+-- TODO: this will copy samples, which we want to avoid
+sfInstrumentRetuned :: [NamedTuning] -> Int -> SFMod
+sfInstrumentRetuned namedTunings i sf = mconcat sfs
+    where
+        sf' = sfReindexPresets $ sfFilterInstruments [i] sf
+        rename name = sfRenamePresets (const name) . sfRenameInsts (const name)
+        sfs = [rename name $ sfRetuneInstruments tuning sf' | NamedTuning {name, tuning} <- namedTunings]
 
 -- ** I/O
 
@@ -484,17 +589,16 @@ modifySfData f infile outfile = do
 
 -- ** File Operations
 
--- -- | Given a list of instrument indices, modfiies a SoundFont file to include only the given instruments.
--- filterSoundFontInstruments :: [Int] -> FilePath -> FilePath -> IO ()
--- filterSoundFontInstruments indices = modifySoundFont (return . sfReindexPresets . sfFilterInstruments indices)
-
--- -- -- | Given a base frequency and 'TuningSystem', retunes a SoundFont file accordingly and uses the tuning system's name as the filename.
--- -- retuneSoundFont :: StdPitch -> TuningSystem a -> FilePath -> FilePath -> IO ()
--- -- retuneSoundFont std (name, scale) infile outdir = do
--- --     let f = sfRetuneMulti std (name, scale)
--- --     let outfile = outdir </> name <.> "sf2"
--- --     modifySoundFont (return . f) infile outfile
-
--- -- -- | Given a base frequency, a 'TuningPackage' (list of 'TuningSystem's), path to a SoundFont, and output directory, retunes the SoundFont in each tuning system, and saves them all to different output files.
--- -- retuneSoundFonts :: StdPitch -> TuningPackage -> FilePath -> FilePath -> IO ()
--- -- retuneSoundFonts std pkg infile outdir = forM_ pkg (\tuning -> retuneSoundFont std tuning infile outdir)
+-- | Given some named tunings, an input .sf2 file, and an output directory, splits up the SoundFont into separate instruments and creates a new .sf2 file for each instrument containing all of the specified tunings.
+retuneSoundFont :: [NamedTuning] -> FilePath -> FilePath -> IO ()
+retuneSoundFont pairs infile outdir = do
+    putStrLn $ "Loading " ++ infile
+    sf <- loadSfData infile
+    let instList = sfInsts $ sfPdta sf
+    let numInsts = length instList
+    let stripDots s = fromMaybe s (T.stripSuffix "." s)
+    forM_ [0..(numInsts - 1)] $ \i -> do
+        let outfile = outdir </> show i ++ " - " ++ (T.unpack $ stripDots $ T.pack $ strip $ fst $ instList !! i) <.> "sf2"
+        let sf' = sfInstrumentRetuned pairs i sf
+        putStrLn $ "\t" ++ outfile
+        saveSfData outfile sf'

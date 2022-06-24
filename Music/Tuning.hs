@@ -1,9 +1,12 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
 
 module Music.Tuning where
 
+import Data.Aeson (FromJSON, ToJSON)
 import Data.Array ((!), (//), elems, listArray)
 import Data.Counter (count, Counter)
 import Data.Default (Default(..))
@@ -15,6 +18,7 @@ import Data.Ratio ((%))
 import qualified Data.Set as S
 import Data.Sort (sort, sortOn)
 import qualified Data.Vector as V
+import GHC.Generics (Generic)
 
 import Euterpea (AbsPitch, Music(..), Music1, Note1, NoteAttribute(..), Pitch, PitchClass(..), ToMusic1, absPitch, applyControls, hn, mMap, note, pitch, qn, rest, shiftPitches)
 
@@ -33,19 +37,34 @@ type Freq = Double
 type StdPitch = (Pitch, Freq)
 -- | log2 of a ratio
 type LogRatio = Double
+-- a ratio measured in cents
+type Cents = Double
+
 -- | Represents tuning as a list of freqs mapping @[0..127]@ to Hz
 newtype Tuning = Tuning {unTuning :: [Freq]}
-    deriving (Eq, Show)
+    deriving (Eq, Generic, Show)
+    deriving newtype (FromJSON, ToJSON)
+
 -- | Interval in a scale, given by the two scale degrees
 type ScaleInterval = (Int, Int)
+
 -- | Ideal intervals @[0..11]@ (can allow multiple possibilities)
 newtype IdealScale a = IdealScale {unIdealScale :: [[a]]}
     deriving (Eq, Show)
+
 -- | Actual intervals @[0..11]@
 newtype Scale a = Scale {unScale :: [a]}
     deriving (Eq, Show)
+
 -- | A named tuning
-type NamedTuning = (String, Tuning)
+data NamedTuning = NamedTuning {
+    name :: String,
+    tuning :: Tuning
+} deriving (Eq, Generic, Show)
+
+instance ToJSON NamedTuning
+instance FromJSON NamedTuning
+
 -- | A named temperament (defined by a 12-tone scale which gets extended to all octaves)
 type Temperament = (String, Scale Double)
 
@@ -69,6 +88,9 @@ normalize2pow r
 a440 :: StdPitch
 a440 = ((A, 4), 440)
 
+c523 :: StdPitch
+c523 = ((C, 5), 523.3)
+
 semitone :: LogRatio
 semitone = 1 / 12
 
@@ -85,7 +107,7 @@ pythagoreanComma :: LogRatio
 pythagoreanComma = 12 * log2 3 - 19
 
 -- | Converts a ratio to a number of cents.
-toCents :: (ToDouble a) => a -> Double
+toCents :: (ToDouble a) => a -> Cents
 toCents x = log2 (toDouble x) / cent
 
 -- | Shifts a frequency by a given log-ratio.
@@ -111,21 +133,25 @@ pianoRange = SpanRange (Bound (absPitch (A, 0)) Inclusive) (Bound (absPitch (C, 
 transposeTuning :: Tuning -> Double -> Tuning
 transposeTuning (Tuning tuning) shift = Tuning $ (shift *) <$> tuning
 
--- | Given a base pitch and a tuning of a full-octave chromatic scale starting with the base pitch, extends it to the entire set of pitches [0..127].
-extendScaleTuning :: Pitch -> Tuning -> Tuning
-extendScaleTuning pc (Tuning tuning) = Tuning freqs
+-- | Given a base pitch and a tuning of a full-octave n-tone scale starting with the base pitch, extends it to the entire set of MIDI keys [0..127].
+extendScaleTuning :: Int -> Pitch -> Tuning -> Tuning
+extendScaleTuning n pc (Tuning tuning) = Tuning freqs
     where
         ap = absPitch pc
-        (octave, diff) = ap `divMod` 12
-        diff' = if diff == 0 then 12 else 12 - diff
+        (octave, diff) = ap `divMod` n
+        diff' = if diff == 0 then n else n - diff
         baseFreqs = cycle tuning
-        octaves = concatMap (replicate 12) [-(octave + 1)..]
+        octaves = concatMap (replicate n) [-(octave + 1)..]
         freqs = take 128 $ drop diff' [freq * (2 ** fromIntegral oct) | (freq, oct) <- zip baseFreqs octaves]
 
 -- | Extends a scale to a full tuning [0..127], given a base pitch & frequency.
+--
+--   The scale provided is expected to represent one octave.
 makeTuning :: (ToDouble a) => Scale a -> StdPitch -> Tuning
-makeTuning (Scale scale) (basePitch, baseFreq) = extendScaleTuning basePitch (Tuning tuning)
-    where tuning = (baseFreq *) . toDouble <$> scale
+makeTuning (Scale scale) (basePitch, baseFreq) = extendScaleTuning n basePitch (Tuning tuning)
+    where
+        n = length scale
+        tuning = (baseFreq *) . toDouble <$> scale
 
 -- | Measures interval ratios between each pair of notes in a scale.
 --   Always expresses ratio between a lower note and the higher note.
@@ -177,13 +203,26 @@ scaleToDouble (Scale scale) = Scale $ toDouble <$> scale
 
 -- ** Equal Temperament
 
-stdScale :: Scale Double
-stdScale = Scale $ pow2 . (/ 12) <$> [0..11]
+-- | Scale for \(n\)-tone equal temperament.
+nTetScale :: Int -> Scale Double
+nTetScale n = Scale $ pow2 . (/ fromIntegral n) <$> [0..(fromIntegral n - 1)]
 
+-- | Scale for 12-tone equal temperament.
+twelveTetScale :: Scale Double
+twelveTetScale = nTetScale 12
+
+nTetTuning :: Int -> StdPitch -> Tuning
+nTetTuning n (pc, freq) = extendScaleTuning n pc (Tuning $ (freq *) <$> unScale (nTetScale n))
+
+twelveTetTuning :: StdPitch -> Tuning
+twelveTetTuning = nTetTuning 12
+
+-- | Tuning for 12-tone equal temperament, A440.
 stdTuning :: Tuning
-stdTuning = extendScaleTuning (A, 4) (Tuning $ (440.0 *) <$> (unScale stdScale))
+stdTuning = twelveTetTuning ((A, 4), 440.0)
 
-centsFromStd :: Tuning -> [Double]
+-- | Given a 'Tuning', computes the corresponding deviations (in cents) from standard tuning.
+centsFromStd :: Tuning -> [Cents]
 centsFromStd (Tuning tuning) = toCents <$> zipWith (/) tuning (unTuning stdTuning)
 
 eqTmp440 = stdTuning
@@ -276,10 +315,10 @@ harmonicScale = Scale $ (% 16) <$> [16, 17, 18, 19, 20, 21, 22, 24, 26, 27, 28, 
 harmonicTuning :: StdPitch -> Tuning
 harmonicTuning = makeTuning harmonicScale
 
--- * Tuning Packages
+-- * Temperaments
 
 twelveToneEqualTemperament :: Temperament
-twelveToneEqualTemperament = ("twelveToneEqual", stdScale)
+twelveToneEqualTemperament = ("12TET", twelveTetScale)
 
 justTemperaments :: [Temperament]
 justTemperaments = [(name, scaleToDouble scale) | (name, scale) <- [
@@ -345,12 +384,43 @@ majCadencePattern pc = line $ mkChord <$> [[0, 4, 7], [0, 5, 9], [0, 4, 7], [-1,
         mkChord xs = chord [note qn (pitch $ ap + x) | x <- xs]
 
 
+-- * Default Tunings
+
+quarterShiftSplits :: Pitch -> NamedTuning -> [NamedTuning]
+quarterShiftSplits pc (NamedTuning {name, tuning}) = [namedTuningFlat, namedTuningSharp]
+    where
+        ap = absPitch pc
+        freqs = unTuning tuning
+        tuningFlat = Tuning [if (i < ap) then shiftFreq freq (23 / 24) else freq | (i, freq) <- zip [0..] freqs]
+        tuningSharp = Tuning [shiftFreq freq (if (i < ap) then 1 else (1 / 24)) | (i, freq) <- zip [0..] freqs]
+        -- shiftedTuning =
+        namedTuningFlat = NamedTuning (name ++ "-qflat") tuningFlat
+        namedTuningSharp = NamedTuning (name ++ "-qsharp") tuningSharp
+
+pentatonicOnly :: StdPitch -> NamedTuning
+pentatonicOnly stdPitch = NamedTuning "pentatonic" (makeTuning scale stdPitch)
+    where
+        scale12 = unScale twelveTetScale
+        scale = Scale $ [scale12 !! i | i <- [6, 8, 10]] ++ [2 * scale12 !! i | i <- [1, 3]]
+
+-- | Given a pitch and frequency to "anchor" the tunings, returns a collection of various 'NamedTuning's.
+defaultTunings :: StdPitch -> [NamedTuning]
+defaultTunings stdPitch = twelveToneTunings ++ [pentatonicOnly stdPitch] ++ nTetTunings ++ qshiftTunings
+    where
+        fromTemperament (name, scale) = NamedTuning name (makeTuning scale stdPitch)
+        twelveToneTunings = fromTemperament <$> allTemperaments
+        nTetRange = [i | i <- [6..36], i /= 12]
+        nTetTunings = [NamedTuning (show n ++ "TET") (nTetTuning n stdPitch) | n <- nTetRange]
+        qshiftTunings = quarterShiftSplits (C, 4) (NamedTuning "12TET" (twelveTetTuning stdPitch))
+
+
 -- * MIDI Retuning
 
 -- | Units of MIDI pitch bend per cent.
 pitchBendPerCent :: Double
 pitchBendPerCent = 8192 / 200
 
+-- | Retunes 'Music' to a different tuning.
 tuneMusic :: (ToMusic1 a) => Tuning -> Music a -> Music1
 tuneMusic tuning = mMap tuneNote . applyControls . toMusic1
     where
@@ -423,7 +493,7 @@ optimizeScale tunOpt intervals pc = vecToScale xf
         vecToScale = Scale . fmap (2.0 **) . (0.0 :) . V.toList
         intervalCtr = count $ collapseInterval <$> intervals
         lossFunc = pNormLoss tunOpt intervalCtr pc . vecToScale
-        x0 = V.fromList $ log2 <$> tail (unScale stdScale)  -- start with equal temperament
+        x0 = V.fromList $ log2 <$> tail (unScale twelveTetScale)  -- start with equal temperament
         (_, xf) = fdsaGradientDescent def tuningFinDiffFuncs lossFunc x0
 
 musicToIntervals :: (ToPitch a, ToMusicD m a) => m a -> [Interval]
@@ -448,3 +518,6 @@ musicToIntervals mus = vertIntervals ++ horizIntervals
 -- | Optimizes a 12-tone scale (starting on C) for a given piece of music.
 optimizeScaleForMusic :: (ToPitch a, ToMusicD m a) => TunOpt -> m a -> Scale Double
 optimizeScaleForMusic tunOpt mus = optimizeScale tunOpt (musicToIntervals mus) C
+
+
+-- 35: 60's organ broken

@@ -6,6 +6,7 @@
 module Misc.Utils where
 
 import qualified Data.Array as A
+import qualified Data.Array.IArray as IA
 import qualified Data.List (transpose)
 import Data.List.Split (chunksOf)
 import Data.Maybe (fromMaybe)
@@ -53,9 +54,13 @@ safeDiv x y = x / y
 
 -- * Arrays
 
--- | Constructs an array from a list of elements, using standard 0-up indexing.
+-- | Constructs an 'Array' from a list of elements, using standard 0-up indexing.
 mkArray :: (A.Ix i, Integral i) => [e] -> A.Array i e
 mkArray xs = A.listArray (0, fromIntegral $ length xs - 1) xs
+
+-- | Constructs an 'IArray' from a list of elements, using standard 0-up indexing.
+mkIArray :: (IA.IArray a e, IA.Ix i, Integral i) => [e] -> a i e
+mkIArray xs = IA.listArray (0, fromIntegral $ length xs - 1) xs
 
 -- | Given a filter function and an integer-indexed array, returns a new reindexed filtered array.
 filterArray :: (A.Ix i, Integral i) => (e -> Bool) -> A.Array i e -> A.Array i e
