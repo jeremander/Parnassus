@@ -1,6 +1,39 @@
-- split up packages?
-- generalized stochastic DFS (if limit to one sample, can get stuck)
-- simulated annealing
-- generation order
+- CLI program
+    - SoundFont
+        -- clean
+            -- remove unused samples/instruments
+        -- merge
+        -- show
+            -- print header, number of samples/insts/presets
+            -- list instrument names (with indices)
+            -- list preset name/bank/preset with index
+        -- filter-instruments
+        -- filter-presets
+        -- modify-header
+            -- update header info
+        -- retune
+            -- take in single tuning, alter all instruments to this tuning
+        -- retune-split
+            -- take in multiple tunings (JSON or multiple .tun files)
+            -- split into separate files (one instrument each), all tunings
+    - MIDI
+        - retune
+        - alter time signature
+        - scale time / tuning uniformly
+    - convert
+        - LilyPond <-> MIDI
+            - unit tests (quickcheck)
+                - toMidi . toLil = id
+                - toLil . toMidi . toLil = toLil
+        - MIDI + SoundFont -> WAV/MP3
+            - call fluidsynth
+            - fluidsynth  "GT Steel.sf2" -F "high-hopes.wav" high-hopes.mid
+
+    - play
+        - play MIDI (with SoundFont), LilyPond
+    - launch FluidSynth with SoundFont & direct MIDI input there
+
+
+- .tun files
 - make things more efficient (esp. MusicD)
 - map function for MusicD to manipulate all the leaf notes.

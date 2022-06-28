@@ -270,8 +270,6 @@ parseMarkupExpr =
     <|> try parseMarkupVar
     <|> MarkupText <$> parseToken
 
-
-
 parseMarkup :: (Stream s m Char) => ParsecT s LilypondState m Markup
 parseMarkup =   MarkupList <$> braces' (many1 $ parseMarkup <* sorc)
             <|> MarkupExpr <$> parseMarkupExpr

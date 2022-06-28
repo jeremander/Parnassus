@@ -16,7 +16,7 @@ import Data.Tuple.Select (sel3)
 import qualified Text.Pretty as P
 import Text.Pretty (Pretty(..), Printer, (<+>), (<//>), char, hsep, nest, sep, sepByS, string, vcat)
 import qualified Euterpea as E
-import Euterpea (Music(..), Pitch, PitchClass(..), mFold)
+import Euterpea (Music(..), Pitch, PitchClass(..), ToMusic1(..), mFold, mMap)
 
 import Misc.Utils (notImpl)
 import Music.Lilypond.Literal (Literal(..), Markup(..), MarkupExpr(..), Tweak)
@@ -55,6 +55,9 @@ instance ToPitch NotePitch where
 
 instance FromPitch NotePitch where
     fromPitch = (`NotePitch` Nothing)
+
+instance ToMusic1 NotePitch where
+    toMusic1 = mMap (\p -> (toPitch p, []))
 
 -- | Tempo name (e.g. allegro), and a specification of what note duration is one beat, along with BPM.
 data Tempo = Tempo (Maybe String) (Maybe (Duration, Integer))
@@ -140,7 +143,7 @@ data MusicL a =
     | Tremolo Int (MusicL a)                           -- ^ Tremolo (multiplier).
     | Times Rational (MusicL a)                        -- ^ Stretch music (multiplier).
     | Tuplet Rational (MusicL a)                       -- ^ Tuplet.
-    | TupletSpan (Maybe Duration)                      -- \tupletSpan (duration)
+    | TupletSpan (Maybe Duration)                      -- ^ \tupletSpan (duration)
     | Transpose Pitch Pitch (MusicL a)                 -- ^ Transpose music (from to).
     | Relative (Maybe Pitch) (MusicL a)                -- ^ Use relative octave (octave).
     | Lit Literal                                      -- ^ Single literal.

@@ -16,6 +16,7 @@ library
       Math.Optimize
       Math.Search
       Misc.Utils
+      Music.Convert
       Music.Dynamics
       Music.Lilypond
       Music.Lilypond.IO
@@ -77,6 +78,23 @@ library
     , vector >=0.12
     , vector-space >=0.15
   ghc-options: -Wall -Wno-missing-signatures -Wno-name-shadowing -Wno-orphans -Wno-type-defaults -Wno-unused-do-bind
+--   default-language: GHC2021
+
+executable parnassus
+  main-is: Main.hs
+  other-modules:
+      Convert
+    , SoundFont
+  -- other-extensions:
+  build-depends:
+      aeson >=2.0
+    , base >=4.7
+    , directory >=1.3
+    , Euterpea >=2.1.0
+    , filepath >=1.4
+    , optparse-applicative >=0.17
+    , Parnassus
+  hs-source-dirs: parnassus
 --   default-language: GHC2021
 
 test-suite Parnassus-test

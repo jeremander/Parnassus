@@ -185,6 +185,9 @@ instance PrettyPitch Pitch where
                     | n > 0     = concat $ replicate n "'"
                     | otherwise = ""
 
+instance {-# OVERLAPPABLE #-} (ToPitch a) => PrettyPitch a where
+    prettyPitch lang = prettyPitch lang . toPitch
+
 
 -- * Modes and Keys
 

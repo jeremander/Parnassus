@@ -1,5 +1,7 @@
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -10,7 +12,8 @@ import Control.Monad (forM_)
 import qualified Data.Array as A
 import Data.Array ((!), elems)
 import qualified Data.Array.IArray as IA
-import Data.List (nub)
+import Data.Data (Data(..), cast, toConstr)
+import Data.List (nub, sortOn)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as S
@@ -19,6 +22,7 @@ import qualified Data.Text as T
 import Data.Time (getCurrentTime)
 import System.FilePath.Posix ((<.>), (</>))
 import System.Posix.User (getEffectiveUserName)
+import qualified Text.Pretty as P
 
 import Misc.Utils (Conj, conj, cumsum, inverseIndexMap, mkArray, mkIArray, pairwise, safeHead, strip)
 import Music.Tuning (Cents, centsFromStd, NamedTuning(..), Tuning)
@@ -62,6 +66,10 @@ getKeyRange _                    = Nothing
 getInstIdx :: Generator -> Maybe Int
 getInstIdx (InstIndex i) = Just $ fromIntegral i
 getInstIdx _             = Nothing
+
+getSampleIdx :: Generator -> Maybe Int
+getSampleIdx (SampleIndex i) = Just $ fromIntegral i
+getSampleIdx _               = Nothing
 
 -- | Given 'Pdta' and a preset index, extracts the corresponding index 'Span' for the preset's @pbag@s.
 pbagSpan :: Pdta -> Int -> Span
@@ -125,6 +133,45 @@ data SFData = SFData {
     sfPdta :: SFPdta
 } deriving (Eq, Show)
 
+-- | For each preset, gets the list of instrument indices it uses.
+instIndicesForPresets :: SFPdta -> [[Int]]
+instIndicesForPresets sfPdata = mapMaybe getInstIdx <$> gens
+    where gens = concatMap fst . snd <$> sfPhdrs sfPdata
+
+-- Gets the indices of all instrument indices used by any preset.
+instIndicesUsed :: SFPdta -> [Int]
+instIndicesUsed sfPdata = sort $ nub $ concat $ instIndicesForPresets sfPdata
+
+-- | For each preset, gets the list of sample indices it uses.
+-- | For each instrument, gets the list of sample indices it uses.
+sampleIndicesForPresets :: SFPdta -> [[Int]]
+sampleIndicesForPresets sfPdata = mapMaybe getSampleIdx <$> gens
+    where gens = fst <$> concatMap snd (sfPhdrs sfPdata)
+
+-- | For each instrument, gets the list of sample indices it uses.
+sampleIndicesForInsts :: SFPdta -> [[Int]]
+sampleIndicesForInsts sfPdata = mapMaybe getSampleIdx <$> gens
+    where gens = fst <$> concatMap snd (sfInsts sfPdata)
+
+-- | Gets the indices of all sample indices used by any preset or instrument.
+sampleIndicesUsed :: SFPdta -> [Int]
+sampleIndicesUsed sfPdata = sort $ nub $ concat $ sampleIndicesForPresets sfPdata ++ sampleIndicesForInsts sfPdata
+
+-- | Checks whether 'SFData' is valid, issuing an error message if it is not.
+validateSfData :: SFData -> Either String ()
+validateSfData sf = result
+    where
+        sfPdata = sfPdta sf
+        maxParams = 65536
+        presetBags = concat [snd pair | pair <- sfPhdrs sfPdata]
+        numPresetGens = sum [length gens | (gens, _) <- presetBags]
+        instBags = concat [snd pair | pair <- sfInsts sfPdata]
+        numInstGens = sum [length gens | (gens, _) <- instBags]
+        result
+            | numPresetGens > maxParams = Left $ "number of preset generators = " ++ show numPresetGens ++ " > " ++ show maxParams
+            | numInstGens > maxParams   = Left $ "number of instrument generators = " ++ show numInstGens ++ " > " ++ show maxParams
+            | otherwise                 = Right ()
+
 -- | Reindexes the presets to start from bank 0, preset 0, with no skipping.
 reindexPresets :: SFPhdrs -> SFPhdrs
 reindexPresets sfPhdrs = sfPhdrs'
@@ -171,12 +218,7 @@ sfFilterUnusedSamples :: SFMod
 sfFilterUnusedSamples sf = sfFilterUnusedSampleData sf'
     where
         sfPdata = sfPdta sf
-        -- identify the sample indices used in any preset/instrument
-        getSampleIdx (SampleIndex i) = Just i
-        getSampleIdx _               = Nothing
-        allBags = concat $ (snd <$> sfPhdrs sfPdata) ++ (snd <$> sfInsts sfPdata)
-        allGens = concatMap fst allBags
-        sampleIndices = fromIntegral <$> (sort $ nub $ mapMaybe getSampleIdx allGens)
+        sampleIndices = sampleIndicesUsed sfPdata
         -- filter the samples to include only the ones used
         sfShdrs' = sfShdrs sfPdata `listAtIndices` sampleIndices
         -- reindex the samples and adjust the indices in all Generators
@@ -260,6 +302,55 @@ instance Monoid SFData where
             sfPdta' = SFPdta {sfPhdrs = sfPhdrs', sfInsts = sfInsts', sfShdrs = sfShdrs'}
             sf' = SFData {sfInfos = sfInfos', sfSdta = sfSdta', sfPdta = sfPdta'}
 
+-- ** Pretty Printing
+
+deriving instance Data Info
+
+instance P.Pretty Info where
+    -- TODO: make this prettier with justification
+    pretty info = P.string $ go info
+        where
+            showArg arg = maybe "" (concat . filter (not . null) . lines) (cast arg :: Maybe String)
+            go (Version major minor) = "Version: " ++ show major ++ "." ++ show minor
+            go (RomVersion major minor) = "RomVersion: " ++ show major ++ "." ++ show minor
+            go info@(ReservedInfo {}) = show info
+            go info = (show $ toConstr info) ++ ": " ++ head (gmapQ showArg info)
+
+instance P.Pretty SFPdta where
+    pretty sfPdata = P.vcat segments
+        where
+            justLeft n s = s ++ replicate (n - length s) ' '
+            getBagLine bags = P.string $ "\t" ++ show numGens ++ " generator, " ++ show numMods ++ " modulator parameters"
+                where
+                    numGens = sum $ length . fst <$> bags
+                    numMods = sum $ length . snd <$> bags
+            getPhdrLine phdr = P.string $ justLeft 6 (show $ bank phdr) ++ justLeft 8 (show $ preset phdr) ++ presetName phdr
+            phdrKey phdr = (bank phdr, preset phdr)
+            numPresets = length $ sfPhdrs sfPdata
+            presetBags = concatMap snd (sfPhdrs sfPdata)
+            numInsts = length $ sfInsts sfPdata
+            instBags = concatMap snd (sfInsts sfPdata)
+            numSamples = length $ sfShdrs sfPdata
+            numUnusedInsts = numInsts - (length $ instIndicesUsed sfPdata)
+            numUnusedSamples = numSamples - (length $ sampleIndicesUsed sfPdata)
+            hdrSeg = P.vcat [
+                    P.string $ "Number of presets     = " ++ show numPresets,
+                    getBagLine presetBags,
+                    P.string $ "Number of instruments = " ++ show numInsts ++ (if numUnusedInsts > 0 then " (" ++ show numUnusedInsts ++ " unused)" else ""),
+                    getBagLine instBags,
+                    P.string $ "Number of samples     = " ++ show numSamples ++ (if numUnusedSamples > 0 then " (" ++ show numUnusedSamples ++ " unused)" else ""),
+                    P.string ""
+                ]
+            presetSeg = P.vcat $ [
+                P.string "Bank  Preset  Name",
+                P.string "------------------"
+                ] ++ (getPhdrLine <$> sortOn phdrKey (fst <$> sfPhdrs sfPdata))
+            segments = [hdrSeg, presetSeg]
+
+instance P.Pretty SFData where
+    pretty sf = P.vcat $ (P.pretty <$> sfInfos sf) ++ [P.string "", P.pretty $ sfPdta sf]
+
+
 -- ** Conversion
 
 -- | Converts 'Pdta' to 'SFPdta'.
@@ -303,11 +394,11 @@ sfPdtaToPdta sfPdata = pdata
         pbagOffsets = cumsum $ length <$> sfPbags
         phdrs = mkArray $ [phdr {presetBagNdx = fromIntegral i} | (i, phdr) <- zip pbagOffsets (phdrList ++ [terminalPhdr])]
         pgenZones = map fst <$> sfPbags
-        pgenZoneLengths = map length <$> pgenZones
-        pbagGenOffsets = cumsum $ fromIntegral . sum <$> pgenZoneLengths
+        pgenZoneLengths = concatMap (map length) pgenZones
+        pbagGenOffsets = cumsum $ fromIntegral <$> pgenZoneLengths
         pmodZones = map snd <$> sfPbags
-        pmodZoneLengths = map length <$> pmodZones
-        pbagModOffsets = cumsum $ fromIntegral . sum <$> pmodZoneLengths
+        pmodZoneLengths = concatMap (map length) pmodZones
+        pbagModOffsets = cumsum $ fromIntegral <$> pmodZoneLengths
         pbags = mkArray $ [Bag {genNdx, modNdx} | (genNdx, modNdx) <- zip pbagGenOffsets pbagModOffsets]
         pmods = mkArray $ concatMap concat pmodZones ++ [terminalMod]
         pgens = mkArray $ concatMap concat pgenZones ++ [terminalGen]
@@ -423,11 +514,6 @@ sfCopyInstruments rename n = sfReindexPresets . overSfPdta go
 
 -- *** Filtering
 
--- | For each preset, gets the list of instrument indices it utilizes.
-instIndicesForPresets :: SFPdta -> [[Int]]
-instIndicesForPresets sfPdata = mapMaybe getInstIdx <$> gens
-    where gens = concatMap fst . snd <$> sfPhdrs sfPdata
-
 -- | Given instrument indices to be kept, filters the instruments by these indices, and reindexes the instruments to start from 0.
 sfPdtaFilterInstruments :: [Int] -> SFPdta -> SFPdta
 sfPdtaFilterInstruments instIndices sfPdata = (mapGen fixGen sfPdata) {sfInsts = sfInsts'}
@@ -445,7 +531,7 @@ sfPdtaFilterUnusedInstruments sfPdata = if (length instIndices == numInsts) then
     where
         numInsts = length $ sfInsts sfPdata
         -- get indices of instruments used in any preset
-        instIndices = sort $ nub $ concat $ instIndicesForPresets sfPdata
+        instIndices = instIndicesUsed sfPdata
         sfPdata' = sfPdtaFilterInstruments instIndices sfPdata
 
 -- | Given preset indices, filters 'SFData' to include only the specified presets. Then filters out any unused instruments and samples.
@@ -469,6 +555,13 @@ sfFilterInstruments instIndices sf = sfFilterPresets presetIndices sf'
         instIdxSet = S.fromList instIndices
         presetIndices = [i | (i, inds) <- zip [0..] (instIndicesForPresets sfPdata), or [j `S.member` instIdxSet | j <- inds]]
 
+-- | Filters out unused instruments.
+sfFilterUnusedInstruments :: SFMod
+sfFilterUnusedInstruments = overSfPdta sfPdtaFilterUnusedInstruments
+
+-- | Removes unused samples and instruments.
+sfClean :: SFMod
+sfClean = sfFilterUnusedSamples . sfFilterUnusedInstruments
 
 -- *** Retuning
 
@@ -576,7 +669,11 @@ saveSoundFont :: FilePath -> SoundFont -> IO ()
 saveSoundFont = exportFile
 
 saveSfData :: FilePath -> SFData -> IO ()
-saveSfData path = saveSoundFont path . sfDataToSoundFont
+saveSfData path sf = do
+    case validateSfData sf of
+        Left err -> fail err
+        _        -> return ()
+    saveSoundFont path $ sfDataToSoundFont sf
 
 -- | Given an IO function modifying an 'SFData', an input path, and an output path, loads a 'SoundFont' from the input file, applies the modification, then saves it to the output file.
 modifySfData :: SFModIO -> FilePath -> FilePath -> IO ()
@@ -589,6 +686,18 @@ modifySfData f infile outfile = do
 
 -- ** File Operations
 
+-- | Given multiple input .sf2 paths, merges them together into a single SoundFont.
+mergeSoundFonts :: [FilePath] -> FilePath -> IO ()
+mergeSoundFonts infiles outfile = do
+    putStrLn $ "Merging " ++ show (length infiles) ++ " SoundFont(s)."
+    let go infile = do
+        putStrLn $ "\tLoading " ++ infile
+        loadSfData infile
+    sfs <- mapM go infiles
+    let sf = mconcat sfs
+    putStrLn $ "Saving " ++ outfile
+    saveSfData outfile sf
+
 -- | Given some named tunings, an input .sf2 file, and an output directory, splits up the SoundFont into separate instruments and creates a new .sf2 file for each instrument containing all of the specified tunings.
 retuneSoundFont :: [NamedTuning] -> FilePath -> FilePath -> IO ()
 retuneSoundFont pairs infile outdir = do
@@ -597,8 +706,15 @@ retuneSoundFont pairs infile outdir = do
     let instList = sfInsts $ sfPdta sf
     let numInsts = length instList
     let stripDots s = fromMaybe s (T.stripSuffix "." s)
+    putStrLn $ "Retuning " ++ show numInsts ++ " instrument(s)..."
     forM_ [0..(numInsts - 1)] $ \i -> do
         let outfile = outdir </> show i ++ " - " ++ (T.unpack $ stripDots $ T.pack $ strip $ fst $ instList !! i) <.> "sf2"
         let sf' = sfInstrumentRetuned pairs i sf
         putStrLn $ "\t" ++ outfile
         saveSfData outfile sf'
+
+-- | Renders text summarizing a SoundFont file.
+showSoundFont :: FilePath -> IO String
+showSoundFont infile = do
+    sf <- loadSfData infile
+    return $ P.runPrinter $ P.pretty sf

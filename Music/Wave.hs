@@ -9,23 +9,23 @@ import Euterpea (AudSF, Instr, InstrMap, InstrumentName(..), Table(..), apToHz, 
 import System.IO.Unsafe (unsafePerformIO)
 
 
--- signals with 44100 Hz sample rate
+-- | Signals with 44100 Hz sample rate.
 type AudSig = AudSF () Double
 
--- audio signal represented as a sequence of sample values
+-- | Audio signal represented as a sequence of sample values.
 type Sig = [Double]
 
--- default CD sample rate
+-- | Default CD sample rate.
 audRate :: Int
 audRate = 44100
 
--- Euterpea to wav --
+-- ** Euterpea to WAV
 
--- removes clicking that results from sudden phase shift
+-- | Removes clicking that results from sudden phase shift.
 asrEnvelope :: Double -> AudSig
 asrEnvelope dur = envASR (0.1 * dur) (1.0 * dur) (0.1 * dur)
 
--- converts a wave table to an instrument for playing to a wav file
+-- | Converts a wave table to an instrument for playing to a wav file.
 waveTableToInstr :: Table -> Instr AudSig
 waveTableToInstr tab = instr
     where
@@ -38,7 +38,7 @@ waveTableToInstr tab = instr
                 amp <- env -< ()          -- envelope magnitude
                 outA -< amp * v * aud
 
--- loads a single-channel normalized wave cycle into a Table
+-- | Loads a single-channel normalized wave cycle into a 'Table'.
 loadCycle :: FilePath -> Table
 loadCycle path = tab
     where
@@ -47,11 +47,11 @@ loadCycle path = tab
         numSamples = length samples
         tab = Table numSamples (UA.listArray (0, numSamples) samples) True
 
--- constructs an InstrMap from a name and Table
+-- | Constructs an 'InstrMap' from a name and 'Table'.
 instrMap :: String -> Table -> InstrMap AudSig
 instrMap name tab = [(CustomInstrument name, waveTableToInstr tab)]
 
--- simple sine wave instrument
+-- | Simple sine wave instrument.
 sineInstrMap :: InstrMap AudSig
 sineInstrMap = instrMap "Sine" (tableSinesN 4096 [1])
 
@@ -59,21 +59,21 @@ loadWaveInstrMap :: String -> FilePath -> InstrMap AudSig
 loadWaveInstrMap name path = instrMap name (loadCycle path)
 
 
--- Direct signal approach --
+-- ** Direct signal approach
 
 linspace :: Double -> Double -> Int -> [Double]
 linspace start stop n = [start, (start + delta)..stop]
     where delta = (stop - start) / (fromIntegral n - 1)
 
--- a sine wave tone of the given duration and frequency
+-- | A sine wave tone of the given duration and frequency.
 tone :: Double -> Double -> Sig
 tone d freq = [sin (c * t) | t <- ts]
     where
         c = 2 * pi * freq
         ts = linspace 0 d (round $ fromIntegral audRate * d)
 
--- creates a trapezoidal amplitude envelope for the given duration
--- frac is the fraction of the time spent ramping (should be in [0, 1])
+-- | Creates a trapezoidal amplitude envelope for the given duration.
+--   @frac@ is the fraction of the time spent ramping (should be in [0, 1]).
 trapEnvelope :: Double -> Double -> Sig
 trapEnvelope d frac = seg1 ++ (replicate (n - 2 * k) 1.0) ++ seg2
     where
@@ -82,10 +82,10 @@ trapEnvelope d frac = seg1 ++ (replicate (n - 2 * k) 1.0) ++ seg2
         seg1 = linspace 0 1 k
         seg2 = linspace 1 0 k
 
--- a tone modulated by an amplitude envelope
+-- | A tone modulated by an amplitude envelope.
 envTone :: Double -> Double -> Double -> Sig
 envTone d frac freq = zipWith (*) (trapEnvelope d frac) (tone d freq)
 
--- adds multiple signals into one
+-- | Adds multiple signals into one.
 signalChord :: [Sig] -> Sig
 signalChord sigs = map sum (Data.List.transpose sigs)

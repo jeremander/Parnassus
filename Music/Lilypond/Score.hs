@@ -152,7 +152,7 @@ instance ToLilypond Score a where
 instance ToLilypond MusicL a where
     toLilypond mus = toLilypond $ Score [ScoreMusic mus]
 
--- | Eliminates all \includes by substituting the corresponding Lilypond code
+-- | Eliminates all \includes by substituting the corresponding Lilypond code.
 spliceIncludes :: Lilypond a -> Lilypond a
 spliceIncludes (Lilypond tops) = Lilypond (go tops)
     where
@@ -160,6 +160,7 @@ spliceIncludes (Lilypond tops) = Lilypond (go tops)
         go (x:xs) = case x of
             Include _ (Lilypond tops') -> go tops' ++ go xs
             _                          -> x : go xs
+
 
 -- convenience aliases
 
