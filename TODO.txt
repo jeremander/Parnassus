@@ -4,6 +4,7 @@
             -- remove unused samples/instruments
         -- merge
         -- show
+            - make showing presets optional
             -- print header, number of samples/insts/presets
             -- list instrument names (with indices)
             -- list preset name/bank/preset with index

@@ -13,19 +13,22 @@ import qualified Data.Array as A
 import Data.Array ((!), elems)
 import qualified Data.Array.IArray as IA
 import Data.Data (Data(..), cast, toConstr)
-import Data.List (nub, sortOn)
+import Data.List (nub)
 import qualified Data.Map as M
 import Data.Maybe (catMaybes, fromMaybe, isJust, mapMaybe)
 import qualified Data.Set as S
 import Data.Sort (sort)
 import qualified Data.Text as T
 import Data.Time (getCurrentTime)
+import Data.Version (showVersion)
 import System.FilePath.Posix ((<.>), (</>))
 import System.Posix.User (getEffectiveUserName)
 import qualified Text.Pretty as P
 
+import Paths_Parnassus (version)
 import Misc.Utils (Conj, conj, cumsum, inverseIndexMap, mkArray, mkIArray, pairwise, safeHead, strip)
 import Music.Tuning (Cents, centsFromStd, NamedTuning(..), Tuning)
+
 
 
 type Span = (Int, Int)
@@ -320,12 +323,11 @@ instance P.Pretty SFPdta where
     pretty sfPdata = P.vcat segments
         where
             justLeft n s = s ++ replicate (n - length s) ' '
-            getBagLine bags = P.string $ "\t" ++ show numGens ++ " generator, " ++ show numMods ++ " modulator parameters"
+            getBagLine bags = P.string $ "    " ++ show numGens ++ " generator, " ++ show numMods ++ " modulator parameters"
                 where
                     numGens = sum $ length . fst <$> bags
                     numMods = sum $ length . snd <$> bags
-            getPhdrLine phdr = P.string $ justLeft 6 (show $ bank phdr) ++ justLeft 8 (show $ preset phdr) ++ presetName phdr
-            phdrKey phdr = (bank phdr, preset phdr)
+            getPhdrLine i phdr = P.string $ justLeft 7 (show i) ++ justLeft 6 (show $ bank phdr) ++ justLeft 8 (show $ preset phdr) ++ presetName phdr
             numPresets = length $ sfPhdrs sfPdata
             presetBags = concatMap snd (sfPhdrs sfPdata)
             numInsts = length $ sfInsts sfPdata
@@ -334,17 +336,17 @@ instance P.Pretty SFPdta where
             numUnusedInsts = numInsts - (length $ instIndicesUsed sfPdata)
             numUnusedSamples = numSamples - (length $ sampleIndicesUsed sfPdata)
             hdrSeg = P.vcat [
-                    P.string $ "Number of presets     = " ++ show numPresets,
+                    P.string $ "Number of presets: " ++ show numPresets,
                     getBagLine presetBags,
-                    P.string $ "Number of instruments = " ++ show numInsts ++ (if numUnusedInsts > 0 then " (" ++ show numUnusedInsts ++ " unused)" else ""),
+                    P.string $ "Number of instruments: " ++ show numInsts ++ (if numUnusedInsts > 0 then " (" ++ show numUnusedInsts ++ " unused)" else ""),
                     getBagLine instBags,
-                    P.string $ "Number of samples     = " ++ show numSamples ++ (if numUnusedSamples > 0 then " (" ++ show numUnusedSamples ++ " unused)" else ""),
+                    P.string $ "Number of samples: " ++ show numSamples ++ (if numUnusedSamples > 0 then " (" ++ show numUnusedSamples ++ " unused)" else ""),
                     P.string ""
                 ]
             presetSeg = P.vcat $ [
-                P.string "Bank  Preset  Name",
-                P.string "------------------"
-                ] ++ (getPhdrLine <$> sortOn phdrKey (fst <$> sfPhdrs sfPdata))
+                P.string "Index  Bank  Preset  Name",
+                P.string "--------------------------"
+                ] ++ [getPhdrLine i phdr | (i, phdr) <- zip [0..] (fst <$> sfPhdrs sfPdata)]
             segments = [hdrSeg, presetSeg]
 
 instance P.Pretty SFData where
@@ -471,14 +473,6 @@ sfRenamePresets rename = overSfPdta go
 -- | Strips whitespace from the names of all presets and instruments in a 'SoundFont'.
 sfStripNames :: SFMod
 sfStripNames = sfRenamePresets strip . sfRenameInsts strip
-
--- | Adds a username and creation date to the header of a 'SoundFont'.
-sfStampWithUserAndTime :: SFModIO
-sfStampWithUserAndTime sf = do
-    time <- getCurrentTime
-    user <- getEffectiveUserName
-    let sfInfos' = sfInfos sf ++ [CreationDate $ show time, Authors user]
-    return $ sf {sfInfos = sfInfos'}
 
 -- | Resets the bank/preset indices to start from bank 0, preset 0.
 sfReindexPresets :: SFMod
@@ -684,6 +678,38 @@ modifySfData f infile outfile = do
     putStrLn $ "Saving " ++ outfile
     saveSfData outfile sf'
 
+-- ** Header Modification
+
+-- | Options for modifying a SoundFont header.
+data ModifyHeaderOpts = ModifyHeaderOpts {
+    hdrBankName :: Maybe String,
+    hdrAuthors :: Maybe String,
+    hdrCopyright :: Maybe String,
+    hdrComments :: Maybe String
+}
+
+addOrModifyHeaderInfo :: Maybe Info -> [Info] -> [Info]
+addOrModifyHeaderInfo maybeInfo infos = infos'
+    where
+        constrMatches info info' = toConstr info == toConstr info'
+        infos' = case maybeInfo of
+            Nothing   -> infos
+            Just info -> filter (not . constrMatches info) infos ++ [info]
+
+-- | Given header modification opts, modifies the header of 'SFData' .
+sfModifyHeader :: ModifyHeaderOpts -> SFModIO
+sfModifyHeader opts sf = do
+    time <- getCurrentTime
+    user <- getEffectiveUserName
+    let bank = BankName <$> hdrBankName opts
+    let creation = Just $ CreationDate $ show time
+    let authors = Just $ Authors $ fromMaybe user (hdrAuthors opts)
+    let copyright = CopyrightMessage <$> hdrCopyright opts
+    let comments = Comments <$> hdrComments opts
+    let tools = Just $ UsedTools $ "parnassus v" ++ showVersion version
+    let sfInfos' = foldr ($) (sfInfos sf) (addOrModifyHeaderInfo <$> [tools, comments, copyright, authors, creation, bank])
+    return $ sf {sfInfos = sfInfos'}
+
 -- ** File Operations
 
 -- | Given multiple input .sf2 paths, merges them together into a single SoundFont.
@@ -714,7 +740,8 @@ retuneSoundFont pairs infile outdir = do
         saveSfData outfile sf'
 
 -- | Renders text summarizing a SoundFont file.
-showSoundFont :: FilePath -> IO String
-showSoundFont infile = do
+showSoundFont :: Bool -> FilePath -> IO String
+showSoundFont showPresets infile = do
     sf <- loadSfData infile
-    return $ P.runPrinter $ P.pretty sf
+    let printer = if showPresets then P.pretty sf else P.vcat (P.pretty <$> sfInfos sf)
+    return $ P.runPrinter printer

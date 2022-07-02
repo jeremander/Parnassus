@@ -223,7 +223,7 @@ instance {-# OVERLAPPABLE #-} (JointDiscreteDistribution d v a, b ~ [a]) => Simu
     samples = samples . forgetJoint
 
 
--- * 'JointDiscreteDist': full joint probability table
+-- ** 'JointDiscreteDist': full joint probability table
 
 data JointDiscreteDist v a = JointDiscrete
     { numVars :: Int,
@@ -336,7 +336,7 @@ instance (Eq v, Ord v, Ord a, Show a) => JointDiscreteDistribution JointDiscrete
             probs = V.toList $ entries jProbs
 
 
--- * 'IndependentDiscreteDist': joint probability factorized as several independent discrete distributions
+-- ** 'IndependentDiscreteDist': joint probability factorized as several independent discrete distributions
 
 newtype IndependentDiscreteDist v a = IndependentDiscrete [DiscreteDist v a]
     deriving (Eq, Show)
