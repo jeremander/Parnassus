@@ -1,4 +1,7 @@
-module TestMarkov where
+module Test.Markov where
+
+import Test.Tasty
+import Test.Tasty.HUnit
 
 import Data.Default (Default(..))
 import Math.Markov (CharNgramParams(..), trainCharNgramModel, trainTerminatingMarkovModel, trainTerminatingNgramModel)
@@ -12,12 +15,14 @@ test1gram = trainTerminatingNgramModel 1 Nothing 0 ["abccc"]
 test2gram = trainTerminatingNgramModel 2 Nothing 0 ["abcccabcababbbabacbaccbaa"]
 
 alicePath = "test/alice.txt"
+aliceCorpus = readFile alicePath
 
-testMarkov :: IO ()
-testMarkov = do
-    alice <- readFile alicePath
-    return $ trainCharNgramModel 1 def alice
-    return $ trainCharNgramModel 2 def alice
-    return $ trainCharNgramModel 3 def alice
-    return $ trainCharNgramModel 4 def alice
-    putStrLn "Markov test complete"
+ngramTest :: Int -> TestTree
+ngramTest n = testCase (show n ++ "-gram") $ do
+    corpus <- aliceCorpus
+    let model = trainCharNgramModel n def corpus
+    return $ seq model ()
+
+ngramTests = testGroup "n-gram tests" $ ngramTest <$> [1..4]
+
+markovTests = testGroup "Markov chain tests" [ngramTests]

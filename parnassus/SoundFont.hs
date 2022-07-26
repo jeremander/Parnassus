@@ -12,7 +12,8 @@ import Options.Applicative
 import System.Directory (createDirectoryIfMissing)
 import Text.Read.Lex (Lexeme(..))
 
-import Music.SoundFont (ModifyHeaderOpts(..), SFData(..), SFModIO, SFPdta(..), Span, mergeSoundFonts, modifySfData, retuneSoundFont, showSoundFont, sfClean, sfFilterPresets, sfModifyHeader)
+import Misc.Utils (idxOrSpanToIndices, parseIdxOrSpans)
+import Music.SoundFont (ModifyHeaderOpts(..), SFData(..), SFModIO, SFPdta(..), mergeSoundFonts, modifySfData, retuneSplitSoundFont, showSoundFont, sfClean, sfFilterPresets, sfModifyHeader)
 
 
 attoparsecReader :: A.Parser a -> ReadM a
@@ -49,20 +50,8 @@ runClean (CleanOpts opts) = do
 
 -- ** @filter-presets@
 
-newtype IdxSpan = IdxSpan Span
-    deriving (Eq, Show)
-
-parseIdxSpan :: A.Parser IdxSpan
-parseIdxSpan = IdxSpan <$> ((,) <$> A.decimal <*> (A.char '-' *> A.decimal))
-
-idxSpanToIndices :: IdxSpan -> [Int]
-idxSpanToIndices (IdxSpan (start, stop)) = [start..stop]
-
 parseIndices :: A.Parser [Int]
-parseIndices = concat <$> A.sepBy (spanParser <|> idxParser) (A.many' $ A.char ',')
-    where
-        spanParser = idxSpanToIndices <$> parseIdxSpan
-        idxParser = pure <$> A.decimal
+parseIndices = concatMap idxOrSpanToIndices <$> parseIdxOrSpans
 
 data FilterPresetsOpts = FilterPresetsOpts SFModOpts [Int]
 
@@ -134,7 +123,7 @@ runRetuneSplit :: RetuneSplitOpts -> IO ()
 runRetuneSplit (RetuneSplitOpts {inputFile, tuningFile, outputDir}) = do
     namedTunings <- fromJust <$> decodeFileStrict' tuningFile
     createDirectoryIfMissing False outputDir
-    retuneSoundFont namedTunings inputFile outputDir
+    retuneSplitSoundFont namedTunings inputFile outputDir
     putStrLn "Done!"
 
 -- ** @show@

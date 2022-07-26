@@ -90,8 +90,8 @@ pythagoreanComma :: LogRatio
 pythagoreanComma = 12 * log2 3 - 19
 
 -- | Converts a ratio to a number of cents.
-toCents :: (ToDouble a) => a -> Cents
-toCents x = log2 (toDouble x) / cent
+ratioToCents :: (ToDouble a) => a -> Cents
+ratioToCents x = log2 (toDouble x) / cent
 
 -- | Shifts a frequency by a given log-ratio.
 shiftFreq :: Freq -> LogRatio -> Freq
@@ -191,7 +191,7 @@ stdTuning = twelveTetTuning ((A, 4), 440.0)
 
 -- | Given a 'Tuning', computes the corresponding deviations (in cents) from standard tuning.
 centsFromStd :: Tuning -> [Cents]
-centsFromStd (Tuning tuning) = toCents <$> zipWith (/) tuning (unTuning stdTuning)
+centsFromStd (Tuning tuning) = ratioToCents <$> zipWith (/) tuning (unTuning stdTuning)
 
 eqTmp440 = stdTuning
 eqTmp432 = transposeTuning eqTmp440 (432 / 440)

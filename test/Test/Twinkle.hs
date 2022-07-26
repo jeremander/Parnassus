@@ -1,4 +1,4 @@
-module Twinkle where
+module Test.Twinkle where
 
 import Euterpea hiding (line, play)
 

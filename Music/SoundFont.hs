@@ -30,7 +30,6 @@ import Misc.Utils (Conj, conj, cumsum, inverseIndexMap, mkArray, mkIArray, pairw
 import Music.Tuning (Cents, centsFromStd, NamedTuning(..), Tuning)
 
 
-
 type Span = (Int, Int)
 type Generators = [Generator]
 type Mods = [Mod]
@@ -725,8 +724,8 @@ mergeSoundFonts infiles outfile = do
     saveSfData outfile sf
 
 -- | Given some named tunings, an input .sf2 file, and an output directory, splits up the SoundFont into separate instruments and creates a new .sf2 file for each instrument containing all of the specified tunings.
-retuneSoundFont :: [NamedTuning] -> FilePath -> FilePath -> IO ()
-retuneSoundFont pairs infile outdir = do
+retuneSplitSoundFont :: [NamedTuning] -> FilePath -> FilePath -> IO ()
+retuneSplitSoundFont pairs infile outdir = do
     putStrLn $ "Loading " ++ infile
     sf <- loadSfData infile
     let instList = sfInsts $ sfPdta sf

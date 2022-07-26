@@ -5,8 +5,10 @@
 
 module Misc.Utils where
 
+import Control.Applicative ((<|>))
 import qualified Data.Array as A
 import qualified Data.Array.IArray as IA
+import Data.Attoparsec.Text (char, decimal, Parser, sepBy)
 import qualified Data.List (transpose)
 import Data.List.Split (chunksOf)
 import Data.Maybe (fromMaybe)
@@ -16,7 +18,7 @@ import qualified Data.Text as T
 import Data.Tuple.Select
 
 
--- * Math
+-- ** Math
 
 -- | Coercion to 'Double'.
 class ToDouble a where
@@ -52,7 +54,7 @@ safeDiv :: (Eq a, Fractional a) => a -> a -> a
 safeDiv 0 0 = 0
 safeDiv x y = x / y
 
--- * Arrays
+-- ** Arrays
 
 -- | Constructs an 'Array' from a list of elements, using standard 0-up indexing.
 mkArray :: (A.Ix i, Integral i) => [e] -> A.Array i e
@@ -70,7 +72,26 @@ filterArray f arr = mkArray $ filter f $ A.elems arr
 atIndices ::  (A.Ix i, Integral i) => A.Array i e -> [Int] -> [e]
 atIndices xs indices = [xs A.! fromIntegral i | i <- indices]
 
--- * Miscellaneous
+-- ** Span
+
+-- | A span of integer indices (min, max).
+newtype IdxSpan = IdxSpan (Int, Int)
+    deriving (Eq, Show)
+
+data IdxOrSpan = Idx Int | Span (Int, Int)
+    deriving (Eq, Show)
+
+idxOrSpanToIndices :: IdxOrSpan -> [Int]
+idxOrSpanToIndices (Idx i)              = [i]
+idxOrSpanToIndices (Span (start, stop)) = [start..stop]
+
+parseIdxOrSpan :: Parser IdxOrSpan
+parseIdxOrSpan = (Span <$> ((,) <$> decimal <*> (char '-' *> decimal))) <|> (Idx <$> decimal)
+
+parseIdxOrSpans :: Parser [IdxOrSpan]
+parseIdxOrSpans = sepBy parseIdxOrSpan (char ',')
+
+-- ** Miscellaneous
 
 notImpl :: String -> a
 notImpl a = error $ "Not implemented: " ++ a

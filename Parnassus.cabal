@@ -32,6 +32,7 @@ library
       Music.Species.Base
       Music.Species.First
       Music.Tuning
+      Music.Tuning.Tun
       Music.Types
       Music.Types.MusicD
       Music.Types.MusicT
@@ -49,6 +50,7 @@ library
     , WAVE
     , aeson >=2.0
     , array >=0.5
+    , attoparsec >=0.14
     , base >=4.7
     , containers >=0.6
     , counter >=0.1
@@ -68,6 +70,7 @@ library
     , process >=1.6
     , random >=1.1
     , range >=0.3
+    , scientific >=0.3
     , search-algorithms >=0.3
     , sort >=1.0
     , split >=0.2
@@ -103,9 +106,10 @@ test-suite Parnassus-test
   type: exitcode-stdio-1.0
   main-is: Spec.hs
   other-modules:
-      TestDist
-      TestMarkov
-      Twinkle
+      Test.Dist
+      Test.Markov
+      Test.Tun
+      Test.Twinkle
       Paths_Parnassus
   hs-source-dirs:
       test
@@ -119,6 +123,7 @@ test-suite Parnassus-test
     , WAVE
     , aeson >=2.0
     , array >=0.5
+    , attoparsec >=0.14
     , base >=4.7
     , containers >=0.6
     , counter >=0.1
@@ -141,6 +146,9 @@ test-suite Parnassus-test
     , search-algorithms >=0.3
     , sort >=1.0
     , split >=0.2
+    , tasty
+    , tasty-hunit
+    , tasty-quickcheck
     , text >=1.2
     , time >=1.9
     , tuple >=0.3

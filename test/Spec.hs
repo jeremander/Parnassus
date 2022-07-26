@@ -1,9 +1,14 @@
+module Main where
 
-import TestDist (testDist)
+import Test.Tasty
+
+import Test.Dist (distTests)
 -- import TestLilypond (testLilypond)
-import TestMarkov (testMarkov)
+import Test.Markov (markovTests)
+import Test.Tun (tunTests)
+
+tests :: TestTree
+tests = testGroup "Tests" [distTests, markovTests, tunTests]
 
 main :: IO ()
-main = do
-    testDist
-    testMarkov
+main = defaultMain tests

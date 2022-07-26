@@ -40,7 +40,7 @@ data LilypondState = LilypondState {
     hdrAssignments :: M.Map String Literal
 } deriving (Eq, Show)
 
--- Mac OSX specific include path
+-- Mac OS specific include path
 defaultLilypondState :: LilypondState
 defaultLilypondState = LilypondState {
     includePaths = ["/Applications/LilyPond.app/Contents/Resources/share/lilypond/current/ly"],
