@@ -342,6 +342,6 @@ musicToWav path instrMap music = writeWavNorm path instrMap music1
         (instrName, _) = head instrMap
         music1 = instrument instrName $ toMusic1 music
 
--- saves music to a wav file via the sine instrument
+-- | Saves music to a wav file via the sine instrument.
 musicToSineWav :: FilePath -> Music1 -> IO ()
 musicToSineWav path = writeWavNorm path sineInstrMap

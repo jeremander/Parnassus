@@ -6,10 +6,10 @@ import Data.Version (Version(versionBranch))
 import Options.Applicative
 import Data.Semigroup ((<>))
 
-import Convert (ConvertOpts, convertOpts, runConvert)
+import Command.Convert (ConvertOpts, convertOptsParser, runConvert)
+import Command.SoundFont (SoundFontOpts, soundFontOptsParser, runSoundFont)
 import Paths_Parnassus (version)
-import Play (PlayOpts, playOpts, runPlay)
-import SoundFont (SoundFontOpts, soundFontOpts, runSoundFont)
+import Synth (PlayOpts, playOptsParser, runPlay)
 
 
 data Subcommand =
@@ -20,9 +20,9 @@ data Subcommand =
 
 subcommandOpts :: Parser Subcommand
 subcommandOpts = subparser $
-       command "convert" (info (Convert <$> convertOpts) (progDesc "Convert between file formats."))
-    <> command "play" (info (Play <$> playOpts) (progDesc "Play MIDI from an input source or file."))
-    <> command "soundfont" (info (SoundFont <$> soundFontOpts) (progDesc "Manipulate SoundFont files."))
+       command "convert" (info (Convert <$> convertOptsParser) (progDesc "Convert between file formats."))
+    <> command "play" (info (Play <$> playOptsParser) (progDesc "Play MIDI from an input source or file."))
+    <> command "soundfont" (info (SoundFont <$> soundFontOptsParser) (progDesc "Manipulate SoundFont files."))
     <> command "version" (info (pure Version) (progDesc "Show the version number and exit."))
     -- <> ...
 

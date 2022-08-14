@@ -87,9 +87,9 @@ executable parnassus
   main-is: Main.hs
   other-modules:
       Paths_Parnassus
-    , Convert
-    , Play
-    , SoundFont
+    , Command.Convert
+    , Command.SoundFont
+    , Synth
   -- other-extensions:
   build-depends:
       aeson >=2.0

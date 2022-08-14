@@ -34,8 +34,9 @@
             - call fluidsynth
             - fluidsynth  "GT Steel.sf2" -F "high-hopes.wav" high-hopes.mid
     - play
-        - play MIDI (with SoundFont), LilyPond
-        - launch FluidSynth with SoundFont & direct MIDI input there (how?)
+        [X] play MIDI
+        [ ] play LilyPond
+        [ ] direct input MIDI to the opened fluidsynth port?
 
 
 - make things more efficient (esp. MusicD)

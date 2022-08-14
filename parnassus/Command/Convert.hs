@@ -1,6 +1,6 @@
 {-# LANGUAGE NamedFieldPuns #-}
 
-module Convert where
+module Command.Convert where
 
 import Data.Char (toLower)
 import Options.Applicative
@@ -16,8 +16,8 @@ data ConvertOpts = ConvertOpts {
     soundFont :: Maybe FilePath
 }
 
-convertOpts :: Parser ConvertOpts
-convertOpts = helper <*> (ConvertOpts <$>
+convertOptsParser :: Parser ConvertOpts
+convertOptsParser = helper <*> (ConvertOpts <$>
         argument str (metavar "INFILE" <> help "(required) input file")
     <*> argument str (metavar "OUTFILE" <> help "(required) output file")
     <*> optional (strOption (long "sound-font" <> short 's' <> metavar "SOUNDFONT" <> help "SoundFont (.sf2) file")))
