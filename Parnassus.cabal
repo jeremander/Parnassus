@@ -86,7 +86,9 @@ library
 executable parnassus
   main-is: Main.hs
   other-modules:
-      Convert
+      Paths_Parnassus
+    , Convert
+    , Play
     , SoundFont
   -- other-extensions:
   build-depends:
@@ -97,6 +99,7 @@ executable parnassus
     , Euterpea >=2.1.0
     , filepath >=1.4
     , optparse-applicative >=0.17
+    , process >=1.6
     , Parnassus
     , text >=1.2
   hs-source-dirs: parnassus

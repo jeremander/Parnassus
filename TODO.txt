@@ -1,26 +1,30 @@
 - CLI program
+    [X] version
     - SoundFont
-        -- clean
-            -- remove unused samples/instruments
-        -- merge
-        -- show
-            - make showing presets optional
-            -- print header, number of samples/insts/presets
-            -- list instrument names (with indices)
-            -- list preset name/bank/preset with index
-        -- filter-instruments
-        -- filter-presets
-        -- modify-header
-            -- update header info
-        -- retune
-            -- take in single tuning, alter all instruments to this tuning
-        -- retune-split
-            -- take in multiple tunings (JSON or multiple .tun files)
-            -- split into separate files (one instrument each), all tunings
+        [X] clean
+            - remove unused samples/instruments
+        [X] merge
+        [X] show
+            [X] print header, number of samples/insts/presets
+            [X] list preset name/bank/preset with index
+            [ ] list instrument names (with indices)?
+        [ ] filter-instruments (optional)
+        [X] filter-presets
+        [X] modify-header
+            - update header info
+        [ ] retune
+            - take in single tuning, alter all instruments to this tuning
+        [ ] retune-split
+            [ ] take in multiple tunings (JSON or multiple .tun files)
+            [X] split into separate files (one instrument each), all tunings
     - MIDI
-        - retune
-        - alter time signature
-        - scale time / tuning uniformly
+        [ ] retune
+            - input: TUN & MIDI, output: MIDI
+                - Option 1: make it playable with standard SoundFont but in new tuning, via altering pitches & PitchWheel
+                - Option 2: change notes to their counterpart in TUN file with smallest pitch difference (intended to be played with the TUN-adjusted SoundFont)
+        [ ] transpose (uniform retune)
+        [ ] "retime"
+            - alter time signature
     - convert
         - LilyPond <-> MIDI
             - unit tests (quickcheck)
@@ -29,12 +33,10 @@
         - MIDI + SoundFont -> WAV/MP3
             - call fluidsynth
             - fluidsynth  "GT Steel.sf2" -F "high-hopes.wav" high-hopes.mid
-
     - play
         - play MIDI (with SoundFont), LilyPond
-    - launch FluidSynth with SoundFont & direct MIDI input there
+        - launch FluidSynth with SoundFont & direct MIDI input there (how?)
 
 
-- .tun files
 - make things more efficient (esp. MusicD)
 - map function for MusicD to manipulate all the leaf notes.

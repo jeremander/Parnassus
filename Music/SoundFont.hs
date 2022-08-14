@@ -742,5 +742,8 @@ retuneSplitSoundFont pairs infile outdir = do
 showSoundFont :: Bool -> FilePath -> IO String
 showSoundFont showPresets infile = do
     sf <- loadSfData infile
-    let printer = if showPresets then P.pretty sf else P.vcat (P.pretty <$> sfInfos sf)
-    return $ P.runPrinter printer
+    let text = P.runPrinter $ P.pretty sf
+    let textLines = lines text
+    return $ unlines $ if showPresets
+                        then textLines
+                        else init $ init $ takeWhile (/= "--------------------------") textLines
