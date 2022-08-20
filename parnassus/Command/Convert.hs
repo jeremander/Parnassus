@@ -77,5 +77,6 @@ runConvert opts@(ConvertOpts {inputFile, outputFile}) = do
             _      -> invalidOutputExt
         ".wav" -> case outputExt' of
             ".mp3" -> runConv' convWavToMp3
+            _      -> invalidOutputExt
         _     -> invalidInputExt
     return ()

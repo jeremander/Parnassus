@@ -257,6 +257,16 @@ dedupeSamples sf = sfFilterUnusedSamples $ sf {sfPdta = sfPdta'}
         sfInsts' = fixInst <$> sfInsts sfPdata
         sfPdta' = sfPdata {sfInsts = sfInsts', sfShdrs = sfShdrs'}
 
+-- | Given multiple 'SFPdta's to be concatenated, adjusts the instrument indices in each 'SFPhdr', then concatenates them together.
+concatSfPhdrs :: [SFPdta] -> SFPhdrs
+concatSfPhdrs sfPdtas = sfPhdrs'
+    where
+        instOffsets = cumsum $ fromIntegral . length . sfInsts <$> sfPdtas
+        fixInstIndex offset (InstIndex i) = InstIndex $ offset + i
+        fixInstIndex _      gen           = gen
+        fixPhdr offset (phdr, bags) = (phdr, [(fixInstIndex offset <$> gens, mods) | (gens, mods) <- bags])
+        sfPhdrs' = reindexPresets $ concat [fixPhdr offset <$> sfPhdrs sfPdata | (offset, sfPdata) <- zip instOffsets sfPdtas]
+
 instance Semigroup SFData where
     sf1 <> sf2 = mconcat [sf1, sf2]
 
@@ -296,13 +306,21 @@ instance Monoid SFData where
             fixInst offset (name, bags) = (name, [(fixSampleIndex offset <$> gens, mods) | (gens, mods) <- bags])
             sfInsts' = concat [fixInst offset <$> sfInsts sfPdata | (offset, sfPdata) <- zip sampleOffsets sfPdtas]
             -- adjust instrument indices, then concat presets together
-            instOffsets = cumsum $ fromIntegral . length . sfInsts <$> sfPdtas
-            fixInstIndex offset (InstIndex i) = InstIndex $ offset + i
-            fixInstIndex _      gen           = gen
-            fixPhdr offset (phdr, bags) = (phdr, [(fixInstIndex offset <$> gens, mods) | (gens, mods) <- bags])
-            sfPhdrs' = reindexPresets $ concat [fixPhdr offset <$> sfPhdrs sfPdata | (offset, sfPdata) <- zip instOffsets sfPdtas]
+            sfPhdrs' = concatSfPhdrs sfPdtas
             sfPdta' = SFPdta {sfPhdrs = sfPhdrs', sfInsts = sfInsts', sfShdrs = sfShdrs'}
             sf' = SFData {sfInfos = sfInfos', sfSdta = sfSdta', sfPdta = sfPdta'}
+
+-- | Concatenates one or more 'SFData' whose samples are all the same into a single 'SFData'.
+concatSfDataWithSameSamples :: [SFData] -> SFData
+concatSfDataWithSameSamples sfs = sf'
+    where
+        sfInfos' = fromMaybe [] (safeHead $ sfInfos <$> sfs)
+        sfPdtas = sfPdta <$> sfs
+        sfPhdrs' = concatSfPhdrs sfPdtas
+        sfInsts' = concatMap sfInsts sfPdtas
+        sfShdrs' = sfShdrs $ head sfPdtas
+        sfPdta' = SFPdta {sfPhdrs = sfPhdrs', sfInsts = sfInsts', sfShdrs = sfShdrs'}
+        sf' = SFData {sfInfos = sfInfos', sfSdta = sfSdta $ head sfs, sfPdta = sfPdta'}
 
 -- ** Pretty Printing
 
@@ -515,7 +533,7 @@ sfPdtaFilterInstruments instIndices sfPdata = (mapGen fixGen sfPdata) {sfInsts =
         sfInsts' = sfInsts sfPdata `listAtIndices` instIndices
         -- adjust the instrument indices in the Generators
         instIdxMap = invIdxMap instIndices
-        fixGen (InstIndex i) = InstIndex $ instIdxMap M.! i
+        fixGen (InstIndex i) = InstIndex $ fromMaybe i $ M.lookup i instIdxMap
         fixGen gen           = gen
 
 -- | Filters out any instruments not used in any preset.
@@ -639,7 +657,8 @@ sfRetuneInstruments tuning = overSfPdta $ retuneInstruments tuning
 -- | Given 'NamedTuning's and an instrument index, creates a new 'SFData' with one instrument for each retuning of the original instrument.
 -- TODO: this will copy samples, which we want to avoid
 sfInstrumentRetuned :: [NamedTuning] -> Int -> SFMod
-sfInstrumentRetuned namedTunings i sf = mconcat sfs
+-- sfInstrumentRetuned namedTunings i sf = mconcat sfs
+sfInstrumentRetuned namedTunings i sf = concatSfDataWithSameSamples sfs
     where
         sf' = sfReindexPresets $ sfFilterInstruments [i] sf
         rename name = sfRenamePresets (const name) . sfRenameInsts (const name)
@@ -732,8 +751,10 @@ retuneSplitSoundFont pairs infile outdir = do
     let numInsts = length instList
     let stripDots s = fromMaybe s (T.stripSuffix "." s)
     putStrLn $ "Retuning " ++ show numInsts ++ " instrument(s)..."
+    let replaceChars s = [if (c == '/') then '_' else c | c <- s]
+    let fixName = T.unpack . stripDots . T.pack . replaceChars . strip
     forM_ [0..(numInsts - 1)] $ \i -> do
-        let outfile = outdir </> show i ++ " - " ++ (T.unpack $ stripDots $ T.pack $ strip $ fst $ instList !! i) <.> "sf2"
+        let outfile = outdir </> show i ++ " - " ++ (fixName $ fst $ instList !! i) <.> "sf2"
         let sf' = sfInstrumentRetuned pairs i sf
         putStrLn $ "\t" ++ outfile
         saveSfData outfile sf'
