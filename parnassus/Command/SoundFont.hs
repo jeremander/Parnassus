@@ -1,12 +1,14 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 module Command.SoundFont where
 
+import Control.Exception (catch, SomeException)
 import Control.Monad (when)
 import Data.Aeson (decodeFileStrict')
 import qualified Data.Attoparsec.Text as A
-import Data.Maybe (fromJust)
+import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Text as T
 import Options.Applicative
 import System.Directory (createDirectoryIfMissing)
@@ -14,6 +16,8 @@ import Text.Read.Lex (Lexeme(..))
 
 import Misc.Utils (idxOrSpanToIndices, parseIdxOrSpans)
 import Music.SoundFont (ModifyHeaderOpts(..), SFData(..), SFModIO, SFPdta(..), mergeSoundFonts, modifySfData, retuneSplitSoundFont, showSoundFont, sfClean, sfFilterPresets, sfModifyHeader)
+import Music.Tuning (NamedTuning)
+import Music.Tuning.Tun (loadNamedTuning)
 
 
 attoparsecReader :: A.Parser a -> ReadM a
@@ -109,19 +113,30 @@ runModifyHeader (ModifyHeaderOpts' sfModOpts modHdrOpts) = runSfModIO sfModOpts 
 
 data RetuneSplitOpts = RetuneSplitOpts {
     inputFile :: FilePath,
-    tuningFile :: FilePath,
+    tuningFiles :: [FilePath],
     outputDir :: FilePath
 }
 
 retuneSplitOptsParser :: Parser RetuneSplitOpts
 retuneSplitOptsParser = helper <*> (RetuneSplitOpts <$>
         sfInfile
-    <*> argument str (metavar "TUNINGS" <> help "(required) JSON file of tunings containing a list of entries with \"name\" and \"tuning\" fields (the latter is a list of 128 frequencies mapping the MIDI keyboard)")
+    <*> some (strOption (long "tunings" <> short 't' <> metavar "TUNINGS" <> help "(required) one or more tuning files -- a tuning file can be either: 1) a JSON file containing a list of entries with \"name\" and \"tuning\" fields (the latter is a list of 128 frequencies mapping the MIDI keyboard) 2) an AnaMark .tun file"))
     <*> strOption (long "output-dir" <> short 'o' <> metavar "OUTDIR" <> value "." <> showDefault <> help "output directory"))
 
+
+loadNamedTunings :: FilePath -> IO [NamedTuning]
+loadNamedTunings path = catch loadNamedTuningsFromTun handle
+    where
+        loadNamedTuningsFromTun = pure <$> loadNamedTuning path
+        handle (err :: SomeException) = do
+            namedTunings <- decodeFileStrict' path
+            case namedTunings of
+                Just namedTunings' -> return namedTunings'
+                Nothing            -> fail $ "could not load " ++ path ++ " as TUN or JSON"
+
 runRetuneSplit :: RetuneSplitOpts -> IO ()
-runRetuneSplit (RetuneSplitOpts {inputFile, tuningFile, outputDir}) = do
-    namedTunings <- fromJust <$> decodeFileStrict' tuningFile
+runRetuneSplit (RetuneSplitOpts {inputFile, tuningFiles, outputDir}) = do
+    namedTunings <- concat <$> mapM loadNamedTunings tuningFiles
     createDirectoryIfMissing False outputDir
     retuneSplitSoundFont namedTunings inputFile outputDir
     putStrLn "Done!"

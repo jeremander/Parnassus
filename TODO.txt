@@ -14,8 +14,8 @@
             - update header info
         [ ] retune
             - take in single tuning, alter all instruments to this tuning
-        [ ] retune-split
-            [ ] take in multiple tunings (JSON or multiple .tun files)
+        [X] retune-split
+            [X] take in multiple tunings (JSON or multiple .tun files)
             [X] split into separate files (one instrument each), all tunings
     - MIDI
         [ ] retune

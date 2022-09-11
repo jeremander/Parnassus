@@ -22,11 +22,12 @@ import Data.Scientific (floatingOrInteger, Scientific, toRealFloat)
 import Data.Sort (sortOn)
 import Data.Text (Text, pack, strip, unpack)
 import Prelude hiding (id)
+import System.FilePath.Posix (takeBaseName)
 import Text.Pretty ((</>))
 import qualified Text.Pretty as P
 
 import Misc.Utils (IdxOrSpan, parseIdxOrSpans, safeHead)
-import Music.Tuning (Tuning(..))
+import Music.Tuning (NamedTuning(NamedTuning), Tuning(..))
 
 
 -- ** @.tun@ Data
@@ -329,6 +330,14 @@ interpretSection (Section {title = SectionTitle t, items})
     | t `lowEq` "Editor Specifics" = Just $ SecEditorSpecifics items
     | otherwise                    = Nothing
 
+-- | Extracts a name from 'TunData', if present.
+tunDataName :: TunData -> Maybe String
+tunDataName (TunData sections) = safeHead results
+    where
+        nameFromInfo (SecInfo info) = Just $ name info
+        nameFromInfo _              = Nothing
+        results = mapMaybe nameFromInfo sections
+
 -- | Interprets a parsed 'Tun' object as 'TunData'.
 interpretTun :: Tun -> TunData
 interpretTun (Tun sections) = TunData $ mapMaybe interpretSection sections
@@ -338,7 +347,7 @@ loadTun :: FilePath -> IO TunData
 loadTun path = do
     text <- readFile path
     return $ case parseFull parseTun (pack text) of
-        Left err  -> error err
+        Left err  -> error $ "loading TUN file" ++ path ++ ": " ++ err
         Right tun -> interpretTun tun
 
 -- ** 'Tuning' conversion
@@ -352,8 +361,19 @@ tuningFromSectionData (SecTuning tuningCents)               = Just (0, tuningFro
 tuningFromSectionData (SecExactTuning baseFreq tuningCents) = Just (1, tuningFromCents baseFreq tuningCents)
 tuningFromSectionData _                                     = Nothing
 
+-- | Given 'TunData', attempts to extract a 'Tuning'.
 tuningFromTunData :: TunData -> Either String Tuning
 tuningFromTunData (TunData sections) = if null results
     then Left "TUN file must contain a valid [Tuning] or [Exact Tuning] section"
     else Right $ snd $ last results
     where results = sortOn fst $ mapMaybe tuningFromSectionData sections
+
+-- | Loads a @.tun@ file as a 'NamedTuning'.
+--   If no name is present in the file, uses the base name of the filename.
+loadNamedTuning :: FilePath -> IO NamedTuning
+loadNamedTuning path = do
+    tunData <- loadTun path
+    let name = fromMaybe (takeBaseName path) (tunDataName tunData)
+    case tuningFromTunData tunData of
+        Left err     -> fail err
+        Right tuning -> return $ NamedTuning name tuning

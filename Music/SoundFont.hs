@@ -655,9 +655,7 @@ sfRetuneInstruments :: Tuning -> SFMod
 sfRetuneInstruments tuning = overSfPdta $ retuneInstruments tuning
 
 -- | Given 'NamedTuning's and an instrument index, creates a new 'SFData' with one instrument for each retuning of the original instrument.
--- TODO: this will copy samples, which we want to avoid
 sfInstrumentRetuned :: [NamedTuning] -> Int -> SFMod
--- sfInstrumentRetuned namedTunings i sf = mconcat sfs
 sfInstrumentRetuned namedTunings i sf = concatSfDataWithSameSamples sfs
     where
         sf' = sfReindexPresets $ sfFilterInstruments [i] sf
