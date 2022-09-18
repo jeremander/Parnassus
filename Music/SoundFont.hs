@@ -21,7 +21,7 @@ import Data.Sort (sort)
 import qualified Data.Text as T
 import Data.Time (getCurrentTime)
 import Data.Version (showVersion)
-import System.FilePath.Posix ((<.>), (</>))
+import System.FilePath.Posix ((<.>), (-<.>), (</>))
 import System.Posix.User (getEffectiveUserName)
 import qualified Text.Pretty as P
 
@@ -739,6 +739,19 @@ mergeSoundFonts infiles outfile = do
     let sf = mconcat sfs
     putStrLn $ "Saving " ++ outfile
     saveSfData outfile sf
+
+-- | Given some named tunings, an input .sf2 file, and an output directory, retunes all instruments in the SoundFont with each tuning, and creates a new .sf2 file for each tuning.
+retuneSoundFont :: [NamedTuning] -> FilePath -> FilePath -> IO ()
+retuneSoundFont pairs infile outdir = do
+    putStrLn $ "Loading " ++ infile
+    sf <- loadSfData infile
+    let numTunings = length pairs
+    putStrLn $ "Retuning SoundFont with " ++ show numTunings ++ " tuning(s)..."
+    forM_ pairs $ \(NamedTuning name tuning) -> do
+        let outfile = outdir </> infile -<.> (name ++ ".sf2")
+        let sf' = sfRetuneInstruments tuning sf
+        putStrLn $ "\t" ++ outfile
+        saveSfData outfile sf'
 
 -- | Given some named tunings, an input .sf2 file, and an output directory, splits up the SoundFont into separate instruments and creates a new .sf2 file for each instrument containing all of the specified tunings.
 retuneSplitSoundFont :: [NamedTuning] -> FilePath -> FilePath -> IO ()

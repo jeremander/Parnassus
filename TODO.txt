@@ -12,7 +12,7 @@
         [X] filter-presets
         [X] modify-header
             - update header info
-        [ ] retune
+        [X] retune
             - take in single tuning, alter all instruments to this tuning
         [X] retune-split
             [X] take in multiple tunings (JSON or multiple .tun files)

@@ -370,8 +370,8 @@ tuningFromTunData (TunData sections) = if null results
 
 -- | Loads a @.tun@ file as a 'NamedTuning'.
 --   If no name is present in the file, uses the base name of the filename.
-loadNamedTuning :: FilePath -> IO NamedTuning
-loadNamedTuning path = do
+loadNamedTuningFromTun :: FilePath -> IO NamedTuning
+loadNamedTuningFromTun path = do
     tunData <- loadTun path
     let name = fromMaybe (takeBaseName path) (tunDataName tunData)
     case tuningFromTunData tunData of
