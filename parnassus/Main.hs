@@ -7,6 +7,7 @@ import Options.Applicative
 import Data.Semigroup ((<>))
 
 import Command.Convert (ConvertOpts, convertOptsParser, runConvert)
+import Command.Midi (MidiOpts, midiOptsParser, runMidi)
 import Command.SoundFont (SoundFontOpts, soundFontOptsParser, runSoundFont)
 import Paths_Parnassus (version)
 import Synth (PlayOpts, playOptsParser, runPlay)
@@ -14,6 +15,7 @@ import Synth (PlayOpts, playOptsParser, runPlay)
 
 data Subcommand =
       Convert ConvertOpts
+    | Midi MidiOpts
     | Play PlayOpts
     | SoundFont SoundFontOpts
     | Version
@@ -21,6 +23,7 @@ data Subcommand =
 subcommandOpts :: Parser Subcommand
 subcommandOpts = subparser $
        command "convert" (info (Convert <$> convertOptsParser) (progDesc "Convert between file formats."))
+    <> command "midi" (info (Midi <$> midiOptsParser) (progDesc "Manipulate MIDI files."))
     <> command "play" (info (Play <$> playOptsParser) (progDesc "Play MIDI from an input source or file."))
     <> command "soundfont" (info (SoundFont <$> soundFontOptsParser) (progDesc "Manipulate SoundFont files."))
     <> command "version" (info (pure Version) (progDesc "Show the version number and exit."))
@@ -31,6 +34,7 @@ versionString = intercalate "." $ show <$> versionBranch version
 
 runSubcommand :: Subcommand -> IO ()
 runSubcommand (Convert opts)   = runConvert opts
+runSubcommand (Midi opts)      = runMidi opts
 runSubcommand (Play opts)      = runPlay opts
 runSubcommand (SoundFont opts) = runSoundFont opts
 runSubcommand Version          = putStrLn $ "parnassus version " ++ versionString

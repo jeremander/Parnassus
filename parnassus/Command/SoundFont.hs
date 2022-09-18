@@ -4,9 +4,7 @@
 
 module Command.SoundFont where
 
-import Control.Exception (catch, SomeException)
 import Control.Monad (when)
-import Data.Aeson (decodeFileStrict')
 import qualified Data.Attoparsec.Text as A
 import Data.Maybe (fromJust, fromMaybe)
 import qualified Data.Text as T
@@ -17,7 +15,7 @@ import Text.Read.Lex (Lexeme(..))
 import Misc.Utils (idxOrSpanToIndices, parseIdxOrSpans)
 import Music.SoundFont (ModifyHeaderOpts(..), SFData(..), SFModIO, SFPdta(..), mergeSoundFonts, modifySfData, retuneSoundFont, retuneSplitSoundFont, showSoundFont, sfClean, sfFilterPresets, sfModifyHeader)
 import Music.Tuning (NamedTuning)
-import Music.Tuning.Tun (loadNamedTuningFromTun)
+import Command (infileParser, loadNamedTunings, RetuneOpts(..), retuneOptsParser, subcommandOpts)
 
 
 attoparsecReader :: A.Parser a -> ReadM a
@@ -29,7 +27,7 @@ data SFModOpts = SFModOpts {
 }
 
 sfInfile :: Parser FilePath
-sfInfile = argument str (metavar "INFILE" <> help "(required) input .sf2 file")
+sfInfile = infileParser "sf2"
 
 sfOutfile :: Parser FilePath
 sfOutfile = strOption (long "output-file" <> short 'o' <> metavar "OUTFILE" <> help "(required) output .sf2 file")
@@ -111,39 +109,6 @@ runModifyHeader (ModifyHeaderOpts' sfModOpts modHdrOpts) = runSfModIO sfModOpts 
 
 -- ** @retune@
 
-data RetuneOpts = RetuneOpts {
-    inputFile :: FilePath,
-    tuningFiles :: [FilePath],
-    outputDir :: FilePath
-}
-
-retuneOptsParser :: Parser RetuneOpts
-retuneOptsParser = helper <*> (RetuneOpts <$>
-        sfInfile
-    <*> some (strOption (long "tunings" <> short 't' <> metavar "TUNINGS" <> help "(required) one or more tuning files -- a tuning file can be either: 1) a JSON file containing a list of entries with \"name\" and \"tuning\" fields (the latter is a list of 128 frequencies mapping the MIDI keyboard) 2) an AnaMark .tun file"))
-    <*> strOption (long "output-dir" <> short 'o' <> metavar "OUTDIR" <> value "." <> showDefault <> help "output directory"))
-
-loadNamedTuningsFromJSON :: FilePath -> IO (Maybe [NamedTuning])
-loadNamedTuningsFromJSON path = do  -- parse a list of tunings
-    namedTunings <- decodeFileStrict' path
-    case namedTunings of
-        Just namedTunings' -> return $ Just namedTunings'
-        Nothing -> do  -- parse a single tuning
-            namedTuning <- decodeFileStrict' path
-            return $ case namedTuning of
-                Just namedTuning' -> Just [namedTuning']
-                Nothing           -> Nothing
-
-loadNamedTunings :: FilePath -> IO [NamedTuning]
-loadNamedTunings path = catch loadNamedTuningsFromTun handle
-    where
-        loadNamedTuningsFromTun = pure <$> loadNamedTuningFromTun path
-        handle (err :: SomeException) = do
-            namedTunings <- loadNamedTuningsFromJSON path
-            case namedTunings of
-                Just namedTunings' -> return namedTunings'
-                Nothing            -> fail $ "could not load " ++ path ++ " as TUN or JSON"
-
 runRetune' :: ([NamedTuning] -> FilePath -> FilePath -> IO ()) -> RetuneOpts -> IO ()
 runRetune' go (RetuneOpts {inputFile, tuningFiles, outputDir}) = do
     namedTunings <- concat <$> mapM loadNamedTunings tuningFiles
@@ -180,18 +145,15 @@ data SFSubcommand =
     | RetuneSplit RetuneOpts
     | Show ShowOpts
 
-sfSubcommandOpts :: String -> Parser a -> String -> Mod CommandFields a
-sfSubcommandOpts name subcmdParser desc = command name $ info subcmdParser $ progDesc desc
-
 sfSubcommandParser :: Parser SFSubcommand
 sfSubcommandParser = subparser $
-       sfSubcommandOpts "clean" (Clean <$> cleanOptsParser) "Remove unused samples and instruments."
-    <> sfSubcommandOpts "filter-presets" (FilterPresets <$> filterPresetsOptsParser) "Filter presets by index."
-    <> sfSubcommandOpts "merge" (Merge <$> mergeOptsParser) "Merge together multiple SoundFonts into one file."
-    <> sfSubcommandOpts "modify-header" (ModifyHeader <$> modifyHeaderOptsParser') "Modify SoundFont header."
-    <> sfSubcommandOpts "retune" (Retune <$> retuneOptsParser) "Retune a SoundFont with one or more tunings."
-    <> sfSubcommandOpts "retune-split" (RetuneSplit <$> retuneOptsParser) "Split SoundFont by instrument and assign one or more tunings to each of them.\nThis will create multiple files, each one named after an instrument."
-    <> sfSubcommandOpts "show" (Show <$> showOptsParser) "Print some summary info about a SoundFont."
+       subcommandOpts "clean" (Clean <$> cleanOptsParser) "Remove unused samples and instruments."
+    <> subcommandOpts "filter-presets" (FilterPresets <$> filterPresetsOptsParser) "Filter presets by index."
+    <> subcommandOpts "merge" (Merge <$> mergeOptsParser) "Merge together multiple SoundFonts into one file."
+    <> subcommandOpts "modify-header" (ModifyHeader <$> modifyHeaderOptsParser') "Modify SoundFont header."
+    <> subcommandOpts "retune" (Retune <$> retuneOptsParser "sf2") "Retune a SoundFont with one or more tunings."
+    <> subcommandOpts "retune-split" (RetuneSplit <$> retuneOptsParser "sf2") "Split SoundFont by instrument and assign one or more tunings to each of them.\nThis will create multiple files, each one named after an instrument."
+    <> subcommandOpts "show" (Show <$> showOptsParser) "Print some summary info about a SoundFont."
 
 runSfSubcommand :: SFSubcommand -> IO ()
 runSfSubcommand (Clean opts)         = runClean opts

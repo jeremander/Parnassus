@@ -3,6 +3,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Music.Tuning where
 
@@ -11,6 +12,7 @@ import Data.Array ((!), (//), elems, listArray)
 import Data.List (foldl', intersperse)
 import Data.Range (Bound(..), BoundType(..), Range(..))
 import Data.Ratio ((%))
+import Data.Semigroup (Arg(..))
 import GHC.Generics (Generic)
 
 import Euterpea (AbsPitch, Music(..), Music1, Note1, NoteAttribute(..), Pitch, PitchClass(..), ToMusic1, absPitch, applyControls, hn, mMap, note, pitch, qn, rest, shiftPitches)
@@ -382,7 +384,8 @@ defaultTunings stdPitch = twelveToneTunings ++ [pentatonicOnly stdPitch] ++ nTet
 pitchBendPerCent :: Double
 pitchBendPerCent = 8192 / 200
 
--- | Retunes 'Music' to a different tuning.
+-- | Retunes 'Music' to a different tuning by mapping the MIDI notes directly.
+--   Does this by applying pitch shifts to each note. The resulting 'Music', when played with standard tuning, will be precisely tuned to the given tuning.
 tuneMusic :: (ToMusic1 a) => Tuning -> Music a -> Music1
 tuneMusic tuning = mMap tuneNote . applyControls . toMusic1
     where
@@ -392,3 +395,28 @@ tuneMusic tuning = mMap tuneNote . applyControls . toMusic1
             where
                 ap = fromIntegral $ absPitch pc
                 cts = centArr ! ap
+
+-- | Given two 'Tuning's \(t1\) and \(t2\), creates a new 'Tuning' \(t3\) where each frequency \(t3[i]\) belongs to \(t2\) and is as close as possible to \(t1[i]\).
+tuningApprox :: Tuning -> Tuning -> Tuning
+tuningApprox (Tuning tuning1) (Tuning tuning2) = Tuning tuning3
+    where
+        getClosestFreq freq1 = freq2
+            where (Arg _ freq2) = minimum [Arg (abs $ ratioToCents $ freq1 / freq2') freq2' | freq2' <- tuning2]
+        tuning3 = getClosestFreq <$> tuning1
+
+-- | Retunes 'Music' to a different tuning by adjusting the pitch of each note to match the closest note in the given tuning.
+approxTuneMusic :: (ToMusic1 a) => Tuning -> Music a -> Music1
+approxTuneMusic tuning = tuneMusic (tuningApprox stdTuning tuning)
+
+-- -- | Given a 'Tuning' and 'Music', alters the notes of the 'Music' so that, when played in the given tuning, the pitches will most closely match standard tuning, in terms of cent differences.
+-- approxTuneMusic :: (ToMusic1 a) => Tuning -> Music a -> Music1
+-- approxTuneMusic tuning = mMap tuneNote . applyControls . toMusic1
+--     where
+--         -- for each standard pitch, get the pitch which would be closest in the given tuning
+--         stdTuningArr = mkArray @Int $ unTuning stdTuning
+--         getClosestPitch i = pitch j
+--             where
+--                 freq = stdTuningArr ! i
+--                 (Arg _ j) = minimum [Arg (abs $ ratioToCents $ freq / freq') j' | (j', freq') <- zip [0..] (unTuning tuning)]
+--         tuneNote :: Note1 -> Note1
+--         tuneNote (pc, attrs) = (getClosestPitch $ fromIntegral (absPitch pc), attrs)

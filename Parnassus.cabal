@@ -87,7 +87,9 @@ executable parnassus
   main-is: Main.hs
   other-modules:
       Paths_Parnassus
+    , Command
     , Command.Convert
+    , Command.Midi
     , Command.SoundFont
     , Synth
   -- other-extensions:

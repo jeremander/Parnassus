@@ -21,7 +21,7 @@ import Data.Sort (sort)
 import qualified Data.Text as T
 import Data.Time (getCurrentTime)
 import Data.Version (showVersion)
-import System.FilePath.Posix ((<.>), (-<.>), (</>))
+import System.FilePath.Posix ((<.>), (-<.>), (</>), takeFileName)
 import System.Posix.User (getEffectiveUserName)
 import qualified Text.Pretty as P
 
@@ -748,7 +748,7 @@ retuneSoundFont pairs infile outdir = do
     let numTunings = length pairs
     putStrLn $ "Retuning SoundFont with " ++ show numTunings ++ " tuning(s)..."
     forM_ pairs $ \(NamedTuning name tuning) -> do
-        let outfile = outdir </> infile -<.> (name ++ ".sf2")
+        let outfile = outdir </> takeFileName infile -<.> (name ++ ".sf2")
         let sf' = sfRetuneInstruments tuning sf
         putStrLn $ "\t" ++ outfile
         saveSfData outfile sf'
