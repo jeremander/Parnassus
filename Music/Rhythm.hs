@@ -4,15 +4,10 @@
 module Music.Rhythm (
     Duration(..),
     TimeSig,
-    getTimeSig,
     splitDur,
     validDur
 ) where
 
-import Codec.Midi (Message(..), Midi, tracks)
-import Control.Monad (join)
-import Data.List (find)
-import Data.Maybe (isJust)
 import Data.Ratio ((%), denominator, numerator)
 import Euterpea (Dur)
 import Text.Pretty (Pretty(..), string)
@@ -75,12 +70,3 @@ instance Pretty Duration where
 
 -- | Time signature
 type TimeSig = (Int, Int)
-
--- | Gets the time signature of a Midi.
-getTimeSig :: Midi -> Maybe TimeSig
-getTimeSig m = join $ find isJust (getSig <$> msgs)
-    where
-        msgs = snd <$> head (tracks m)  -- time signature should appear in the first track if at all
-        getSig msg = case msg of
-                        TimeSignature num pow _ _ -> Just (num, (2 :: Int) ^ pow)
-                        _                         -> Nothing

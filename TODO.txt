@@ -18,13 +18,17 @@
             [X] take in multiple tunings (JSON or multiple .tun files)
             [X] split into separate files (one instrument each), all tunings
     - MIDI
-        [ ] retune
+        [X] retune
             - input: TUN & MIDI, output: MIDI
                 - Option 1: make it playable with standard SoundFont but in new tuning, via altering pitches & PitchWheel
                 - Option 2: change notes to their counterpart in TUN file with smallest pitch difference (intended to be played with the TUN-adjusted SoundFont)
         [ ] transpose (uniform retune)
-        [ ] "retime"
-            - alter time signature
+        [ ] change-timesig
+        [ ] change-tempo
+            - take factor OR BPM OR word (e.g. adagio)
+            - if BPM based, need to know ticks per beat & ticks per sec (stored in MIDI)
+        [ ] tag
+            - prepend global metadata (timesig, keysig, text, copyright, track name, text)
     - convert
         - LilyPond <-> MIDI
             - unit tests (quickcheck)
@@ -33,10 +37,12 @@
         - MIDI + SoundFont -> WAV/MP3
             - call fluidsynth
             - fluidsynth  "GT Steel.sf2" -F "high-hopes.wav" high-hopes.mid
+        - MIDI & Lilypond <-> MusicXML (.mscx)
     - play
         [X] play MIDI
         [ ] play LilyPond
         [ ] direct input MIDI to the opened fluidsynth port?
+        - Why is --help duplicated??
 
 
 - make things more efficient (esp. MusicD)

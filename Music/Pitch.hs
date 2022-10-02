@@ -211,3 +211,79 @@ instance Pretty Mode where
     pretty Major = "\\major"
     pretty Minor = "\\minor"
     pretty mode  = error $ "invalid mode \"" ++ show mode ++ "\""
+
+-- | Gets the number of sharps or flats in a key.
+--   In general, this is an integer from -7 (7 flats) to 7 (7 sharps), but it can also have more than 7 if it is a "theoretical key" (in which case, double accidentals would occur).
+getSharpFlatCount :: Key -> Int
+getSharpFlatCount key = case simplifyMode key of
+    (Cff, Major) -> -14
+    (Aff, Minor) -> -14
+    (Gff, Major) -> -13
+    (Eff, Minor) -> -13
+    (Dff, Major) -> -12
+    (Bff, Minor) -> -12
+    (Aff, Major) -> -11
+    (Ff,  Minor) -> -11
+    (Eff, Major) -> -10
+    (Cf,  Minor) -> -10
+    (Bff, Major) -> -9
+    (Gf,  Minor) -> -9
+    (Ff,  Major) -> -8
+    (Df,  Minor) -> -8
+    (Cf,  Major) -> -7
+    (Af,  Minor) -> -7
+    (Gf,  Major) -> -6
+    (Ef,  Minor) -> -6
+    (Fff, Minor) -> -6
+    (Df,  Major) -> -5
+    (Bf,  Minor) -> -5
+    (Cff, Minor) -> -5
+    (Af,  Major) -> -4
+    (F,   Minor) -> -4
+    (Gff, Minor) -> -4
+    (Ef,  Major) -> -3
+    (Fff, Major) -> -3
+    (C,   Minor) -> -3
+    (Dff, Minor) -> -3
+    (Bf,  Major) -> -2
+    (G,   Minor) -> -2
+    (F,   Major) -> -1
+    (D,   Minor) -> -1
+    (C,   Major) -> 0
+    (A,   Minor) -> 0
+    (G,   Major) -> 1
+    (E,   Minor) -> 1
+    (D,   Major) -> 2
+    (B,   Minor) -> 2
+    (Gss, Major) -> 3
+    (A,   Major) -> 3
+    (Ess, Minor) -> 3
+    (Fs,  Minor) -> 3
+    (Dss, Major) -> 4
+    (E,   Major) -> 4
+    (Cs,  Minor) -> 4
+    (Bss, Minor) -> 4
+    (Ass, Major) -> 5
+    (B,   Major) -> 5
+    (Gs,  Minor) -> 5
+    (Ess, Major) -> 6
+    (Fs,  Major) -> 6
+    (Ds,  Minor) -> 6
+    (Bss, Major) -> 7
+    (Cs,  Major) -> 7
+    (As,  Minor) -> 7
+    (Gs,  Major) -> 8
+    (Es,  Minor) -> 8
+    (Ds,  Major) -> 9
+    (Bs,  Minor) -> 9
+    (As,  Major) -> 10
+    (Fss, Minor) -> 10
+    (Es,  Major) -> 11
+    (Css, Minor) -> 11
+    (Bs,  Major) -> 12
+    (Gss, Minor) -> 12
+    (Fss, Major) -> 13
+    (Dss, Minor) -> 13
+    (Css, Major) -> 14
+    (Ass, Minor) -> 14
+    _            -> error "invalid key"

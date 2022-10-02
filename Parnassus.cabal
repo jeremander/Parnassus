@@ -25,6 +25,7 @@ library
       Music.Lilypond.Parse
       Music.Lilypond.Score
       Music.Lilypond.Symbols
+      Music.Midi
       Music.Pitch
       Music.Primes
       Music.Rhythm

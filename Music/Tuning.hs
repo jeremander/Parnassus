@@ -3,7 +3,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE NamedFieldPuns #-}
-{-# LANGUAGE TypeApplications #-}
 
 module Music.Tuning where
 
@@ -407,16 +406,3 @@ tuningApprox (Tuning tuning1) (Tuning tuning2) = Tuning tuning3
 -- | Retunes 'Music' to a different tuning by adjusting the pitch of each note to match the closest note in the given tuning.
 approxTuneMusic :: (ToMusic1 a) => Tuning -> Music a -> Music1
 approxTuneMusic tuning = tuneMusic (tuningApprox stdTuning tuning)
-
--- -- | Given a 'Tuning' and 'Music', alters the notes of the 'Music' so that, when played in the given tuning, the pitches will most closely match standard tuning, in terms of cent differences.
--- approxTuneMusic :: (ToMusic1 a) => Tuning -> Music a -> Music1
--- approxTuneMusic tuning = mMap tuneNote . applyControls . toMusic1
---     where
---         -- for each standard pitch, get the pitch which would be closest in the given tuning
---         stdTuningArr = mkArray @Int $ unTuning stdTuning
---         getClosestPitch i = pitch j
---             where
---                 freq = stdTuningArr ! i
---                 (Arg _ j) = minimum [Arg (abs $ ratioToCents $ freq / freq') j' | (j', freq') <- zip [0..] (unTuning tuning)]
---         tuneNote :: Note1 -> Note1
---         tuneNote (pc, attrs) = (getClosestPitch $ fromIntegral (absPitch pc), attrs)
