@@ -22,7 +22,7 @@ import Misc.Utils (notImpl)
 import Music.Lilypond.Literal (Literal(..), Markup(..), MarkupExpr(..), Tweak)
 import Music.Lilypond.Symbols (BarLine, Clef, Expressive(..), Staff)
 import Music.Pitch (FromPitch(..), PrettyPitch(..), ToPitch(..), Key, staffDistance, trans)
-import Music.Rhythm (Duration(..), TimeSig, splitDur)
+import Music.Rhythm (Duration(..), TimeSig(..), splitDur)
 import Music.Types.MusicT (MusicT(..), ToMidi(..))
 
 
@@ -166,7 +166,7 @@ instance (PrettyPitch a) => PrettyPitch (MusicL a) where
     prettyPitch _ (Bar b) = pretty b
     prettyPitch _ (Clef c) = "\\clef" <+> pretty c
     prettyPitch lang (Key (p, m)) = "\\key" <+> prettyPitch lang p <+> pretty m
-    prettyPitch _ (Time (m, n)) = "\\time" <+> (pretty m <> "/" <> pretty n)
+    prettyPitch _ (Time (TimeSig (m, n))) = "\\time" <+> (pretty m <> "/" <> pretty n)
     prettyPitch _ (Tmp tempo) = pretty tempo
     prettyPitch lang (Sequential xs) = "{" <+> (hsep . fmap (prettyPitch lang)) xs <+> "}"
     prettyPitch lang (Simultaneous b xs) = "<<" <//> nest 2 ((sepFunc . fmap (prettyPitch lang)) xs) <//> ">>"

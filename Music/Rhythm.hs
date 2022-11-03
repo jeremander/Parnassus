@@ -3,14 +3,17 @@
 
 module Music.Rhythm (
     Duration(..),
-    TimeSig,
+    TimeSig(..),
     splitDur,
     validDur
 ) where
 
+import Data.Char (isDigit)
 import Data.Ratio ((%), denominator, numerator)
 import Euterpea (Dur)
+import Text.ParserCombinators.ReadP hiding (string)
 import Text.Pretty (Pretty(..), string)
+import Text.Read
 
 
 -- | Time duration.
@@ -69,4 +72,11 @@ instance Pretty Duration where
             showDur r' nd' = go r' ++ concat (replicate nd' ".")
 
 -- | Time signature
-type TimeSig = (Int, Int)
+newtype TimeSig = TimeSig (Int, Int)
+    deriving (Eq, Show)
+
+instance Read TimeSig where
+    readPrec = lift $ TimeSig <$> ((,) <$> (skipSpaces *> readInt) <*> (skipSpaces *> readInt))
+        where readInt = do
+                digits <- many1 $ satisfy isDigit
+                return $ read digits

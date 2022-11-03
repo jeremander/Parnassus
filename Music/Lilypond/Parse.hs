@@ -440,7 +440,7 @@ parseBaseDur = read <$> (choice $ try . string . show <$> (reverse $ (2^) <$> [0
 
 -- | Parses a time signature.
 parseTimeSig :: (Stream s m Char) => ParsecT s u m TimeSig
-parseTimeSig = (,) <$> (string "\\time" *> sorc *> int) <*> (sorc *> char '/' *> parseBaseDur)
+parseTimeSig = TimeSig <$> ((,) <$> (string "\\time" *> sorc *> int) <*> (sorc *> char '/' *> parseBaseDur))
 
 -- parses duration (1 / n)
 parseNumDur :: (Stream s m Char) => ParsecT s u m Rational
@@ -540,7 +540,7 @@ parseMusic =
     <|> try (Bar <$> parseBarline)
     <|> try (string "\\clef" *> sorc *> (Clef <$> parseClef))
     <|> try (string "\\key" *> sorc *> (Key <$> ((,) <$> (parsePitchClass <* sorc) <*> parseMode)))
-    <|> try (string "\\time" *> sorc *> (Time <$> ((,) <$> int <*> (char '/' *> int))))
+    <|> try (string "\\time" *> sorc *> (Time . TimeSig <$> ((,) <$> int <*> (char '/' *> int))))
     <|> try (Tmp <$> parseTempo)
     <|> try (Sequential <$> braces' (endBy parseMusic sorc))
     <|> try (Simultaneous True <$> brackSim (sepBy (parseMusic <* sorc) (string "\\\\" <* sorc)))

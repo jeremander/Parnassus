@@ -33,7 +33,7 @@ import qualified Euterpea.IO.MIDI.ToMidi
 
 import Misc.Utils (composeFuncs, rationalGCD, unDistribute)
 import Music.Pitch (FromPitch(..))
-import Music.Rhythm (TimeSig)
+import Music.Rhythm (TimeSig(..))
 import Music.Wave (AudSig, sineInstrMap)
 
 
@@ -292,7 +292,7 @@ instance ToMidi Music
 -- | Metronome for a fixed time signature.
 --   Uses claves for downbeat, high wood block for upbeats.
 metronome :: (MusicT m Note1) => TimeSig -> Dur -> m Note1
-metronome (n, d) r = modify (Instrument Percussion) $ line (prim <$> beats)
+metronome (TimeSig (n, d)) r = modify (Instrument Percussion) $ line (prim <$> beats)
     where
         numBeats = ceiling (r * fromIntegral d)
         flags = [rem i n == 0 | i <- [0..]]
@@ -318,7 +318,7 @@ class Quantizable m a where
 
 -- | Changes time signature of the music.
 changeTimeSig :: (MusicT m a, Quantizable m a, Eq a) => TimeSig -> TimeSig -> m a -> m a
-changeTimeSig (n1, d1) (n2, d2) mus = modify ctl $ line measures'
+changeTimeSig (TimeSig (n1, d1)) (TimeSig (n2, d2)) mus = modify ctl $ line measures'
     where
         r1 = (toInteger n1) % (toInteger d1)
         r2 = (toInteger n2) % (toInteger d2)

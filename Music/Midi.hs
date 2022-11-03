@@ -10,21 +10,21 @@ import Euterpea (Mode(..))
 
 import Misc.Utils (safeHead)
 import Music.Pitch (getSharpFlatCount, Key, simplifyMode)
-import Music.Rhythm (TimeSig)
+import Music.Rhythm (TimeSig(..))
 
 
 data MidiTimeSig = MidiTimeSig {
     numerator :: Int,
-    denominator :: Int,
+    logDenominator :: Int,
     clocksPerClick :: Int,
     notated32ndNotesPerBeat :: Int
 } deriving (Eq, Ord, Show)
 
 midiTimeSigToTimeSig :: MidiTimeSig -> TimeSig
-midiTimeSigToTimeSig (MidiTimeSig num den _ _) = (num, 2 ^ den)
+midiTimeSigToTimeSig (MidiTimeSig num den _ _) = TimeSig (num, 2 ^ den)
 
 timeSigToMidiTimeSig :: TimeSig -> MidiTimeSig
-timeSigToMidiTimeSig (num, den) = MidiTimeSig num den' 24 8
+timeSigToMidiTimeSig (TimeSig (num, den)) = MidiTimeSig num den' 24 8
     where den' = floor $ logBase 2 (fromIntegral den :: Float)
 
 data MidiKeySig = MidiKeySig {

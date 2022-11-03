@@ -2,6 +2,7 @@
 {-# LANGUAGE FlexibleContexts,
              FlexibleInstances,
              OverloadedStrings,
+             StandaloneDeriving,
              TupleSections,
              UndecidableInstances
 #-}
@@ -211,6 +212,8 @@ instance Pretty Mode where
     pretty Major = "\\major"
     pretty Minor = "\\minor"
     pretty mode  = error $ "invalid mode \"" ++ show mode ++ "\""
+
+deriving instance Read Mode
 
 -- | Gets the number of sharps or flats in a key.
 --   In general, this is an integer from -7 (7 flats) to 7 (7 sharps), but it can also have more than 7 if it is a "theoretical key" (in which case, double accidentals would occur).

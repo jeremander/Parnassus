@@ -13,10 +13,10 @@ import Music.Tuning.Tun (loadNamedTuningFromTun)
 subcommandOpts :: String -> Parser a -> String -> Mod CommandFields a
 subcommandOpts name subcmdParser desc = command name $ info subcmdParser $ progDesc desc
 
--- ** Tuning
-
 infileParser :: String -> Parser FilePath
 infileParser extension = argument str (metavar "INFILE" <> help ("(required) input ." ++ extension ++ " file"))
+
+-- ** Tuning
 
 data RetuneOpts = RetuneOpts {
     inputFile :: FilePath,

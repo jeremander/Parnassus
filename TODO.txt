@@ -42,7 +42,7 @@
         [X] play MIDI
         [ ] play LilyPond
         [ ] direct input MIDI to the opened fluidsynth port?
-        - Why is --help duplicated??
+        [ ] Why is --help duplicated??
 
 
 - make things more efficient (esp. MusicD)
